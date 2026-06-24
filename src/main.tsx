@@ -8,15 +8,15 @@ import './styles.css';
 const DATA_KEY = 'pte-study-planner-data';
 const GITHUB_CONFIG_KEY = 'pte-study-planner-github-config';
 const strategyOptions: Array<{ value: StrategyType; label: string }> = [
-  { value: 'phased_pool', label: '分阶段题库' },
-  { value: 'fixed_pool', label: '固定范围题库' },
-  { value: 'daily_fixed', label: '每日固定训练' },
-  { value: 'memorization', label: '背诵熟悉型' },
+  { value: 'phased_pool', label: 'phased_pool' },
+  { value: 'fixed_pool', label: 'fixed_pool' },
+  { value: 'daily_fixed', label: 'daily_fixed' },
+  { value: 'memorization', label: 'memorization' },
 ];
 const carryoverOptions: Array<{ value: CarryoverMode; label: string }> = [
-  { value: 'adaptive_average', label: '动态均摊' },
-  { value: 'none', label: '不累计' },
-  { value: 'next_day', label: '全部累计到第二天' },
+  { value: 'adaptive_average', label: 'adaptive_average' },
+  { value: 'none', label: 'none' },
+  { value: 'next_day', label: 'next_day' },
 ];
 const priorityOptions: Array<{ value: Priority; label: string }> = [
   { value: 'high', label: '高' },
@@ -24,17 +24,24 @@ const priorityOptions: Array<{ value: Priority; label: string }> = [
   { value: 'low', label: '低' },
 ];
 const examTypes = ['RS', 'WFD', 'FIB', 'DI', 'WE', 'SST', 'RL'];
+const examColors: Record<string, string> = { RS: 'blue', WFD: 'green', WE: 'orange', DI: 'purple', FIB: 'cyan', SST: 'pink', RL: 'indigo' };
 
 const loadData = (): StudyData => {
-  const storedData = localStorage.getItem(DATA_KEY);
-  const storedConfig = localStorage.getItem(GITHUB_CONFIG_KEY);
-  const data = normalizeData(storedData ? JSON.parse(storedData) : defaultData());
-  return { ...data, settings: { ...data.settings, ...(storedConfig ? JSON.parse(storedConfig) : {}) } };
+  try {
+    const storedData = localStorage.getItem(DATA_KEY);
+    const storedConfig = localStorage.getItem(GITHUB_CONFIG_KEY);
+    const data = normalizeData(storedData ? JSON.parse(storedData) : defaultData());
+    return { ...data, settings: { ...data.settings, ...(storedConfig ? JSON.parse(storedConfig) : {}) } };
+  } catch {
+    return defaultData();
+  }
 };
 
 function App() {
   const [data, setData] = useState<StudyData>(loadData);
   const [activeTab, setActiveTab] = useState('today');
+  const [syncToken, setSyncToken] = useState('');
+  const [syncLog, setSyncLog] = useState('暂无同步记录');
   const schedule = useMemo(() => buildSchedule(data), [data]);
   const phase = currentPhase(schedule);
   const todayTasks = data.tasks.filter((task) => task.phaseId === phase?.id);
@@ -43,6 +50,9 @@ function App() {
   const todayDone = (data.dailyLogs[todayIso()] || []).reduce((sum, log) => sum + log.amount, 0);
   const totalDone = data.tasks.reduce((sum, task) => sum + task.completedCount, 0);
   const totalTarget = data.tasks.reduce((sum, task) => sum + task.targetCount, 0);
+  const remainingTotal = Math.max(0, totalTarget - totalDone);
+  const totalDays = Math.max(0, daysBetweenInclusive(todayIso(), data.settings.deadline));
+  const githubConfig = { owner: data.settings.githubOwner, repo: data.settings.githubRepo, branch: data.settings.githubBranch, path: data.settings.githubPath };
 
   const saveLocal = (next: StudyData) => {
     const stamped = normalizeData({ ...next, updatedAt: new Date().toISOString() });
@@ -62,35 +72,28 @@ function App() {
       dailyLogs: { ...data.dailyLogs, [today]: [...(data.dailyLogs[today] || []), { taskId: task.id, amount: safeAmount }] },
     });
   };
-  const githubConfig = { owner: data.settings.githubOwner, repo: data.settings.githubRepo, branch: data.settings.githubBranch, path: data.settings.githubPath };
-
-  const askToken = () => new Promise<string>((resolve) => {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'modal';
-    wrapper.innerHTML = '<form class="modal-box"><h3>输入 GitHub Token</h3><p>Token 只用于本次同步，不会保存。</p><input name="token" type="password" autocomplete="off" placeholder="fine-grained personal access token"/><div class="actions"><button type="submit">确认</button><button type="button" data-cancel="1">取消</button></div></form>';
-    document.body.appendChild(wrapper);
-    const input = wrapper.querySelector('input') as HTMLInputElement;
-    input.focus();
-    const done = (value: string) => { input.value = ''; wrapper.remove(); resolve(value); };
-    wrapper.querySelector('form')?.addEventListener('submit', (event) => { event.preventDefault(); done(input.value); });
-    wrapper.querySelector('[data-cancel]')?.addEventListener('click', () => done(''));
-  });
+  const requireToken = () => {
+    if (!syncToken) alert('请先输入本次同步 Token。Token 不会保存，同步结束后会清空。');
+    return syncToken;
+  };
   const pullFromGitHub = async () => {
-    let token = await askToken();
+    let token = requireToken();
     if (!token) return;
     try {
       const remote = normalizeData((await fetchGitHubData(githubConfig, token)).data);
       if (data.updatedAt > remote.updatedAt && !confirm('本地数据比 GitHub 数据更新。是否使用 GitHub 数据覆盖本地？')) return;
       saveLocal(remote);
+      setSyncLog(`成功从 GitHub 拉取数据 · ${new Date().toLocaleString()}`);
       alert('已从 GitHub 拉取数据');
     } catch (error) {
       alert(error instanceof Error ? error.message : 'GitHub 同步失败');
     } finally {
       token = '';
+      setSyncToken('');
     }
   };
   const saveToGitHub = async () => {
-    let token = await askToken();
+    let token = requireToken();
     if (!token) return;
     try {
       const remote = normalizeData((await fetchGitHubData(githubConfig, token)).data);
@@ -102,86 +105,113 @@ function App() {
       const stamped = normalizeData({ ...data, updatedAt: new Date().toISOString() });
       await saveGitHubData(githubConfig, token, stamped);
       saveLocal(stamped);
+      setSyncLog(`成功保存到 GitHub · ${new Date().toLocaleString()}`);
       alert('已保存到 GitHub');
     } catch (error) {
       alert(error instanceof Error ? error.message : 'GitHub 同步失败');
     } finally {
       token = '';
+      setSyncToken('');
     }
   };
 
   return <main>
-    <header>
-      <h1>PTE 备考进度调度器</h1>
-      <p>专注回答“今天我要练什么”，只记录进度和计算任务，不上传题库。</p>
-      <nav>{[['today', '今日任务'], ['progress', '整体进度'], ['settings', '计划设置'], ['sync', 'GitHub 同步']].map(([key, label]) => <button className={activeTab === key ? 'active' : ''} onClick={() => setActiveTab(key)} key={key}>{label}</button>)}</nav>
-    </header>
+    <TopBar activeTab={activeTab} onTabChange={setActiveTab} />
 
-    {activeTab === 'today' && <section className="card hero-card">
-      <h2>今天我要练什么？</h2>
-      <div className="metric-grid">
-        <Metric label="今天日期" value={todayIso()} />
-        <Metric label="当前阶段" value={phase?.name || '暂无阶段'} />
-        <Metric label="距最终截止" value={`${daysBetweenInclusive(todayIso(), data.settings.deadline)} 天`} />
-        <Metric label="今日总任务量" value={`${todayTarget} 题/篇/句`} />
+    {activeTab === 'today' && <section className="page-shell">
+      <div className="metric-grid today-metrics">
+        <Metric icon="📅" label="今天" value={todayIso()} tone="blue" />
+        <Metric icon="⚑" label="当前阶段" value={phase?.name || '暂无阶段'} tone="green" />
+        <Metric icon="⏳" label="距截止" value={`${totalDays} 天`} tone="orange" />
+        <Metric icon="📋" label="今日总任务" value={`${todayTarget}`} tone="purple" />
       </div>
-      {(!hasTasks || todayTasks.length === 0) ? <EmptyState /> : <>
-        <h3>今日完成进度</h3>
-        <Progress value={progressPercent(todayDone, todayTarget)} muted={todayTarget === 0} />
-        <div className="task-list">{todayTasks.map((task) => <TodayTaskCard key={task.id} task={task} phase={phase} onAdd={addAmount} />)}</div>
+      <Panel title="今日任务清单">
+        {(!hasTasks || todayTasks.length === 0) ? <EmptyState /> : <div className="task-list">{todayTasks.map((task) => <TodayTaskCard key={task.id} task={task} phase={phase} onAdd={addAmount} />)}</div>}
+      </Panel>
+      <Panel className="today-footer">
+        <div className="footer-progress"><b>今日完成进度</b><Progress value={progressPercent(todayDone, todayTarget)} muted={todayTarget === 0} /></div>
+        <span className="encourage">⭐ 继续加油，稳步前进！</span>
+      </Panel>
+    </section>}
+
+    {activeTab === 'progress' && <section className="page-shell progress-layout">
+      {!hasTasks ? <Panel><EmptyState /></Panel> : <>
+        <Panel className="overall-card">
+          <Donut value={progressPercent(totalDone, totalTarget)} />
+          <div><span className="muted-label">总进度</span><h2>{totalDone} <small>/ {totalTarget} · {progressPercent(totalDone, totalTarget)}%</small></h2><p>已完成 {totalDone} 题/项，共 {totalTarget} 题/项</p></div>
+          <TrendCard />
+        </Panel>
+        <Panel title="阶段进度">
+          {schedule.map((item) => {
+            const phaseTasks = data.tasks.filter((task) => task.phaseId === item.id);
+            const done = phaseTasks.reduce((sum, task) => sum + task.completedCount, 0);
+            const target = phaseTasks.reduce((sum, task) => sum + task.targetCount, 0);
+            return <ProgressRow key={item.id} title={item.name} done={done} target={target} color="blue" meta={`${item.startDate} ~ ${item.endDate}`} />;
+          })}
+        </Panel>
+        <Panel title="题型任务进度">
+          {data.tasks.map((task) => <ProgressRow key={task.id} title={`${task.taskName}`} done={task.completedCount} target={task.targetCount} color={examColors[task.examType] || 'blue'} badge={task.examType} />)}
+        </Panel>
+        <div className="stat-strip">
+          <Metric icon="☷" label="当前总任务" value={`${totalTarget}`} tone="blue" />
+          <Metric icon="✓" label="已完成" value={`${totalDone}`} tone="green" />
+          <Metric icon="◷" label="剩余" value={`${remainingTotal}`} tone="blue" />
+          <Metric icon="🗓" label="计划总天数" value={`${daysBetweenInclusive(data.settings.startDate, data.settings.deadline)} 天`} tone="purple" />
+        </div>
       </>}
     </section>}
 
-    {activeTab === 'progress' && <section className="card">
-      <h2>整体进度</h2>
-      {!hasTasks ? <EmptyState /> : <>
-        <section className="summary-box"><b>总进度：{totalDone} / {totalTarget} / {progressPercent(totalDone, totalTarget)}%</b><Progress value={progressPercent(totalDone, totalTarget)} muted={totalTarget === 0} /></section>
-        <h3>阶段进度</h3>
-        {schedule.map((item) => {
-          const phaseTasks = data.tasks.filter((task) => task.phaseId === item.id);
-          const done = phaseTasks.reduce((sum, task) => sum + task.completedCount, 0);
-          const target = phaseTasks.reduce((sum, task) => sum + task.targetCount, 0);
-          return <section className="progress-item" key={item.id}><b>{item.name}</b><span>{item.startDate} ~ {item.endDate}</span><Progress value={progressPercent(done, target)} muted={target === 0} /><small>已完成 {done} / 总目标 {target} / {progressPercent(done, target)}%</small></section>;
-        })}
-        <h3>任务进度</h3>
-        {data.tasks.map((task) => <TaskProgress key={task.id} task={task} />)}
-      </>}
-    </section>}
-
-    {activeTab === 'settings' && <section className="card">
-      <h2>计划设置</h2>
-      <div className="form-grid three"><label>计划开始日期<input type="date" value={data.settings.startDate} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, startDate: event.target.value } })} /></label><label>最终截止日期<input type="date" value={data.settings.deadline} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, deadline: event.target.value } })} /></label><label>缓冲天数<input type="number" min="0" value={data.settings.bufferDays} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, bufferDays: Number(event.target.value) } })} /></label></div>
-      <h3>阶段</h3>
-      <p className="hint">阶段日期由开始日期、截止日期、缓冲天数和各阶段任务量自动计算。</p>
-      {schedule.map((item) => <div className="phase-row" key={item.id}><input value={item.name} onChange={(event) => saveLocal({ ...data, phases: data.phases.map((phaseItem) => phaseItem.id === item.id ? { ...phaseItem, name: event.target.value } : phaseItem) })} /><span>{item.startDate} ~ {item.endDate}</span><span>任务量 {item.totalWork}</span><button onClick={() => saveLocal({ ...data, phases: data.phases.filter((phaseItem) => phaseItem.id !== item.id), tasks: data.tasks.filter((task) => task.phaseId !== item.id) })}>删除</button></div>)}
-      <button onClick={() => saveLocal({ ...data, phases: [...data.phases, { id: crypto.randomUUID(), name: '新阶段', order: data.phases.length + 1 }] })}>新增阶段</button>
-      <h3>任务</h3>
-      <button onClick={() => saveLocal({ ...data, tasks: [...data.tasks, createTask(data.phases[0]?.id || '')] })}>新增任务</button>
-      {data.tasks.length === 0 ? <EmptyState /> : data.tasks.map((task) => <TaskEditor key={task.id} task={task} phases={data.phases} onChange={(patch) => updateTask(task.id, patch)} onDelete={() => saveLocal({ ...data, tasks: data.tasks.filter((item) => item.id !== task.id) })} />)}
-    </section>}
-
-    {activeTab === 'sync' && <section className="card">
-      <h2>GitHub 同步设置</h2>
-      <div className="form-grid two">
-        <label>GitHub 用户名 / Owner<input value={data.settings.githubOwner} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, githubOwner: event.target.value } })} /></label>
-        <label>数据仓库名<input value={data.settings.githubRepo} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, githubRepo: event.target.value } })} /></label>
-        <label>分支名<input value={data.settings.githubBranch} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, githubBranch: event.target.value } })} /></label>
-        <label>数据文件路径<input value={data.settings.githubPath} onChange={(event) => saveLocal({ ...data, settings: { ...data.settings, githubPath: event.target.value } })} /></label>
+    {activeTab === 'settings' && <section className="page-shell">
+      <div className="setting-summary">
+        <SettingCard icon="🗓" label="开始日期" value={data.settings.startDate} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, startDate: value } })} type="date" />
+        <SettingCard icon="📅" label="最终截止日期" value={data.settings.deadline} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, deadline: value } })} type="date" />
+        <SettingCard icon="🛡" label="缓冲天数" value={String(data.settings.bufferDays)} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, bufferDays: Number(value) } })} type="number" />
       </div>
-      <p className="warn">Token 每次同步时手动输入，只临时存在于输入框和函数局部变量中；不会保存到 localStorage、sessionStorage 或 data.json，也不会输出到 console。</p>
-      <div className="actions"><button onClick={pullFromGitHub}>从 GitHub 拉取数据</button><button onClick={saveToGitHub}>保存到 GitHub</button></div>
+      <Panel title="阶段" action={<button onClick={() => saveLocal({ ...data, phases: [...data.phases, { id: crypto.randomUUID(), name: '新阶段', order: data.phases.length + 1 }] })}>＋ 新增阶段</button>}>
+        <div className="phase-grid">{schedule.map((item) => <article className={`phase-card ${item.totalWork === 0 ? 'empty-phase' : ''}`} key={item.id}><input value={item.name} onChange={(event) => saveLocal({ ...data, phases: data.phases.map((phaseItem) => phaseItem.id === item.id ? { ...phaseItem, name: event.target.value } : phaseItem) })} /><span>自动分配天数 <b>{item.days} 天</b></span><small>预计日期范围 {item.startDate} ~ {item.endDate}</small><button className="ghost danger-text" onClick={() => saveLocal({ ...data, phases: data.phases.filter((phaseItem) => phaseItem.id !== item.id), tasks: data.tasks.filter((task) => task.phaseId !== item.id) })}>删除阶段</button></article>)}</div>
+        {!hasTasks && <p className="tip">💡 提示：请先添加任务，阶段天数会根据各阶段总任务量自动调整。</p>}
+      </Panel>
+      <Panel title="任务" action={<button onClick={() => saveLocal({ ...data, tasks: [...data.tasks, createTask(data.phases[0]?.id || '')] })}>＋ 新增任务</button>}>
+        {data.tasks.length === 0 ? <EmptyState /> : <div className="table-wrap"><table><thead><tr><th>任务名称</th><th>题型</th><th>所属阶段</th><th>策略类型</th><th>目标数量</th><th>已完成</th><th>每日固定数量</th><th>累积方式</th><th>优先级</th><th>操作</th></tr></thead><tbody>{data.tasks.map((task) => <TaskRow key={task.id} task={task} phases={data.phases} onChange={(patch) => updateTask(task.id, patch)} onDelete={() => saveLocal({ ...data, tasks: data.tasks.filter((item) => item.id !== task.id) })} />)}</tbody></table></div>}
+      </Panel>
+    </section>}
+
+    {activeTab === 'sync' && <section className="page-shell sync-layout">
+      <Panel>
+        <SyncField icon="👤" label="GitHub 用户名 / Owner" value={data.settings.githubOwner} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, githubOwner: value } })} />
+        <SyncField icon="💻" label="数据仓库名" value={data.settings.githubRepo} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, githubRepo: value } })} />
+        <SyncField icon="⑂" label="分支名" value={data.settings.githubBranch} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, githubBranch: value } })} />
+        <SyncField icon="▣" label="数据文件路径" value={data.settings.githubPath} onChange={(value) => saveLocal({ ...data, settings: { ...data.settings, githubPath: value } })} />
+        <p className="token-warning">🛡 Token 每次同步时手动输入，不保存到 localStorage、sessionStorage、data.json 或代码。</p>
+      </Panel>
+      <div className="sync-side">
+        <Panel title="本次同步 Token">
+          <div className="password-row"><input type="password" value={syncToken} onChange={(event) => setSyncToken(event.target.value)} autoComplete="off" placeholder="fine-grained personal access token" /><span>◉</span></div>
+          <small>同步完成后立即清空</small>
+        </Panel>
+        <button className="sync-button pull" onClick={pullFromGitHub}>☁ 从 GitHub 拉取数据</button>
+        <button className="sync-button push" onClick={saveToGitHub}>☁ 保存到 GitHub</button>
+      </div>
+      <Panel title="同步记录" className="sync-log"><p>✅ {syncLog}</p></Panel>
     </section>}
   </main>;
 }
 
-function createTask(phaseId: string): Task {
-  return { id: crypto.randomUUID(), taskName: 'RS 超高频', examType: 'RS', phaseId, strategyType: 'phased_pool', targetCount: 200, completedCount: 0, fixedDailyCount: 0, carryoverMode: 'adaptive_average', priority: 'high' };
+function TopBar({ activeTab, onTabChange }: { activeTab: string; onTabChange: (tab: string) => void }) {
+  const tabs = [['today', '今日任务'], ['progress', '整体进度'], ['settings', '计划设置'], ['sync', 'GitHub 同步']];
+  return <header className="topbar"><div className="brand"><span className="logo">P</span><b>PTE 备考进度调度器</b></div><nav>{tabs.map(([key, label]) => <button className={activeTab === key ? 'active' : ''} onClick={() => onTabChange(key)} key={key}>{label}</button>)}</nav><span className="bell">♧</span></header>;
 }
-function Metric({ label, value }: { label: string; value: string }) { return <div className="metric"><span>{label}</span><b>{value}</b></div>; }
+function createTask(phaseId: string): Task { return { id: crypto.randomUUID(), taskName: 'RS 超高频', examType: 'RS', phaseId, strategyType: 'phased_pool', targetCount: 200, completedCount: 0, fixedDailyCount: 0, carryoverMode: 'adaptive_average', priority: 'high' }; }
+function Panel({ title, action, className = '', children }: { title?: string; action?: React.ReactNode; className?: string; children: React.ReactNode }) { return <section className={`panel ${className}`}>{(title || action) && <div className="panel-head"><h2>{title}</h2>{action}</div>}{children}</section>; }
+function Metric({ icon, label, value, tone }: { icon: string; label: string; value: string; tone: string }) { return <article className="metric"><span className={`metric-icon ${tone}`}>{icon}</span><div><small>{label}</small><b>{value}</b></div></article>; }
 function EmptyState() { return <p className="empty">暂无任务，请先在计划设置中添加任务。</p>; }
-function Progress({ value, muted = false }: { value: number; muted?: boolean }) { return <div className={`progress ${muted ? 'muted' : ''}`}><span style={{ width: `${value}%` }} /><em>{value}%</em></div>; }
-function TaskProgress({ task }: { task: Task }) { const percent = progressPercent(task.completedCount, task.targetCount); return <section className="progress-item"><b>{task.taskName} · {task.examType}</b><Progress value={percent} muted={task.targetCount === 0} /><small>已完成 {task.completedCount} / 目标 {task.targetCount} / 剩余 {Math.max(0, task.targetCount - task.completedCount)} / {percent}%</small></section>; }
-function TodayTaskCard({ task, phase, onAdd }: { task: Task; phase: ReturnType<typeof currentPhase>; onAdd: (task: Task, amount: number) => void }) { const suggestion = taskSuggestion(task, phase); const percent = progressPercent(task.completedCount, task.targetCount); return <article className="task-card"><div><h3>{task.taskName}</h3><p>今日建议 <b>{suggestion}</b>，已完成 {task.completedCount} / {task.targetCount}，剩余 {Math.max(0, task.targetCount - task.completedCount)}，进度 {percent}%</p><Progress value={percent} muted={task.targetCount === 0} /></div><div className="actions">{[1, 5, 10].map((amount) => <button onClick={() => onAdd(task, amount)} key={amount}>+{amount}</button>)}<button onClick={() => onAdd(task, Number(prompt('输入完成量') || 0))}>手动输入</button></div></article>; }
-function TaskEditor({ task, phases, onChange, onDelete }: { task: Task; phases: Phase[]; onChange: (patch: Partial<Task>) => void; onDelete: () => void }) { return <article className="task-editor"><label>任务名称<input value={task.taskName} onChange={(event) => onChange({ taskName: event.target.value })} /></label><label>题型<select value={task.examType} onChange={(event) => onChange({ examType: event.target.value })}>{examTypes.map((type) => <option key={type}>{type}</option>)}</select></label><label>所属阶段<select value={task.phaseId} onChange={(event) => onChange({ phaseId: event.target.value })}>{phases.map((phase) => <option value={phase.id} key={phase.id}>{phase.name}</option>)}</select></label><label>策略类型<select value={task.strategyType} onChange={(event) => { const strategyType = event.target.value as StrategyType; onChange({ strategyType, carryoverMode: defaultCarryover(strategyType) }); }}>{strategyOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label>目标数量<input type="number" min="0" value={task.targetCount} onChange={(event) => onChange({ targetCount: Number(event.target.value) })} /></label><label>已完成数量<input type="number" min="0" value={task.completedCount} onChange={(event) => onChange({ completedCount: Number(event.target.value) })} /></label><label>每日固定数量<input type="number" min="0" value={task.fixedDailyCount} onChange={(event) => onChange({ fixedDailyCount: Number(event.target.value) })} /></label><label>累计模式<select value={task.carryoverMode} onChange={(event) => onChange({ carryoverMode: event.target.value as CarryoverMode })}>{carryoverOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><label>优先级<select value={task.priority} onChange={(event) => onChange({ priority: event.target.value as Priority })}>{priorityOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label><button className="danger" onClick={onDelete}>删除任务</button></article>; }
+function Progress({ value, muted = false, color = 'blue' }: { value: number; muted?: boolean; color?: string }) { return <div className={`progress ${muted ? 'muted' : ''}`}><span className={color} style={{ width: `${value}%` }} /></div>; }
+function Donut({ value }: { value: number }) { return <div className="donut" style={{ background: `conic-gradient(#0b72f0 ${value * 3.6}deg,#edf1f7 0deg)` }}><span>{value}%</span></div>; }
+function TrendCard() { return <div className="trend-card"><b>近7天完成趋势</b><svg viewBox="0 0 260 92"><polyline points="8,70 50,62 94,48 134,40 176,58 218,28 252,34" fill="none" stroke="#0b72f0" strokeWidth="4"/><g fill="#0b72f0">{[[8,70],[50,62],[94,48],[134,40],[176,58],[218,28],[252,34]].map(([cx,cy])=><circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="4" />)}</g></svg></div>; }
+function ProgressRow({ title, done, target, color, meta, badge }: { title: string; done: number; target: number; color: string; meta?: string; badge?: string }) { const percent = progressPercent(done, target); return <article className="progress-row">{badge && <span className={`badge ${color}`}>{badge}</span>}<div><b>{title}</b>{meta && <small>{meta}</small>}<Progress value={percent} muted={target === 0} color={color} /></div><span>{done} / {target}</span><em>{percent}%</em></article>; }
+function TodayTaskCard({ task, phase, onAdd }: { task: Task; phase: ReturnType<typeof currentPhase>; onAdd: (task: Task, amount: number) => void }) { const suggestion = taskSuggestion(task, phase); const percent = progressPercent(task.completedCount, task.targetCount); const color = examColors[task.examType] || 'blue'; return <article className="today-task"><span className={`task-avatar ${color}`}>{task.examType}</span><div className="task-title"><b>{task.taskName}</b><small>今日建议 {suggestion} {task.strategyType === 'memorization' ? '篇' : '题'}</small></div><div><small>已完成</small><b>{task.completedCount} <small>/ {task.targetCount}</small></b><Progress value={percent} muted={task.targetCount === 0} color={color} /></div><div><small>剩余</small><b>{Math.max(0, task.targetCount - task.completedCount)}</b></div><div><small>进度</small><b>{percent}%</b></div><div className="quick"><small>快捷记录</small><div className="quick-buttons">{[1, 5, 10].map((amount) => <button onClick={() => onAdd(task, amount)} key={amount}>+{amount}</button>)}<button onClick={() => onAdd(task, Number(prompt('输入完成量') || 0))}>✎ 手动输入</button></div></div></article>; }
+function SettingCard({ icon, label, value, type, onChange }: { icon: string; label: string; value: string; type: string; onChange: (value: string) => void }) { return <article className="setting-card"><span>{icon}</span><label>{label}<input type={type} value={value} min="0" onChange={(event) => onChange(event.target.value)} /></label><b>›</b></article>; }
+function SyncField({ icon, label, value, onChange }: { icon: string; label: string; value: string; onChange: (value: string) => void }) { return <label className="sync-field"><span>{icon}</span><div>{label}<input value={value} onChange={(event) => onChange(event.target.value)} /></div></label>; }
+function TaskRow({ task, phases, onChange, onDelete }: { task: Task; phases: Phase[]; onChange: (patch: Partial<Task>) => void; onDelete: () => void }) { return <tr><td><input value={task.taskName} onChange={(event) => onChange({ taskName: event.target.value })} /></td><td><select value={task.examType} onChange={(event) => onChange({ examType: event.target.value })}>{examTypes.map((type) => <option key={type}>{type}</option>)}</select></td><td><select value={task.phaseId} onChange={(event) => onChange({ phaseId: event.target.value })}>{phases.map((phase) => <option value={phase.id} key={phase.id}>{phase.name.replace(/^第.阶段：/, '')}</option>)}</select></td><td><select value={task.strategyType} onChange={(event) => { const strategyType = event.target.value as StrategyType; onChange({ strategyType, carryoverMode: defaultCarryover(strategyType) }); }}>{strategyOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></td><td><input type="number" min="0" value={task.targetCount} onChange={(event) => onChange({ targetCount: Number(event.target.value) })} /></td><td><input type="number" min="0" value={task.completedCount} onChange={(event) => onChange({ completedCount: Number(event.target.value) })} /></td><td><input type="number" min="0" value={task.fixedDailyCount} onChange={(event) => onChange({ fixedDailyCount: Number(event.target.value) })} /></td><td><select value={task.carryoverMode} onChange={(event) => onChange({ carryoverMode: event.target.value as CarryoverMode })}>{carryoverOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></td><td><select className={`priority ${task.priority}`} value={task.priority} onChange={(event) => onChange({ priority: event.target.value as Priority })}>{priorityOptions.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></td><td><button className="ghost" onClick={onDelete}>🗑</button></td></tr>; }
 
 createRoot(document.getElementById('root')!).render(<App />);
