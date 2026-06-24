@@ -4,7 +4,7 @@
 
 ## 功能
 
-- React + TypeScript + Vite 单页应用
+- Vue 3 + TypeScript + Vite 单页应用
 - localStorage 保存本地计划和进度
 - 通过 GitHub REST Contents API 读写另一个私有仓库中的 `data.json`
 - Token 每次同步手动输入，输入后仅临时使用，不写入代码、`.env`、localStorage、sessionStorage 或 data.json

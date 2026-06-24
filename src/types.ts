@@ -11,7 +11,7 @@ export interface Settings {
   githubPath: string;
 }
 
-export interface Phase { id: string; name: string; order: number; }
+export interface Phase { id: string; name: string; order: number; startDate?: string; endDate?: string; }
 
 export interface Task {
   id: string;

@@ -7,11 +7,13 @@ export const clamp = (n: number, min: number, max: number) => Math.min(max, Math
 
 export function defaultData(): StudyData {
   const today = todayIso();
+  const deadline = addDays(today, 60);
+  const effectiveEnd = addDays(deadline, -7);
   return {
     version: 1,
     updatedAt: new Date().toISOString(),
-    settings: { startDate: today, deadline: addDays(today, 60), bufferDays: 7, githubOwner: '', githubRepo: 'pte-study-data', githubBranch: 'main', githubPath: 'data.json' },
-    phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1 }],
+    settings: { startDate: today, deadline, bufferDays: 7, githubOwner: 'Virinko', githubRepo: 'pte-study-data', githubBranch: 'main', githubPath: 'data.json' },
+    phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
     tasks: [],
     dailyLogs: {},
   };
@@ -28,9 +30,18 @@ export function buildSchedule(data: StudyData): PhaseSchedule[] {
   let cursor = data.settings.startDate;
   let used = 0;
   return phases.map((p, idx) => {
+    if (p.startDate && p.endDate) {
+      const startDate = p.startDate;
+      const endDate = p.endDate < startDate ? startDate : p.endDate;
+      const days = daysBetweenInclusive(startDate, endDate);
+      cursor = addDays(endDate, 1);
+      used += days;
+      return { ...p, startDate, endDate, days, totalWork: weights[idx] };
+    }
     const remainingPhases = phases.length - idx;
-    const days = idx === phases.length - 1 ? Math.max(1, totalDays - used) : Math.max(1, Math.round((weights[idx] / totalWeight) * totalDays));
-    const adjustedDays = Math.min(days, Math.max(1, totalDays - used - (remainingPhases - 1)));
+    const remainingDays = Math.max(remainingPhases, totalDays - used);
+    const days = idx === phases.length - 1 ? remainingDays : Math.max(1, Math.round((weights[idx] / totalWeight) * totalDays));
+    const adjustedDays = Math.max(1, Math.min(days, remainingDays - (remainingPhases - 1)));
     const startDate = cursor;
     const endDate = addDays(startDate, adjustedDays - 1);
     cursor = addDays(endDate, 1); used += adjustedDays;
@@ -47,4 +58,4 @@ export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIs
   if (task.carryoverMode === 'next_day') return Math.max(0, task.dailyFixed || Math.ceil(remaining / Math.max(1, daysBetweenInclusive(date, phase.endDate))));
   return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(date, phase.endDate)));
 }
-export const pct = (done: number, target: number) => target <= 0 ? 100 : clamp(Math.round((done / target) * 100), 0, 100);
+export const pct = (done: number, target: number) => target <= 0 ? 0 : clamp(Math.round((done / target) * 100), 0, 100);
