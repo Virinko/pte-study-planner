@@ -19,7 +19,7 @@ export function defaultData(): StudyData {
   };
 }
 
-const taskWork = (t: Task) => t.strategy === 'daily_fixed' && t.carryoverMode === 'none' ? Math.max(1, t.dailyFixed) : Math.max(0, t.target - t.completed);
+const taskWork = (t: Task) => Math.max(0, t.target - t.completed);
 
 export function buildSchedule(data: StudyData): PhaseSchedule[] {
   const phases = [...data.phases].sort((a, b) => a.order - b.order);
@@ -52,10 +52,8 @@ export function buildSchedule(data: StudyData): PhaseSchedule[] {
 export function currentPhase(schedule: PhaseSchedule[], date = todayIso()) { return schedule.find((p) => date >= p.startDate && date <= p.endDate) || schedule.find((p) => date < p.startDate) || schedule[schedule.length - 1]; }
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
   if (!phase) return 0;
-  if (task.carryoverMode === 'none') return task.dailyFixed;
   const remaining = Math.max(0, task.target - task.completed);
   if (!remaining) return 0;
-  if (task.carryoverMode === 'next_day') return Math.max(0, task.dailyFixed || Math.ceil(remaining / Math.max(1, daysBetweenInclusive(date, phase.endDate))));
   return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(date, phase.endDate)));
 }
 export const pct = (done: number, target: number) => target <= 0 ? 0 : clamp(Math.round((done / target) * 100), 0, 100);

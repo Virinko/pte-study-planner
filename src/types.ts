@@ -1,5 +1,5 @@
-export type StrategyType = 'phased_pool' | 'fixed_pool' | 'daily_fixed' | 'memorization';
-export type CarryoverMode = 'adaptive_average' | 'none' | 'next_day';
+export type PracticePlatform = '多墨' | '猩际' | '萤火虫' | '影子三千';
+export type FrequencyType = '全题库' | '超高频' | '非超高频';
 
 export interface Settings {
   startDate: string;
@@ -17,11 +17,10 @@ export interface Task {
   id: string;
   phaseId: string;
   name: string;
-  strategy: StrategyType;
+  platform: PracticePlatform;
+  frequencyType: FrequencyType;
   target: number;
   completed: number;
-  dailyFixed: number;
-  carryoverMode: CarryoverMode;
 }
 
 export interface DailyLogEntry { taskId: string; amount: number; }

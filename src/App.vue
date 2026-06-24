@@ -2,31 +2,24 @@
 import { computed, nextTick, ref } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskSuggestion, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
-import type { CarryoverMode, Phase, PhaseSchedule, StrategyType, StudyData, Task } from './types';
+import type { FrequencyType, Phase, PhaseSchedule, PracticePlatform, StudyData, Task } from './types';
 
 const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
-const strategies: StrategyType[] = ['phased_pool', 'fixed_pool', 'daily_fixed', 'memorization'];
-const modes: CarryoverMode[] = ['adaptive_average', 'none', 'next_day'];
+const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
+const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频'];
 const tabs = [
   ['today', '今日任务'],
   ['progress', '整体进度'],
   ['settings', '计划设置'],
   ['sync', 'GitHub 同步'],
 ] as const;
-
-const strategyLabels: Record<StrategyType, string> = {
-  phased_pool: '分阶段题库',
-  fixed_pool: '固定范围题库',
-  daily_fixed: '每日固定训练',
-  memorization: '背诵熟悉型',
-};
-
-const carryoverLabels: Record<CarryoverMode, string> = {
-  adaptive_average: '动态均摊',
-  none: '不累计',
-  next_day: '累计到第二天',
-};
+const sidebarItems: { key: (typeof tabs)[number][0]; label: string }[] = [
+  { key: 'today', label: '今日任务' },
+  { key: 'settings', label: '阶段计划与任务管理' },
+  { key: 'progress', label: '进度总览与数据统计' },
+  { key: 'sync', label: '进度同步' },
+];
 
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
@@ -37,14 +30,37 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     startDate: phase.startDate || (index === 0 ? settings.startDate : undefined),
     endDate: phase.endDate || (index === 0 ? addDays(settings.deadline, -Math.max(0, settings.bufferDays)) : undefined),
   }));
+  const tasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => ({
+    id: task.id || crypto.randomUUID(),
+    phaseId: task.phaseId || phases[0]?.id || '',
+    name: task.name || 'RS',
+    platform: isPracticePlatform(task.platform) ? task.platform : '多墨',
+    frequencyType: isFrequencyType(task.frequencyType) ? task.frequencyType : inferFrequencyType(task.name || ''),
+    target: Number(task.target || 0),
+    completed: Number(task.completed || 0),
+  }));
   return {
     ...base,
     ...source,
     settings,
     phases,
-    tasks: source?.tasks ?? base.tasks,
+    tasks,
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
   };
+}
+
+function isPracticePlatform(value: unknown): value is PracticePlatform {
+  return practicePlatforms.includes(value as PracticePlatform);
+}
+
+function isFrequencyType(value: unknown): value is FrequencyType {
+  return frequencyTypes.includes(value as FrequencyType);
+}
+
+function inferFrequencyType(name: string): FrequencyType {
+  if (name.includes('非超高频')) return '非超高频';
+  if (name.includes('超高频')) return '超高频';
+  return '全题库';
 }
 
 function load(): StudyData {
@@ -69,6 +85,7 @@ const tab = ref<(typeof tabs)[number][0]>('today');
 const showTokenModal = ref(false);
 const tokenInput = ref('');
 const tokenField = ref<HTMLInputElement | null>(null);
+const manualAmounts = ref<Record<string, number>>({});
 let tokenResolver: ((token: string) => void) | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
@@ -91,6 +108,7 @@ const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum 
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
+const estimatedHours = computed(() => Math.max(0.5, Math.round(todayTarget.value * 3.5) / 10));
 const lastSyncedAt = computed(() => data.value.updatedAt ? new Date(data.value.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
 
 const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
@@ -99,6 +117,8 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const dailyTarget = taskSuggestion(baselineTask, phase.value);
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
   const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : task.target > 0 && task.completed >= task.target;
+  const todayPercent = pct(todayCompleted, dailyTarget);
+  const todayStatus = todayCompleted > dailyTarget ? '超额完成' : doneToday ? '已完成' : '待完成';
   return {
     ...task,
     accent: taskAccent(index),
@@ -107,14 +127,14 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     remaining: Math.max(0, task.target - task.completed),
     todayCompleted,
     dailyTarget,
+    todayPercent,
+    todayStatus,
     remainingToday,
     doneToday,
   };
 }));
 const todayTarget = computed(() => todayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(todayLogTotal.value, todayTarget.value));
-const todayPendingRows = computed(() => todayTaskRows.value.filter((task) => !task.doneToday));
-const todayDoneRows = computed(() => todayTaskRows.value.filter((task) => task.doneToday));
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
@@ -134,7 +154,12 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   initials: taskInitials(task.name),
   percent: pct(task.completed, task.target),
   remaining: Math.max(0, task.target - task.completed),
+  phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
+  status: task.completed >= task.target ? '完成' : '正常',
 })));
+
+const activePhaseProgress = computed(() => phaseProgress.value.find((item) => item.id === phase.value?.id) || phaseProgress.value[0]);
+const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysBetweenInclusive(todayIso(), activePhaseProgress.value.endDate) : 0);
 
 const trendRows = computed(() => {
   const rows = Array.from({ length: 7 }, (_, index) => {
@@ -195,11 +220,10 @@ function addTask(phaseId?: string) {
         id: crypto.randomUUID(),
         phaseId: phaseId || targetPhase?.id || data.value.phases[0]?.id || '',
         name: 'RS 超高频',
-        strategy: 'phased_pool',
+        platform: '多墨',
+        frequencyType: '超高频',
         target: 100,
         completed: 0,
-        dailyFixed: 10,
-        carryoverMode: 'adaptive_average',
       },
     ],
   });
@@ -210,18 +234,30 @@ function deleteTask(id: string) {
 }
 
 function addAmount(task: Task, amount: number) {
-  const completed = Math.max(0, amount);
   const date = todayIso();
   const log = data.value.dailyLogs[date] || [];
+  const todayCompleted = log.filter((entry) => entry.taskId === task.id).reduce((sum, entry) => sum + entry.amount, 0);
+  const delta = amount < 0
+    ? -Math.min(Math.abs(amount), Math.max(0, task.completed), Math.max(0, todayCompleted))
+    : Math.max(0, amount);
+  if (delta === 0) return;
   saveLocal({
     ...data.value,
-    tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: item.completed + completed } : item),
-    dailyLogs: { ...data.value.dailyLogs, [date]: [...log, { taskId: task.id, amount: completed }] },
+    tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: Math.max(0, item.completed + delta) } : item),
+    dailyLogs: { ...data.value.dailyLogs, [date]: [...log, { taskId: task.id, amount: delta }] },
   });
 }
 
-function addManualAmount(task: Task) {
-  addAmount(task, Number(prompt('输入完成量') || 0));
+function manualAmount(id: string) {
+  return manualAmounts.value[id] ?? 5;
+}
+
+function setManualAmount(id: string, value: string) {
+  manualAmounts.value[id] = Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function applyManualAmount(task: Task, direction: 1 | -1) {
+  addAmount(task, manualAmount(task.id) * direction);
 }
 
 function plannedDailyTarget(task: Task, targetPhase: PhaseSchedule) {
@@ -311,110 +347,135 @@ function phaseAccent(index: number) {
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark">P</span>
-        <h1>PTE 备考进度调度器</h1>
+        <div>
+          <h1>PTE计划</h1>
+          <p>备考计划管理器</p>
+        </div>
       </div>
       <nav>
         <button
-          v-for="[key, label] in tabs"
-          :key="key"
-          :class="{ active: tab === key }"
+          v-for="item in sidebarItems"
+          :key="item.label"
+          :class="{ active: tab === item.key }"
           type="button"
-          @click="tab = key"
+          @click="tab = item.key"
         >
-          {{ label }}
+          {{ item.label }}
         </button>
       </nav>
-      <span class="bell">!</span>
+      <div class="sidebar-note">
+        <strong>今日格言</strong>
+        <p>每天进步一点点，考试成功一大步！</p>
+      </div>
     </header>
 
-    <section v-if="tab === 'today'" class="page">
-      <div class="metric-grid">
-        <article class="metric-card">
-          <span class="metric-icon blue">□</span>
-          <p>今天</p>
-          <strong>{{ todayIso() }}</strong>
-        </article>
-        <article class="metric-card wide">
-          <span class="metric-icon green">F</span>
-          <p>当前阶段</p>
-          <strong>{{ phase?.name || '暂无阶段' }}</strong>
-        </article>
-        <article class="metric-card">
-          <span class="metric-icon orange">D</span>
-          <p>距截止</p>
-          <strong>{{ daysLeft }} 天</strong>
-        </article>
-        <article class="metric-card">
-          <span class="metric-icon violet">≡</span>
-          <p>今日总任务</p>
-          <strong>{{ todayTarget }}</strong>
-        </article>
-      </div>
-
-      <section class="panel">
-        <div class="section-heading">
-          <h2>今日待完成</h2>
-          <span class="list-count">{{ todayPendingRows.length }} 项待完成</span>
+    <section v-if="tab === 'today'" class="page dashboard-page">
+      <section class="plan-strip">
+        <div>
+          <span>计划开始日期</span>
+          <strong>{{ data.settings.startDate }}</strong>
         </div>
-        <div v-if="todayTaskRows.length === 0" class="empty-state">
-          <strong>今天还没有任务</strong>
-          <p>在计划设置里添加任务后，这里会按当前阶段显示今日建议量。</p>
-          <button type="button" @click="tab = 'settings'">去添加任务</button>
+        <div>
+          <span>最终截止日期（考试日期）</span>
+          <strong>{{ data.settings.deadline }}</strong>
         </div>
-        <div v-else-if="todayPendingRows.length === 0" class="empty-state compact">
-          <strong>今日任务已完成</strong>
-          <p>所有题型都已达到今日建议量，可以继续追加练习，或明天再看新的动态均摊建议。</p>
+        <div>
+          <span>距离{{ activePhaseProgress?.name || '当前阶段' }}截止日期</span>
+          <strong>{{ activePhaseDeadlineDays }} 天</strong>
         </div>
-        <article v-for="task in todayPendingRows" :key="task.id" class="task-row">
-          <div class="task-badge" :style="{ background: task.accent }">{{ task.initials }}</div>
-          <div class="task-main">
-            <h3>{{ task.name }}</h3>
-            <p>今日目标 {{ task.dailyTarget }} 项</p>
-          </div>
-          <div class="task-stat">
-            <span>今日已做</span>
-            <strong>{{ task.todayCompleted }} <small>/ {{ task.dailyTarget }}</small></strong>
-          </div>
-          <div class="task-stat">
-            <span>今日剩余</span>
-            <strong>{{ task.remainingToday }}</strong>
-          </div>
-          <div class="task-progress">
-            <span>总进度 {{ task.percent }}%</span>
-            <div class="progress slim"><span :style="{ width: `${pct(task.todayCompleted, task.dailyTarget)}%`, background: task.accent }" /></div>
-          </div>
-          <div class="quick-actions">
-            <div>
-              <button v-for="amount in [1, 5, 10]" :key="amount" class="ghost" type="button" @click="addAmount(task, amount)">+{{ amount }}</button>
-            </div>
-            <button class="ghost manual" type="button" @click="addManualAmount(task)">手动输入</button>
-          </div>
-        </article>
+        <button class="soft-button" type="button" @click="tab = 'settings'">修改计划</button>
       </section>
 
-      <section v-if="todayDoneRows.length > 0" class="panel done-panel">
-        <div class="section-heading">
-          <h2>今日已完成</h2>
-          <span class="list-count done">{{ todayDoneRows.length }} 项</span>
-        </div>
-        <article v-for="task in todayDoneRows" :key="task.id" class="done-row">
-          <div class="mini-badge" :style="{ background: task.accent }">{{ task.initials }}</div>
+      <section class="dashboard-card today-card">
+        <div class="dashboard-title">
           <div>
-            <strong>{{ task.name }}</strong>
-            <small>今日完成 {{ task.todayCompleted }} / {{ task.dailyTarget }}，总进度 {{ task.completed }} / {{ task.target }}</small>
+            <h2>今日任务</h2>
+            <p>{{ todayIso() }}，当前阶段按剩余任务量动态均摊</p>
           </div>
-          <button class="ghost" type="button" @click="addManualAmount(task)">追加</button>
-        </article>
+          <button class="primary-action" type="button" @click="tab = 'settings'">更新完成进度</button>
+        </div>
+
+        <div v-if="activePhaseProgress" class="phase-banner">
+          <div>
+            <span>当前阶段</span>
+            <strong>{{ activePhaseProgress.name }}</strong>
+            <p>{{ activePhaseProgress.startDate }} 至 {{ activePhaseProgress.endDate }}</p>
+          </div>
+          <div>
+            <span>阶段进度</span>
+            <div class="progress slim"><span :style="{ width: `${activePhaseProgress.percent}%`, background: activePhaseProgress.accent }" /></div>
+            <b>{{ activePhaseProgress.percent }}%</b>
+          </div>
+          <div>
+            <span>阶段剩余天数</span>
+            <strong>{{ daysBetweenInclusive(todayIso(), activePhaseProgress.endDate) }} 天</strong>
+          </div>
+        </div>
+
+        <div class="dashboard-table today-table">
+          <div class="dashboard-table-head">
+            <span>任务</span><span>频率类型</span><span>练习平台</span><span>今日进度</span><span>状态</span><span>记录</span>
+          </div>
+          <div v-for="task in todayTaskRows" :key="task.id" class="dashboard-table-row">
+            <strong>{{ task.name }}</strong>
+            <span>{{ task.frequencyType }}</span>
+            <span>{{ task.platform }}</span>
+            <span class="today-progress-cell">
+              <span class="progress-meta"><strong>{{ task.todayCompleted }} / {{ task.dailyTarget }}</strong><b>{{ task.todayPercent }}%</b></span>
+              <span class="progress-track"><i :style="{ width: `${task.todayPercent}%`, background: task.accent }" /></span>
+            </span>
+            <em :class="task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : 'status-warn'">{{ task.todayStatus }}</em>
+            <span class="row-actions">
+              <button type="button" @click="applyManualAmount(task, -1)">-</button>
+              <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
+              <button type="button" @click="applyManualAmount(task, 1)">+</button>
+            </span>
+          </div>
+          <div v-if="todayTaskRows.length === 0" class="empty-row">今天还没有任务。</div>
+        </div>
+
+        <div class="today-footer">
+          <span>今日总任务量：{{ todayTarget }} 题/篇</span>
+          <span>预计完成时间：{{ estimatedHours }} 小时</span>
+          <span>今日完成率：{{ todayPercent }}%</span>
+        </div>
       </section>
 
-      <section class="panel today-summary">
-        <strong>今日完成进度</strong>
-        <div class="progress"><span :style="{ width: `${todayPercent}%` }" /></div>
-        <b>{{ todayPercent }}%</b>
-        <p>继续加油，稳步前进！</p>
+      <section class="dashboard-card phase-overview">
+        <h2>阶段进度总览</h2>
+        <div class="phase-overview-grid">
+          <article v-for="item in phaseProgress" :key="item.id" :style="{ '--phase-color': item.accent }">
+            <strong>{{ item.name }}</strong>
+            <span>{{ item.startDate.slice(5) }} 至 {{ item.endDate.slice(5) }}（{{ item.days }}天）</span>
+            <div class="ring small" :style="{ '--percent': `${item.percent}%`, '--ring-color': item.accent }">
+              <b>{{ item.percent }}%</b>
+            </div>
+            <small>{{ item.done }} / {{ item.target }}</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="dashboard-card">
+        <div class="dashboard-title">
+          <h2>任务进度详情</h2>
+          <div class="segmented"><button type="button">按阶段查看</button><button type="button">按任务类型查看</button></div>
+        </div>
+        <div class="dashboard-table detail-table">
+          <div class="dashboard-table-head">
+            <span>任务名称</span><span>所属阶段</span><span>已完成 / 目标</span><span>进度</span><span>剩余</span><span>状态</span>
+          </div>
+          <div v-for="task in taskProgressRows" :key="task.id" class="dashboard-table-row">
+            <strong>{{ task.name }}</strong>
+            <span>{{ task.phaseName }}</span>
+            <span>{{ task.completed }} / {{ task.target }}</span>
+            <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
+            <span>{{ task.remaining }} 题</span>
+            <em :class="task.status === '正常' || task.status === '完成' ? 'status-ok' : 'status-warn'">{{ task.status }}</em>
+          </div>
+          <div v-if="taskProgressRows.length === 0" class="empty-row">暂无任务。</div>
+        </div>
       </section>
     </section>
-
     <section v-else-if="tab === 'progress'" class="page">
       <div class="progress-layout">
         <section class="panel hero-progress">
@@ -511,25 +572,18 @@ function phaseAccent(index: number) {
           </div>
           <div class="task-table">
             <div class="task-table-head">
-              <span>任务名称</span><span>策略类型</span><span>目标数量</span><span>已完成</span><span>每日固定</span><span>累积方式</span><span>今日建议</span><span>操作</span>
+              <span>任务名称</span><span>练习平台</span><span>频率类型</span><span>目标数量</span><span>已完成</span><span>今日建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
               <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
-              <select
-                :value="task.strategy"
-                @change="updateTask(task.id, {
-                  strategy: ($event.target as HTMLSelectElement).value as StrategyType,
-                  carryoverMode: ($event.target as HTMLSelectElement).value === 'daily_fixed' ? 'none' : 'adaptive_average',
-                })"
-              >
-                <option v-for="strategy in strategies" :key="strategy" :value="strategy">{{ strategyLabels[strategy] }}</option>
+              <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
+                <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
+              </select>
+              <select :value="task.frequencyType" @change="updateTask(task.id, { frequencyType: ($event.target as HTMLSelectElement).value as FrequencyType })">
+                <option v-for="frequencyType in frequencyTypes" :key="frequencyType" :value="frequencyType">{{ frequencyType }}</option>
               </select>
               <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
               <input type="number" :value="task.completed" @input="updateTask(task.id, { completed: Number(($event.target as HTMLInputElement).value) })">
-              <input type="number" :value="task.dailyFixed" @input="updateTask(task.id, { dailyFixed: Number(($event.target as HTMLInputElement).value) })">
-              <select :value="task.carryoverMode" @change="updateTask(task.id, { carryoverMode: ($event.target as HTMLSelectElement).value as CarryoverMode })">
-                <option v-for="mode in modes" :key="mode" :value="mode">{{ carryoverLabels[mode] }}</option>
-              </select>
               <strong>{{ plannedDailyTarget(task, group.phase) }}</strong>
               <button class="icon-button" type="button" @click="deleteTask(task.id)">删</button>
             </div>
