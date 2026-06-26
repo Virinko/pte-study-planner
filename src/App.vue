@@ -591,7 +591,7 @@ function taskDisplayName(task: Task) {
       <div class="brand">
         <span class="brand-mark">P</span>
         <div>
-          <h1>PTE计划</h1>
+          <h1>计划进度</h1>
           <p>备考计划管理器</p>
         </div>
       </div>
