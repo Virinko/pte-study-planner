@@ -16,6 +16,7 @@ export function defaultData(): StudyData {
     phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
     tasks: [],
     dailyLogs: {},
+    dailyNotes: {},
   };
 }
 
