@@ -35,7 +35,7 @@ const sidebarItems: { key: (typeof tabs)[number][0]; label: string }[] = [
 
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
-  const settings = { ...base.settings, ...source?.settings };
+  const settings = normalizeSettings({ ...base.settings, ...source?.settings });
   const phases = (source?.phases ?? base.phases).map((phase, index) => ({
     ...phase,
     order: phase.order ?? index + 1,
@@ -51,6 +51,17 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     tasks,
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyNotes: source?.dailyNotes ?? base.dailyNotes,
+  };
+}
+
+function normalizeSettings(settings: StudyData['settings']): StudyData['settings'] {
+  const fallback = defaultData().settings;
+  return {
+    ...settings,
+    githubOwner: settings.githubOwner?.trim() || fallback.githubOwner,
+    githubRepo: settings.githubRepo?.trim() || fallback.githubRepo,
+    githubBranch: settings.githubBranch?.trim() || fallback.githubBranch,
+    githubPath: settings.githubPath?.trim() || fallback.githubPath,
   };
 }
 
@@ -122,10 +133,10 @@ function load(): StudyData {
     const data = normalizeData(raw ? JSON.parse(raw) as Partial<StudyData> : undefined);
     return {
       ...data,
-      settings: {
+      settings: normalizeSettings({
         ...data.settings,
         ...(cfg ? JSON.parse(cfg) as Partial<StudyData['settings']> : {}),
-      },
+      }),
     };
   } catch {
     return defaultData();
@@ -151,10 +162,10 @@ const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
 const todayTasks = computed(() => data.value.tasks.filter((task) => task.phaseId === phase.value?.id));
 const ghConfig = computed(() => ({
-  owner: data.value.settings.githubOwner,
-  repo: data.value.settings.githubRepo,
-  branch: data.value.settings.githubBranch,
-  path: data.value.settings.githubPath,
+  owner: data.value.settings.githubOwner.trim(),
+  repo: data.value.settings.githubRepo.trim(),
+  branch: data.value.settings.githubBranch.trim(),
+  path: data.value.settings.githubPath.trim(),
 }));
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
 const todayLogByTask = computed(() => {

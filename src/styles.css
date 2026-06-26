@@ -1034,7 +1034,7 @@ nav button.active::after {
 .plan-strip,
 .dashboard-stats,
 .dashboard-card {
-  width: min(1320px, 100%);
+  width: 100%;
   margin: 0 auto 20px;
 }
 
