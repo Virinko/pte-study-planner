@@ -1,7 +1,13 @@
 import type { Phase, PhaseSchedule, StudyData, Task } from './types';
 
-export const todayIso = () => new Date().toISOString().slice(0, 10);
-export const addDays = (iso: string, days: number) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+export const todayIso = () => formatLocalDate(new Date());
+export const addDays = (iso: string, days: number) => { const d = new Date(`${iso}T00:00:00`); d.setDate(d.getDate() + days); return formatLocalDate(d); };
 export const daysBetweenInclusive = (start: string, end: string) => Math.max(0, Math.floor((new Date(`${end}T00:00:00`).getTime() - new Date(`${start}T00:00:00`).getTime()) / 86400000) + 1);
 export const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 
@@ -17,6 +23,7 @@ export function defaultData(): StudyData {
     tasks: [],
     dailyLogs: {},
     dailyNotes: {},
+    reviewPlans: {},
   };
 }
 

@@ -2,7 +2,7 @@
 import { computed, nextTick, ref } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskSuggestion, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
-import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, StudyData, SubItem, SubItemStatus, Task, TrackingMode } from './types';
+import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, SubItem, SubItemStatus, Task, TrackingMode } from './types';
 
 const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
@@ -51,6 +51,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     tasks,
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyNotes: source?.dailyNotes ?? base.dailyNotes,
+    reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
   };
 }
 
@@ -77,9 +78,30 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     platform: isPracticePlatform(task.platform) ? task.platform : '多墨',
     frequencyType: isFrequencyType(task.frequencyType) ? task.frequencyType : inferFrequencyType(name),
     trackingMode,
+    reviewEnabled: Boolean(task.reviewEnabled),
     subItems,
     target: Number(task.target ?? subItems.length ?? 0),
     completed: trackingMode === 'itemized' && subItems.length > 0 ? doneCount : Number(task.completed ?? 0),
+  };
+}
+
+function normalizeReviewPlans(source: Partial<StudyData['reviewPlans']>, tasks: Task[]): StudyData['reviewPlans'] {
+  return Object.entries(source || {}).reduce<StudyData['reviewPlans']>((acc, [date, plans]) => {
+    const normalized = (plans || []).map((plan) => normalizeReviewPlan(plan, tasks)).filter((plan) => plan.target > 0 || plan.completed > 0);
+    if (normalized.length) acc[date] = normalized;
+    return acc;
+  }, {});
+}
+
+function normalizeReviewPlan(plan: Partial<ReviewPlan>, tasks: Task[]): ReviewPlan {
+  const task = tasks.find((item) => item.id === plan.taskId);
+  return {
+    id: plan.id || crypto.randomUUID(),
+    taskId: plan.taskId || task?.id || '',
+    taskName: plan.taskName || task?.name || '复习任务',
+    sourceDate: plan.sourceDate || todayIso(),
+    target: Math.max(0, Number(plan.target ?? 0)),
+    completed: Math.max(0, Number(plan.completed ?? 0)),
   };
 }
 
@@ -149,9 +171,14 @@ const showTokenModal = ref(false);
 const tokenInput = ref('');
 const tokenField = ref<HTMLInputElement | null>(null);
 const manualAmounts = ref<Record<string, number>>({});
+const reviewAmounts = ref<Record<string, number>>({});
+const reviewAddTaskId = ref('');
+const reviewAddDate = ref<'today' | 'tomorrow'>('today');
+const reviewAddTargetInput = ref(5);
 const expandedItemizedTasks = ref<Record<string, boolean>>({});
 const expandedSubItemLists = ref<Record<string, boolean>>({});
 const selectedProgressPhaseId = ref('');
+const reviewTrendRange = ref<7 | 30>(7);
 const selectedNoteDate = ref(todayIso());
 const noteDraft = ref(data.value.dailyNotes?.[todayIso()] || '');
 const importTaskId = ref('');
@@ -179,6 +206,12 @@ const todayLogByTask = computed(() => {
   return result;
 });
 const todayLogTotal = computed(() => Object.values(todayLogByTask.value).reduce((sum, amount) => sum + Math.max(0, amount), 0));
+const todayReviewPlans = computed(() => data.value.reviewPlans[todayIso()] || []);
+const tomorrowReviewPlans = computed(() => data.value.reviewPlans[addDays(todayIso(), 1)] || []);
+const reviewEnabledTasks = computed(() => data.value.tasks.filter((task) => task.reviewEnabled));
+const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
+const todayReviewDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
+const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 const overallDone = computed(() => data.value.tasks.reduce((sum, task) => sum + task.completed, 0));
 const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum + task.target, 0));
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
@@ -215,6 +248,7 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
 }));
 const todayTarget = computed(() => todayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(todayLogTotal.value, todayTarget.value));
+const todayTotalTraining = computed(() => todayLogTotal.value + todayReviewDone.value);
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
@@ -246,11 +280,20 @@ const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysB
 const trendRows = computed(() => {
   const rows = Array.from({ length: 7 }, (_, index) => {
     const date = addDays(todayIso(), index - 6);
-    const total = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
-    return { date, label: date.slice(5), total };
+    const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
+    const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
+    return { date, label: date.slice(5), mainTotal, reviewTotal, total: mainTotal + reviewTotal };
   });
   const max = Math.max(1, ...rows.map((row) => row.total));
   return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.total / max) * 76)) }));
+});
+const reviewTrendRows = computed(() => {
+  const days = reviewTrendRange.value;
+  return Array.from({ length: days }, (_, index) => {
+    const date = addDays(todayIso(), index - days + 1);
+    const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
+    return { date, label: days === 30 ? date.slice(8) : date.slice(5), reviewTotal };
+  });
 });
 
 function saveLocal(next: StudyData) {
@@ -305,6 +348,7 @@ function addTask(phaseId?: string) {
         platform: '多墨',
         frequencyType: '超高频',
         trackingMode: inferTrackingMode('RS 超高频'),
+        reviewEnabled: false,
         subItems: [],
         target: 100,
         completed: 0,
@@ -380,6 +424,96 @@ function setManualAmount(id: string, value: string) {
 
 function applyManualAmount(task: Task, direction: 1 | -1) {
   addAmount(task, manualAmount(task.id) * direction);
+}
+
+function reviewAmount(id: string) {
+  return reviewAmounts.value[id] ?? 5;
+}
+
+function setReviewAmount(id: string, value: string) {
+  reviewAmounts.value[id] = Math.max(0, Math.floor(Number(value) || 0));
+}
+
+function setTomorrowReview(task: Task) {
+  const target = reviewAmount(task.id);
+  const date = addDays(todayIso(), 1);
+  const plans = data.value.reviewPlans[date] || [];
+  const existing = plans.find((plan) => plan.taskId === task.id && plan.sourceDate === todayIso());
+  const nextPlans = target > 0
+    ? [
+        ...plans.filter((plan) => plan.id !== existing?.id),
+        {
+          id: existing?.id || crypto.randomUUID(),
+          taskId: task.id,
+          taskName: task.name,
+          sourceDate: todayIso(),
+          target,
+          completed: Math.min(existing?.completed || 0, target),
+        },
+      ]
+    : plans.filter((plan) => plan.id !== existing?.id);
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
+}
+
+function addReviewPlan() {
+  const task = data.value.tasks.find((item) => item.id === reviewAddTaskId.value) || reviewEnabledTasks.value[0];
+  const target = Math.max(0, Math.floor(reviewAddTargetInput.value || 0));
+  if (!task || target <= 0) return;
+  const date = reviewAddDate.value === 'tomorrow' ? addDays(todayIso(), 1) : todayIso();
+  const plans = data.value.reviewPlans[date] || [];
+  const existing = plans.find((plan) => plan.taskId === task.id);
+  const nextPlans = existing
+    ? plans.map((plan) => plan.id === existing.id ? { ...plan, target: plan.target + target } : plan)
+    : [
+        ...plans,
+        {
+          id: crypto.randomUUID(),
+          taskId: task.id,
+          taskName: task.name,
+          sourceDate: todayIso(),
+          target,
+          completed: 0,
+        },
+      ];
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
+}
+
+function setReviewTarget(date: string, plan: ReviewPlan, value: string) {
+  if (value.trim() === '') return;
+  const target = Math.floor(Number(value) || 0);
+  if (target <= 0) return;
+  updateReviewPlan(date, plan.id, { target });
+}
+
+function tomorrowReviewTargetForTask(taskId: string) {
+  const date = addDays(todayIso(), 1);
+  return (data.value.reviewPlans[date] || [])
+    .filter((plan) => plan.taskId === taskId && plan.sourceDate === todayIso())
+    .reduce((sum, plan) => sum + plan.target, 0);
+}
+
+function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>) {
+  const plans = data.value.reviewPlans[date] || [];
+  const nextPlans = plans.map((plan) => {
+    if (plan.id !== planId) return plan;
+    const target = Math.max(0, Number(patch.target ?? plan.target));
+    const completed = Math.min(target, Math.max(0, Number(patch.completed ?? plan.completed)));
+    return { ...plan, ...patch, target, completed };
+  }).filter((plan) => plan.target > 0 || plan.completed > 0);
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
+}
+
+function addReviewProgress(date: string, plan: ReviewPlan, amount: number) {
+  const delta = amount < 0
+    ? -Math.min(Math.abs(amount), Math.max(0, plan.completed))
+    : Math.min(amount, Math.max(0, plan.target - plan.completed));
+  if (delta === 0) return;
+  updateReviewPlan(date, plan.id, { completed: plan.completed + delta });
+}
+
+function deleteReviewPlan(date: string, planId: string) {
+  const plans = (data.value.reviewPlans[date] || []).filter((plan) => plan.id !== planId);
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: plans } });
 }
 
 function isItemizedExpanded(taskId: string) {
@@ -607,7 +741,10 @@ async function push() {
 function addDays(iso: string, days: number) {
   const date = new Date(`${iso}T00:00:00`);
   date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function taskInitials(name: string) {
@@ -821,6 +958,17 @@ function taskDisplayName(task: Task) {
                 </button>
               </section>
             </div>
+            <div v-if="task.reviewEnabled && task.doneToday && tomorrowReviewTargetForTask(task.id) === 0" class="review-register-panel">
+              <div>
+                <strong>登记明日复习量</strong>
+                <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
+                <span v-else>填入明天需要复习的错题量，不计入主任务进度。</span>
+              </div>
+              <div class="review-register-actions">
+                <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
+                <button type="button" @click="setTomorrowReview(task)">保存</button>
+              </div>
+            </div>
           </template>
           <div v-if="todayTaskRows.length === 0" class="empty-row">今天还没有任务。</div>
         </div>
@@ -829,6 +977,82 @@ function taskDisplayName(task: Task) {
           <span>今日总任务量：{{ todayTarget }} 题/篇</span>
           <span>预计完成时间：{{ estimatedHours }} 小时</span>
           <span>今日完成率：{{ todayPercent }}%</span>
+        </div>
+      </section>
+
+      <section class="dashboard-card review-today-card">
+        <div class="dashboard-title">
+          <div>
+            <h2>复习任务</h2>
+            <p>复习量独立记录，不计入主任务完成率。</p>
+          </div>
+          <div class="review-title-metrics">
+            <span>今日待复习 <strong>{{ todayReviewDone }} / {{ todayReviewTarget }}</strong></span>
+            <span>明日待复习 <strong>{{ tomorrowReviewTarget }}</strong></span>
+          </div>
+        </div>
+        <div class="review-columns">
+          <div class="review-add-panel">
+            <strong>新增复习计划</strong>
+            <div class="review-add-form">
+              <select v-model="reviewAddDate">
+                <option value="today">今日复习</option>
+                <option value="tomorrow">明日复习</option>
+              </select>
+              <select v-model="reviewAddTaskId">
+                <option value="">选择任务</option>
+                <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ task.name }}</option>
+              </select>
+              <input v-model.number="reviewAddTargetInput" type="number" min="0">
+              <button type="button" @click="addReviewPlan">添加</button>
+            </div>
+          </div>
+          <section>
+            <div class="review-section-head">
+              <h3>今日待复习</h3>
+            </div>
+            <div v-if="todayReviewPlans.length" class="review-list">
+              <article v-for="plan in todayReviewPlans" :key="plan.id" class="review-task-card">
+                <div class="review-card-head">
+                  <strong>{{ plan.taskName }} 错题复习</strong>
+                  <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
+                  <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
+                </div>
+                <div class="review-card-body">
+                  <label class="review-target-input">计划
+                    <input type="number" min="0" :value="plan.target" @input="setReviewTarget(todayIso(), plan, ($event.target as HTMLInputElement).value)">
+                  </label>
+                  <span class="today-progress-cell review-progress-cell">
+                    <span class="progress-meta"><strong>{{ plan.completed }} / {{ plan.target }} 题</strong><b>{{ pct(plan.completed, plan.target) }}%</b></span>
+                    <span class="progress-track"><i :style="{ width: `${pct(plan.completed, plan.target)}%`, background: '#7a3ed2' }" /></span>
+                  </span>
+                  <div class="row-actions review-actions">
+                    <button type="button" @click="addReviewProgress(todayIso(), plan, -1)">-</button>
+                    <input class="manual-input" type="number" min="0" :value="reviewAmount(plan.id)" @input="setReviewAmount(plan.id, ($event.target as HTMLInputElement).value)">
+                    <button type="button" @click="addReviewProgress(todayIso(), plan, reviewAmount(plan.id))">+</button>
+                    <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
+                  </div>
+                </div>
+              </article>
+            </div>
+            <p v-else class="muted">今天没有待复习任务。可以手动添加，或使用昨天登记的明日复习。</p>
+          </section>
+          <section>
+            <h3>明日复习计划</h3>
+            <div v-if="tomorrowReviewPlans.length" class="review-list compact">
+              <article v-for="plan in tomorrowReviewPlans" :key="plan.id">
+                <div>
+                  <strong>{{ plan.taskName }} 错题复习</strong>
+                  <small>{{ plan.sourceDate === todayIso() ? '今日登记给明天' : `${plan.sourceDate} 登记` }}</small>
+                </div>
+                <label class="review-target-input">计划
+                  <input type="number" min="0" :value="plan.target" @input="setReviewTarget(addDays(todayIso(), 1), plan, ($event.target as HTMLInputElement).value)">
+                </label>
+                <button class="icon-button" type="button" @click="deleteReviewPlan(addDays(todayIso(), 1), plan.id)">删除</button>
+              </article>
+            </div>
+            <p v-else class="muted">还没有登记明日复习量。完成主任务后可在任务下方登记。</p>
+          </section>
         </div>
       </section>
 
@@ -889,6 +1113,33 @@ function taskDisplayName(task: Task) {
                 <small>{{ row.label }}</small>
               </div>
             </div>
+            <p class="trend-caption">主任务 + 复习任务总训练量</p>
+          </div>
+        </section>
+
+        <section class="panel review-progress-card">
+          <div class="section-heading">
+            <div>
+              <h2>复习训练</h2>
+              <p class="muted">复习完成量独立统计；今日总练习量 = 主任务完成量 + 复习完成量。</p>
+            </div>
+            <div class="segmented compact">
+              <button type="button" :class="{ active: reviewTrendRange === 7 }" @click="reviewTrendRange = 7">近7天</button>
+              <button type="button" :class="{ active: reviewTrendRange === 30 }" @click="reviewTrendRange = 30">近30天</button>
+            </div>
+          </div>
+          <div class="review-stats">
+            <article><span>今日主任务完成</span><strong>{{ todayLogTotal }}</strong></article>
+            <article><span>今日复习完成</span><strong>{{ todayReviewDone }} / {{ todayReviewTarget }}</strong></article>
+            <article><span>明日待复习</span><strong>{{ tomorrowReviewTarget }}</strong></article>
+            <article><span>今日总训练量</span><strong>{{ todayTotalTraining }}</strong></article>
+          </div>
+          <div class="review-trend" :class="{ monthly: reviewTrendRange === 30 }">
+            <article v-for="row in reviewTrendRows" :key="`${row.date}-review`">
+              <span>{{ row.label }}</span>
+              <strong>{{ row.reviewTotal }}</strong>
+              <small>复习量</small>
+            </article>
           </div>
         </section>
 
@@ -965,7 +1216,7 @@ function taskDisplayName(task: Task) {
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
-              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>目标</span><span>完成</span><span>建议</span><span>操作</span>
+              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>复习</span><span>目标</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
               <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
@@ -978,6 +1229,10 @@ function taskDisplayName(task: Task) {
               <select :value="task.trackingMode" @change="updateTask(task.id, { trackingMode: ($event.target as HTMLSelectElement).value as TrackingMode })">
                 <option v-for="mode in trackingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
               </select>
+              <label class="review-toggle">
+                <input type="checkbox" :checked="task.reviewEnabled" @change="updateTask(task.id, { reviewEnabled: ($event.target as HTMLInputElement).checked })">
+                开启
+              </label>
               <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
               <input
                 type="number"
