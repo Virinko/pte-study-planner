@@ -1509,6 +1509,20 @@ nav button.active::after {
   font-size: 13px;
 }
 
+.done-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: #667389;
+  font-size: 12px;
+}
+
+.done-section-title strong {
+  color: #34445d;
+}
+
 .today-done-items {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1527,15 +1541,18 @@ nav button.active::after {
   font-size: 13px;
 }
 
-.today-done-items span {
+.today-done-items button {
   width: 18px;
   height: 18px;
   display: grid;
   place-items: center;
+  padding: 0;
   color: #fff;
   background: #7a3ed2;
+  border: 0;
   border-radius: 999px;
   font-size: 11px;
+  line-height: 1;
 }
 
 .today-done-items b {
@@ -1544,6 +1561,34 @@ nav button.active::after {
   background: #e8faef;
   border-radius: 5px;
   font-size: 12px;
+}
+
+.today-done-items.compact {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.history-done {
+  margin-top: 12px;
+  color: #667389;
+  font-size: 12px;
+}
+
+.history-done summary {
+  color: #1467f2;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.history-done-group {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.history-done-group time {
+  color: #667389;
+  font-weight: 800;
 }
 
 .quick-subitems {
@@ -1651,7 +1696,7 @@ nav button.active::after {
 
 .subitem-toolbar {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: 1fr repeat(4, auto);
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;

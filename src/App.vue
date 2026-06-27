@@ -391,7 +391,8 @@ function toggleItemizedDetails(taskId: string) {
 }
 
 function visibleSubItems(task: Task) {
-  return expandedSubItemLists.value[task.id] ? task.subItems : task.subItems.slice(0, 10);
+  const items = pendingSubItems(task);
+  return expandedSubItemLists.value[task.id] ? items : items.slice(0, 10);
 }
 
 function toggleSubItemList(taskId: string) {
@@ -400,6 +401,10 @@ function toggleSubItemList(taskId: string) {
 
 function toggleTodaySubItem(task: Task, itemId: string, checked: boolean) {
   const date = todayIso();
+  setSubItemCompletion(task, itemId, checked, date);
+}
+
+function setSubItemCompletion(task: Task, itemId: string, checked: boolean, date = todayIso()) {
   const logs = data.value.dailyLogs[date] || [];
   const nextSubItems = task.subItems.map((item) => {
     if (item.id !== itemId) return item;
@@ -421,6 +426,11 @@ function toggleTodaySubItem(task: Task, itemId: string, checked: boolean) {
   });
 }
 
+function undoSubItemCompletion(task: Task, item: SubItem) {
+  if (item.completedDate && item.completedDate !== todayIso() && !confirm('确定取消此前已完成的篇目吗？这会同步调整历史完成记录。')) return;
+  setSubItemCompletion(task, item.id, false, item.completedDate || todayIso());
+}
+
 function updateTodaySubItemFamiliarity(task: Task, itemId: string, familiarity: Familiarity) {
   const date = todayIso();
   const logs = data.value.dailyLogs[date] || [];
@@ -440,6 +450,24 @@ function updateTodaySubItemFamiliarity(task: Task, itemId: string, familiarity: 
 function historicalDoneCount(task: Task) {
   const today = todayIso();
   return task.subItems.filter((item) => item.status === 'done' && item.completedDate !== today).length;
+}
+
+function pendingSubItems(task: Task) {
+  return task.subItems.filter((item) => item.status !== 'done');
+}
+
+function historicalDoneGroups(task: Task) {
+  const today = todayIso();
+  const groups = task.subItems
+    .filter((item) => item.status === 'done' && item.completedDate && item.completedDate !== today)
+    .reduce<Record<string, SubItem[]>>((acc, item) => {
+      const date = item.completedDate || '';
+      acc[date] = [...(acc[date] || []), item];
+      return acc;
+    }, {});
+  return Object.entries(groups)
+    .sort(([a], [b]) => b.localeCompare(a))
+    .map(([date, items]) => ({ date, items }));
 }
 
 function selectNoteDate(date: string) {
@@ -477,6 +505,28 @@ function applyImportSubItems() {
     ...titles.map((title) => normalizeSubItem({ title, status: 'not_started', familiarity: '生', round: 0 })),
   ]);
   closeImportModal();
+}
+
+async function copySubItems(task: Task) {
+  const text = task.subItems.map((item) => item.title.trim()).filter(Boolean).join('\n');
+  if (!text) {
+    alert('当前任务还没有可复制的子项目。');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }
+  alert(`已复制 ${task.subItems.length} 个子项目，可直接粘贴到批量导入。`);
 }
 
 function deleteAllSubItems(task: Task) {
@@ -583,7 +633,7 @@ function itemizedDoneCount(task: Task) {
 
 function todayDoneItems(task: Task) {
   const today = todayIso();
-  return task.subItems.filter((item) => item.completedDate === today);
+  return task.subItems.filter((item) => item.status === 'done' && item.completedDate === today);
 }
 
 function selectedItemTitles(task: Task) {
@@ -717,41 +767,57 @@ function taskDisplayName(task: Task) {
             </div>
             <div v-if="task.trackingMode === 'itemized' && isItemizedExpanded(task.id)" class="today-itemized-panel">
               <section>
-                <h3>今日完成详情</h3>
+                <h3>完成详情</h3>
+                <div class="done-section-title">
+                  <strong>今日完成</strong>
+                  <span>{{ todayDoneItems(task).length }} 篇</span>
+                </div>
                 <div v-if="todayDoneItems(task).length" class="today-done-items">
                   <article v-for="item in todayDoneItems(task)" :key="item.id">
-                    <span>✓</span>
+                    <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                     <strong>{{ item.title }}</strong>
                     <b>{{ item.familiarity }}</b>
                   </article>
                 </div>
                 <p v-else class="muted">今天还没有选择完成篇目。</p>
-                <p v-if="historicalDoneCount(task) > 0" class="history-note">此前已完成 {{ historicalDoneCount(task) }} 篇，可在下方总进度详情中查看。</p>
+                <details v-if="historicalDoneCount(task) > 0" class="history-done">
+                  <summary>此前已完成 {{ historicalDoneCount(task) }} 篇</summary>
+                  <div v-for="group in historicalDoneGroups(task)" :key="group.date" class="history-done-group">
+                    <time>{{ group.date }}</time>
+                    <div class="today-done-items compact">
+                      <article v-for="item in group.items" :key="item.id">
+                        <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
+                        <strong>{{ item.title }}</strong>
+                        <b>{{ item.familiarity }}</b>
+                      </article>
+                    </div>
+                  </div>
+                </details>
               </section>
               <section>
                 <h3>快速选择（可多选）</h3>
-                <div v-if="task.subItems.length > 0" class="quick-subitems">
+                <div v-if="pendingSubItems(task).length > 0" class="quick-subitems">
                   <div v-for="item in visibleSubItems(task)" :key="item.id" class="quick-subitem">
                     <label>
                       <input
                         type="checkbox"
-                        :checked="todayDoneItems(task).some((done) => done.id === item.id)"
+                        :checked="false"
                         @change="toggleTodaySubItem(task, item.id, ($event.target as HTMLInputElement).checked)"
                       >
                       {{ item.title }}
                     </label>
                     <select
                       :value="item.familiarity"
-                      :disabled="!todayDoneItems(task).some((done) => done.id === item.id)"
                       @change="updateTodaySubItemFamiliarity(task, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
                     >
                       <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
                     </select>
                   </div>
                 </div>
-                <p v-else class="muted">请先在计划设置中新增或批量生成篇目。</p>
-                <button v-if="task.subItems.length > 10" class="text-button" type="button" @click="toggleSubItemList(task.id)">
-                  {{ expandedSubItemLists[task.id] ? '收起' : `展开全部（${task.subItems.length}）⌄` }}
+                <p v-else-if="task.subItems.length === 0" class="muted">请先在计划设置中新增或批量导入篇目。</p>
+                <p v-else class="muted">所有篇目都已完成，可在左侧完成详情中查看或取消。</p>
+                <button v-if="pendingSubItems(task).length > 10" class="text-button" type="button" @click="toggleSubItemList(task.id)">
+                  {{ expandedSubItemLists[task.id] ? '收起' : `展开未完成（${pendingSubItems(task).length}）⌄` }}
                 </button>
               </section>
             </div>
@@ -927,6 +993,7 @@ function taskDisplayName(task: Task) {
                 <strong>{{ task.name }} 子项目</strong>
                 <button type="button" @click="addSubItem(task.id)">新增子项目</button>
                 <button type="button" @click="openImportModal(task.id)">批量导入</button>
+                <button type="button" @click="copySubItems(task)">复制全部</button>
                 <button class="danger-light" type="button" @click="deleteAllSubItems(task)">批量删除</button>
               </div>
               <div class="subitem-grid">
