@@ -62,6 +62,10 @@ export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIs
   if (!phase) return 0;
   const remaining = Math.max(0, task.target - task.completed);
   if (!remaining) return 0;
-  return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(date, phase.endDate)));
+  const startDate = task.startDate || phase.startDate;
+  const endDate = task.endDate || phase.endDate;
+  const effectiveStart = date < startDate ? startDate : date;
+  const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
+  return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd)));
 }
 export const pct = (done: number, target: number) => target <= 0 ? 0 : clamp(Math.round((done / target) * 100), 0, 100);

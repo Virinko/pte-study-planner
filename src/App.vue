@@ -75,6 +75,8 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     id: task.id || crypto.randomUUID(),
     phaseId: task.phaseId || fallbackPhaseId,
     name,
+    startDate: task.startDate || undefined,
+    endDate: task.endDate || undefined,
     platform: isPracticePlatform(task.platform) ? task.platform : '多墨',
     frequencyType: isFrequencyType(task.frequencyType) ? task.frequencyType : inferFrequencyType(name),
     trackingMode,
@@ -187,7 +189,14 @@ let tokenResolver: ((token: string) => void) | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
-const todayTasks = computed(() => data.value.tasks.filter((task) => task.phaseId === phase.value?.id));
+const todayTasks = computed(() => {
+  const active = phase.value;
+  if (!active) return [];
+  return data.value.tasks.filter((task) => {
+    if (task.phaseId !== active.id) return false;
+    return todayIso() >= (task.startDate || active.startDate);
+  });
+});
 const ghConfig = computed(() => ({
   owner: data.value.settings.githubOwner.trim(),
   repo: data.value.settings.githubRepo.trim(),
@@ -349,6 +358,8 @@ function addTask(phaseId?: string) {
         frequencyType: '超高频',
         trackingMode: inferTrackingMode('RS 超高频'),
         reviewEnabled: false,
+        startDate: targetPhase?.startDate,
+        endDate: targetPhase?.endDate,
         subItems: [],
         target: 100,
         completed: 0,
@@ -677,7 +688,8 @@ function deleteDailyNote(date: string) {
 }
 
 function plannedDailyTarget(task: Task, targetPhase: PhaseSchedule) {
-  const startDate = todayIso() > targetPhase.startDate ? todayIso() : targetPhase.startDate;
+  const taskStart = task.startDate || targetPhase.startDate;
+  const startDate = todayIso() > taskStart ? todayIso() : taskStart;
   return taskSuggestion(task, targetPhase, startDate);
 }
 
@@ -1216,7 +1228,7 @@ function taskDisplayName(task: Task) {
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
-              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>复习</span><span>目标</span><span>完成</span><span>建议</span><span>操作</span>
+              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>目标</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
               <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
@@ -1229,6 +1241,21 @@ function taskDisplayName(task: Task) {
               <select :value="task.trackingMode" @change="updateTask(task.id, { trackingMode: ($event.target as HTMLSelectElement).value as TrackingMode })">
                 <option v-for="mode in trackingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
               </select>
+              <div class="task-date-control" :class="{ expanded: task.startDate || task.endDate }">
+                <label class="task-date-toggle">
+                  <input
+                    type="checkbox"
+                    :checked="Boolean(task.startDate || task.endDate)"
+                    @change="($event.target as HTMLInputElement).checked ? updateTask(task.id, { startDate: task.startDate || group.phase.startDate, endDate: task.endDate || group.phase.endDate }) : updateTask(task.id, { startDate: undefined, endDate: undefined })"
+                  >
+                  设日期
+                </label>
+                <div v-if="task.startDate || task.endDate" class="task-date-pair">
+                  <input type="date" :value="task.startDate || group.phase.startDate" @input="updateTask(task.id, { startDate: ($event.target as HTMLInputElement).value || undefined })">
+                  <input type="date" :value="task.endDate || group.phase.endDate" @input="updateTask(task.id, { endDate: ($event.target as HTMLInputElement).value || undefined })">
+                </div>
+                <span v-else>跟随阶段</span>
+              </div>
               <label class="review-toggle">
                 <input type="checkbox" :checked="task.reviewEnabled" @change="updateTask(task.id, { reviewEnabled: ($event.target as HTMLInputElement).checked })">
                 开启

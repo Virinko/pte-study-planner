@@ -30,6 +30,8 @@ export interface Task {
   id: string;
   phaseId: string;
   name: string;
+  startDate?: string;
+  endDate?: string;
   platform: PracticePlatform;
   frequencyType: FrequencyType;
   trackingMode: TrackingMode;
