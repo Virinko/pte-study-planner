@@ -582,12 +582,14 @@ function parseDurationInput(value: string) {
 
 function formatDurationText(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
-  if (total <= 0) return '0 分钟';
-  if (total < 60) return `${total} 秒`;
+  if (total <= 0) return '0 秒';
   const hours = Math.floor(total / 3600);
-  const minutes = Math.round((total % 3600) / 60);
-  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
-  return `${Math.max(1, Math.round(total / 60))} 分钟`;
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours} 小时 ${minutes} 分 ${secs} 秒`;
+  if (minutes > 0) return `${minutes} 分 ${secs} 秒`;
+  if (total < 60) return `${total} 秒`;
+  return `${total} 秒`;
 }
 
 function updateSettings(patch: Partial<StudyData['settings']>) {
