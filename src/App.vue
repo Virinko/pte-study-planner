@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskSuggestion, todayIso } from './planner';
+import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
 import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, SubItem, SubItemStatus, Task, TrackingMode } from './types';
 
@@ -71,6 +71,10 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
   const trackingMode = isTrackingMode(task.trackingMode) ? task.trackingMode : inferTrackingMode(name);
   const subItems = (task.subItems || []).map(normalizeSubItem);
   const doneCount = subItems.filter((item) => item.status === 'done').length;
+  const target = Number(task.target ?? subItems.length ?? 0);
+  const repeatCount = trackingMode === 'itemized' ? 1 : Math.max(1, Math.floor(Number(task.repeatCount ?? 1)));
+  const totalTarget = Math.max(0, target * repeatCount);
+  const completed = trackingMode === 'itemized' && subItems.length > 0 ? doneCount : Number(task.completed ?? 0);
   return {
     id: task.id || crypto.randomUUID(),
     phaseId: task.phaseId || fallbackPhaseId,
@@ -82,8 +86,9 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     trackingMode,
     reviewEnabled: Boolean(task.reviewEnabled),
     subItems,
-    target: Number(task.target ?? subItems.length ?? 0),
-    completed: trackingMode === 'itemized' && subItems.length > 0 ? doneCount : Number(task.completed ?? 0),
+    target,
+    repeatCount,
+    completed: Math.min(Math.max(0, completed), totalTarget || Math.max(0, completed)),
   };
 }
 
@@ -222,7 +227,7 @@ const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, pla
 const todayReviewDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 const overallDone = computed(() => data.value.tasks.reduce((sum, task) => sum + task.completed, 0));
-const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum + task.target, 0));
+const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0));
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
@@ -238,15 +243,18 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const baselineTask = { ...task, completed: Math.max(0, task.completed - todayCompleted) };
   const dailyTarget = taskSuggestion(baselineTask, phase.value);
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
-  const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : task.target > 0 && task.completed >= task.target;
+  const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task);
   const todayPercent = pct(todayCompleted, dailyTarget);
   const todayStatus = todayCompleted > dailyTarget ? '超额完成' : doneToday ? '已完成' : '待完成';
   return {
     ...task,
     accent: taskAccent(index),
     initials: taskInitials(task.name),
-    percent: pct(task.completed, task.target),
-    remaining: Math.max(0, task.target - task.completed),
+    totalTarget: taskTotalTarget(task),
+    percent: pct(task.completed, taskTotalTarget(task)),
+    remaining: taskRemaining(task),
+    currentRound: taskCurrentRound(task),
+    roundCompleted: taskRoundCompleted(task),
     todayCompleted,
     dailyTarget,
     todayPercent,
@@ -262,7 +270,7 @@ const todayTotalTraining = computed(() => todayLogTotal.value + todayReviewDone.
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
   const done = tasks.reduce((sum, task) => sum + task.completed, 0);
-  const target = tasks.reduce((sum, task) => sum + task.target, 0);
+  const target = tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0);
   return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index) };
 }));
 
@@ -275,10 +283,13 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   ...task,
   accent: taskAccent(index),
   initials: taskInitials(task.name),
-  percent: pct(task.completed, task.target),
-  remaining: Math.max(0, task.target - task.completed),
+  totalTarget: taskTotalTarget(task),
+  percent: pct(task.completed, taskTotalTarget(task)),
+  remaining: taskRemaining(task),
+  currentRound: taskCurrentRound(task),
+  roundCompleted: taskRoundCompleted(task),
   phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
-  status: task.completed >= task.target ? '完成' : '正常',
+  status: task.completed >= taskTotalTarget(task) ? '完成' : '正常',
 })));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || phaseProgress.value[0]);
 const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
@@ -362,6 +373,7 @@ function addTask(phaseId?: string) {
         endDate: targetPhase?.endDate,
         subItems: [],
         target: 100,
+        repeatCount: 1,
         completed: 0,
       },
     ],
@@ -416,7 +428,7 @@ function addAmount(task: Task, amount: number) {
   const todayCompleted = log.filter((entry) => entry.taskId === task.id).reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
   const delta = amount < 0
     ? -Math.min(Math.abs(amount), Math.max(0, task.completed), Math.max(0, todayCompleted))
-    : Math.max(0, amount);
+    : Math.min(Math.max(0, amount), taskRemaining(task));
   if (delta === 0) return;
   saveLocal({
     ...data.value,
@@ -887,7 +899,7 @@ function taskDisplayName(task: Task) {
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
               <strong class="task-name-cell">
                 <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                <small>{{ task.platform }}</small>
+                <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
               </strong>
               <span class="daily-target-cell">{{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</span>
               <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
@@ -899,8 +911,11 @@ function taskDisplayName(task: Task) {
                 <span class="progress-track"><i :style="{ width: `${task.todayPercent}%`, background: task.accent }" /></span>
               </span>
               <span class="today-progress-cell overall-progress-cell">
-                <span class="progress-meta"><strong>{{ task.completed }} / {{ task.target }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong><b>{{ task.percent }}%</b></span>
-                <span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span>
+                <span class="progress-meta">
+                  <strong>{{ task.repeatCount > 1 ? task.roundCompleted : task.completed }} / {{ task.target }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                  <b>{{ task.repeatCount > 1 ? pct(task.roundCompleted, task.target) : task.percent }}%</b>
+                </span>
+                <span class="progress-track"><i :style="{ width: `${task.repeatCount > 1 ? pct(task.roundCompleted, task.target) : task.percent}%`, background: task.accent }" /></span>
               </span>
               <em :class="task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : 'status-warn'">{{ task.todayStatus }}</em>
               <span class="row-actions">
@@ -1084,7 +1099,7 @@ function taskDisplayName(task: Task) {
           <div v-for="task in filteredTaskProgressRows" :key="task.id" class="dashboard-table-row">
             <strong>{{ task.name }}</strong>
             <span>{{ task.phaseName }}</span>
-            <span>{{ task.completed }} / {{ task.target }}</span>
+            <span>{{ task.completed }} / {{ task.totalTarget }}</span>
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
             <span>{{ task.remaining }} 题</span>
             <em :class="task.status === '正常' || task.status === '完成' ? 'status-ok' : 'status-warn'">{{ task.status }}</em>
@@ -1173,7 +1188,7 @@ function taskDisplayName(task: Task) {
             <div class="mini-badge" :style="{ background: task.accent }">{{ task.initials }}</div>
             <div>
               <strong>{{ task.name }}</strong>
-              <small>{{ task.completed }} / {{ task.target }}</small>
+              <small>{{ task.completed }} / {{ task.totalTarget }}<template v-if="task.repeatCount > 1"> · 第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</template></small>
             </div>
             <div class="progress slim"><span :style="{ width: `${task.percent}%`, background: task.accent }" /></div>
             <b>{{ task.percent }}%</b>
@@ -1228,7 +1243,7 @@ function taskDisplayName(task: Task) {
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
-              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>目标</span><span>完成</span><span>建议</span><span>操作</span>
+              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>轮次</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
               <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
@@ -1261,6 +1276,7 @@ function taskDisplayName(task: Task) {
                 开启
               </label>
               <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
+              <input type="number" min="1" :value="task.repeatCount" :disabled="task.trackingMode === 'itemized'" @input="updateTask(task.id, { repeatCount: Number(($event.target as HTMLInputElement).value) })">
               <input
                 type="number"
                 :value="task.completed"

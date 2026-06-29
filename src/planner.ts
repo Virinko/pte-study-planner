@@ -27,7 +27,23 @@ export function defaultData(): StudyData {
   };
 }
 
-const taskWork = (t: Task) => Math.max(0, t.target - t.completed);
+export const taskRepeatCount = (task: Task) => Math.max(1, Math.floor(Number(task.repeatCount || 1)));
+export const taskTotalTarget = (task: Task) => Math.max(0, Number(task.target || 0) * taskRepeatCount(task));
+export const taskRemaining = (task: Task) => Math.max(0, taskTotalTarget(task) - Math.max(0, Number(task.completed || 0)));
+export const taskCurrentRound = (task: Task) => {
+  const target = Math.max(1, Number(task.target || 0));
+  const repeatCount = taskRepeatCount(task);
+  if (taskTotalTarget(task) <= 0) return 1;
+  return clamp(Math.floor(Math.max(0, task.completed) / target) + 1, 1, repeatCount);
+};
+export const taskRoundCompleted = (task: Task) => {
+  const target = Math.max(0, Number(task.target || 0));
+  if (target <= 0) return 0;
+  if (Math.max(0, task.completed) >= taskTotalTarget(task)) return target;
+  return Math.max(0, task.completed) % target;
+};
+
+const taskWork = (t: Task) => taskRemaining(t);
 
 export function buildSchedule(data: StudyData): PhaseSchedule[] {
   const phases = [...data.phases].sort((a, b) => a.order - b.order);
@@ -60,7 +76,7 @@ export function buildSchedule(data: StudyData): PhaseSchedule[] {
 export function currentPhase(schedule: PhaseSchedule[], date = todayIso()) { return schedule.find((p) => date >= p.startDate && date <= p.endDate) || schedule.find((p) => date < p.startDate) || schedule[schedule.length - 1]; }
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
   if (!phase) return 0;
-  const remaining = Math.max(0, task.target - task.completed);
+  const remaining = taskRemaining(task);
   if (!remaining) return 0;
   const startDate = task.startDate || phase.startDate;
   const endDate = task.endDate || phase.endDate;

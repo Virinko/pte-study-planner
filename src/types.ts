@@ -38,6 +38,7 @@ export interface Task {
   reviewEnabled: boolean;
   subItems: SubItem[];
   target: number;
+  repeatCount: number;
   completed: number;
 }
 
