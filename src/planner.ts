@@ -24,6 +24,7 @@ export function defaultData(): StudyData {
     dailyLogs: {},
     dailyNotes: {},
     reviewPlans: {},
+    timeLogs: {},
   };
 }
 

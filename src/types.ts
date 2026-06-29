@@ -47,5 +47,17 @@ export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyNotes { [date: string]: string; }
 export interface ReviewPlan { id: string; taskId: string; taskName: string; sourceDate: string; target: number; completed: number; }
 export interface ReviewPlans { [date: string]: ReviewPlan[]; }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; }
+export type TimeLogType = 'task' | 'review';
+export interface TimeLogEntry {
+  id: string;
+  date: string;
+  type: TimeLogType;
+  taskId?: string;
+  reviewPlanId?: string;
+  name: string;
+  durationSeconds: number;
+  createdAt: string;
+}
+export interface TimeLogs { [date: string]: TimeLogEntry[]; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; timeLogs: TimeLogs; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
-import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, SubItem, SubItemStatus, Task, TrackingMode } from './types';
+import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
+const TIMER_KEY = 'pte-study-planner-running-timer';
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频'];
 const trackingModes: { value: TrackingMode; label: string }[] = [
@@ -33,6 +34,17 @@ const sidebarItems: { key: (typeof tabs)[number][0]; label: string }[] = [
   { key: 'sync', label: '进度同步' },
 ];
 
+interface RunningTimer {
+  type: TimeLogType;
+  taskId?: string;
+  reviewPlanId?: string;
+  name: string;
+  date: string;
+  startedAt: number;
+  accumulatedSeconds: number;
+  paused: boolean;
+}
+
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
   const settings = normalizeSettings({ ...base.settings, ...source?.settings });
@@ -52,6 +64,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyNotes: source?.dailyNotes ?? base.dailyNotes,
     reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
+    timeLogs: normalizeTimeLogs(source?.timeLogs ?? base.timeLogs),
   };
 }
 
@@ -109,6 +122,28 @@ function normalizeReviewPlan(plan: Partial<ReviewPlan>, tasks: Task[]): ReviewPl
     sourceDate: plan.sourceDate || todayIso(),
     target: Math.max(0, Number(plan.target ?? 0)),
     completed: Math.max(0, Number(plan.completed ?? 0)),
+  };
+}
+
+function normalizeTimeLogs(source: Partial<StudyData['timeLogs']>): StudyData['timeLogs'] {
+  return Object.entries(source || {}).reduce<StudyData['timeLogs']>((acc, [date, logs]) => {
+    const normalized = (logs || []).map((log) => normalizeTimeLog(log, date)).filter((log) => log.durationSeconds > 0);
+    if (normalized.length) acc[date] = normalized;
+    return acc;
+  }, {});
+}
+
+function normalizeTimeLog(log: Partial<TimeLogEntry>, fallbackDate: string): TimeLogEntry {
+  const type: TimeLogType = log.type === 'review' ? 'review' : 'task';
+  return {
+    id: log.id || crypto.randomUUID(),
+    date: log.date || fallbackDate,
+    type,
+    taskId: log.taskId || '',
+    reviewPlanId: log.reviewPlanId || '',
+    name: log.name || (type === 'review' ? '复习计时' : '任务计时'),
+    durationSeconds: Math.max(0, Math.floor(Number(log.durationSeconds || 0))),
+    createdAt: log.createdAt || new Date().toISOString(),
   };
 }
 
@@ -172,6 +207,27 @@ function load(): StudyData {
   }
 }
 
+function loadRunningTimer(): RunningTimer | null {
+  try {
+    const raw = localStorage.getItem(TIMER_KEY);
+    if (!raw) return null;
+    const timer = JSON.parse(raw) as Partial<RunningTimer>;
+    if (timer.type !== 'task' && timer.type !== 'review') return null;
+    return {
+      type: timer.type,
+      taskId: timer.taskId || '',
+      reviewPlanId: timer.reviewPlanId || '',
+      name: timer.name || (timer.type === 'review' ? '复习计时' : '任务计时'),
+      date: timer.date || todayIso(),
+      startedAt: Number(timer.startedAt || Date.now()),
+      accumulatedSeconds: Math.max(0, Math.floor(Number(timer.accumulatedSeconds || 0))),
+      paused: Boolean(timer.paused),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const data = ref<StudyData>(load());
 const tab = ref<(typeof tabs)[number][0]>('today');
 const showTokenModal = ref(false);
@@ -190,7 +246,13 @@ const selectedNoteDate = ref(todayIso());
 const noteDraft = ref(data.value.dailyNotes?.[todayIso()] || '');
 const importTaskId = ref('');
 const importText = ref('');
+const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
+const showTimerModal = ref(Boolean(runningTimer.value));
+const timerEditText = ref('');
+const timerEditDirty = ref(false);
+const nowMs = ref(Date.now());
 let tokenResolver: ((token: string) => void) | null = null;
+let timerInterval: number | undefined;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
@@ -209,6 +271,11 @@ const ghConfig = computed(() => ({
   path: data.value.settings.githubPath.trim(),
 }));
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
+const todayTimeLogs = computed(() => data.value.timeLogs[todayIso()] || []);
+const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.type === 'task').reduce((sum, log) => sum + log.durationSeconds, 0));
+const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.type === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
+const todayStudySeconds = computed(() => todayTaskSeconds.value + todayReviewSeconds.value);
+const runningTimerSeconds = computed(() => currentTimerSeconds());
 const todayLogByTask = computed(() => {
   const result = todayLogs.value.reduce<Record<string, number>>((acc, log) => {
     acc[log.taskId] = (acc[log.taskId] || 0) + (log.count ?? log.amount ?? 0);
@@ -315,6 +382,25 @@ const reviewTrendRows = computed(() => {
     return { date, label: days === 30 ? date.slice(8) : date.slice(5), reviewTotal };
   });
 });
+const timeTrendRows = computed(() => {
+  const rows = Array.from({ length: 7 }, (_, index) => {
+    const date = addDays(todayIso(), index - 6);
+    const totalSeconds = (data.value.timeLogs[date] || []).reduce((sum, log) => sum + log.durationSeconds, 0);
+    return { date, label: date.slice(5), totalSeconds };
+  });
+  const max = Math.max(1, ...rows.map((row) => row.totalSeconds));
+  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.totalSeconds / max) * 76)) }));
+});
+
+onMounted(() => {
+  timerInterval = window.setInterval(() => {
+    nowMs.value = Date.now();
+  }, 1000);
+});
+
+onBeforeUnmount(() => {
+  if (timerInterval) window.clearInterval(timerInterval);
+});
 
 function saveLocal(next: StudyData) {
   const stamped = { ...normalizeData(next), updatedAt: new Date().toISOString() };
@@ -322,6 +408,186 @@ function saveLocal(next: StudyData) {
   localStorage.setItem(KEY, JSON.stringify(stamped));
   const { githubOwner, githubRepo, githubBranch, githubPath } = stamped.settings;
   localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
+}
+
+function timerIdentity(type: TimeLogType, id: string) {
+  return `${type}:${id}`;
+}
+
+function runningTimerIdentity(timer: RunningTimer | null) {
+  if (!timer) return '';
+  return timerIdentity(timer.type, timer.type === 'review' ? timer.reviewPlanId || '' : timer.taskId || '');
+}
+
+function persistRunningTimer() {
+  if (runningTimer.value) localStorage.setItem(TIMER_KEY, JSON.stringify(runningTimer.value));
+  else localStorage.removeItem(TIMER_KEY);
+}
+
+function currentTimerSeconds() {
+  const timer = runningTimer.value;
+  if (!timer) return 0;
+  const liveSeconds = timer.paused ? 0 : Math.floor((nowMs.value - timer.startedAt) / 1000);
+  return Math.max(0, timer.accumulatedSeconds + liveSeconds);
+}
+
+function timerSeconds(type: TimeLogType, id: string) {
+  return runningTimerIdentity(runningTimer.value) === timerIdentity(type, id) ? runningTimerSeconds.value : 0;
+}
+
+function timerEntryLabel(type: TimeLogType, id: string) {
+  const seconds = timerSeconds(type, id);
+  if (seconds <= 0) return '计时';
+  return `${runningTimer.value?.paused ? '已暂停' : '计时中'} ${formatDuration(seconds)}`;
+}
+
+function savedTimeSeconds(type: TimeLogType, id: string) {
+  return todayTimeLogs.value
+    .filter((log) => log.type === type && (type === 'review' ? log.reviewPlanId === id : log.taskId === id))
+    .reduce((sum, log) => sum + log.durationSeconds, 0);
+}
+
+function timerActionLabel() {
+  if (!runningTimer.value) return '开始';
+  if (!runningTimer.value.paused) return '暂停';
+  return currentTimerSeconds() > 0 ? '继续' : '开始';
+}
+
+function openTimer(type: TimeLogType, id: string, name: string) {
+  const identity = timerIdentity(type, id);
+  if (runningTimerIdentity(runningTimer.value) === identity) {
+    nowMs.value = Date.now();
+    showTimerModal.value = true;
+    timerEditDirty.value = false;
+    return;
+  }
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  runningTimer.value = {
+    type,
+    taskId: type === 'task' ? id : '',
+    reviewPlanId: type === 'review' ? id : '',
+    name,
+    date: todayIso(),
+    startedAt: timestamp,
+    accumulatedSeconds: 0,
+    paused: true,
+  };
+  showTimerModal.value = true;
+  timerEditText.value = '';
+  timerEditDirty.value = false;
+  persistRunningTimer();
+}
+
+function toggleActiveTimer() {
+  if (!runningTimer.value) return;
+  const seconds = currentTimerSeconds();
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  runningTimer.value = {
+    ...runningTimer.value,
+    accumulatedSeconds: seconds,
+    startedAt: timestamp,
+    paused: !runningTimer.value.paused,
+  };
+  persistRunningTimer();
+}
+
+function resetTimer(paused = true) {
+  if (!runningTimer.value) return;
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  runningTimer.value = {
+    ...runningTimer.value,
+    accumulatedSeconds: 0,
+    startedAt: timestamp,
+    paused,
+  };
+  timerEditText.value = '';
+  timerEditDirty.value = false;
+  persistRunningTimer();
+}
+
+function closeTimerModal() {
+  runningTimer.value = null;
+  showTimerModal.value = false;
+  timerEditText.value = '';
+  timerEditDirty.value = false;
+  persistRunningTimer();
+}
+
+function updateTimerEdit(value: string) {
+  timerEditText.value = value;
+  timerEditDirty.value = true;
+}
+
+function saveRunningTimer() {
+  const timer = runningTimer.value;
+  if (!timer) return;
+  const durationSeconds = timerEditDirty.value ? parseDurationInput(timerEditText.value) : currentTimerSeconds();
+  if (durationSeconds === null) {
+    alert('请输入有效时长，例如 25:30 或 1:02:00');
+    return;
+  }
+  runningTimer.value = null;
+  showTimerModal.value = false;
+  timerEditText.value = '';
+  timerEditDirty.value = false;
+  persistRunningTimer();
+  if (durationSeconds <= 0) return;
+  const date = timer.date || todayIso();
+  const entry: TimeLogEntry = {
+    id: crypto.randomUUID(),
+    date,
+    type: timer.type,
+    taskId: timer.taskId || '',
+    reviewPlanId: timer.reviewPlanId || '',
+    name: timer.name,
+    durationSeconds,
+    createdAt: new Date().toISOString(),
+  };
+  saveLocal({
+    ...data.value,
+    timeLogs: {
+      ...data.value.timeLogs,
+      [date]: [...(data.value.timeLogs[date] || []), entry],
+    },
+  });
+}
+
+function deleteTimeLog(date: string, id: string) {
+  const logs = (data.value.timeLogs[date] || []).filter((log) => log.id !== id);
+  saveLocal({ ...data.value, timeLogs: { ...data.value.timeLogs, [date]: logs } });
+}
+
+function formatDuration(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function parseDurationInput(value: string) {
+  const text = value.trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text)) return Math.max(0, Number(text) * 60);
+  const parts = text.split(':').map((part) => Number(part));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  if (parts.length === 2) return Math.floor(parts[0] * 60 + parts[1]);
+  if (parts.length === 3) return Math.floor(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  return null;
+}
+
+function formatDurationText(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  if (total <= 0) return '0 分钟';
+  if (total < 60) return `${total} 秒`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.round((total % 3600) / 60);
+  if (hours > 0) return `${hours} 小时 ${minutes} 分钟`;
+  return `${Math.max(1, Math.round(total / 60))} 分钟`;
 }
 
 function updateSettings(patch: Partial<StudyData['settings']>) {
@@ -893,7 +1159,7 @@ function taskDisplayName(task: Task) {
 
         <div class="dashboard-table today-table">
           <div class="dashboard-table-head">
-            <span>任务</span><span>今日建议</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
+            <span>任务</span><span>计时</span><span>今日建议</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
           </div>
           <template v-for="task in todayTaskRows" :key="task.id">
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
@@ -901,6 +1167,10 @@ function taskDisplayName(task: Task) {
                 <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
                 <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
               </strong>
+              <span class="timer-entry-cell">
+                <button class="timer-entry-button" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
+                <small v-if="savedTimeSeconds('task', task.id) > 0">今日已学 {{ formatDurationText(savedTimeSeconds('task', task.id)) }}</small>
+              </span>
               <span class="daily-target-cell">{{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</span>
               <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
                 <span class="progress-meta">
@@ -1041,9 +1311,17 @@ function taskDisplayName(task: Task) {
             <div v-if="todayReviewPlans.length" class="review-list">
               <article v-for="plan in todayReviewPlans" :key="plan.id" class="review-task-card">
                 <div class="review-card-head">
-                  <strong>{{ plan.taskName }} 错题复习</strong>
-                  <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
-                  <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
+                  <div class="review-card-info">
+                    <div class="review-card-titleline">
+                      <strong>{{ plan.taskName }} 错题复习</strong>
+                      <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, `${plan.taskName} 错题复习`)">{{ timerEntryLabel('review', plan.id) }}</button>
+                      <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">今日已学 {{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
+                    </div>
+                  </div>
+                  <div class="review-card-meta">
+                    <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
+                    <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
+                  </div>
                 </div>
                 <div class="review-card-body">
                   <label class="review-target-input">计划
@@ -1057,8 +1335,8 @@ function taskDisplayName(task: Task) {
                     <button type="button" @click="addReviewProgress(todayIso(), plan, -1)">-</button>
                     <input class="manual-input" type="number" min="0" :value="reviewAmount(plan.id)" @input="setReviewAmount(plan.id, ($event.target as HTMLInputElement).value)">
                     <button type="button" @click="addReviewProgress(todayIso(), plan, reviewAmount(plan.id))">+</button>
-                    <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
                   </div>
+                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
                 </div>
               </article>
             </div>
@@ -1166,6 +1444,37 @@ function taskDisplayName(task: Task) {
               <span>{{ row.label }}</span>
               <strong>{{ row.reviewTotal }}</strong>
               <small>复习量</small>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel time-progress-card">
+          <div class="section-heading">
+            <div>
+              <h2>学习时长</h2>
+              <p class="muted">主任务和复习任务分别计时，运行中的计时只保存在本机。</p>
+            </div>
+          </div>
+          <div class="review-stats">
+            <article><span>今日主任务</span><strong>{{ formatDurationText(todayTaskSeconds) }}</strong></article>
+            <article><span>今日复习</span><strong>{{ formatDurationText(todayReviewSeconds) }}</strong></article>
+            <article><span>今日总计</span><strong>{{ formatDurationText(todayStudySeconds) }}</strong></article>
+          </div>
+          <div class="time-trend">
+            <div v-for="row in timeTrendRows" :key="`${row.date}-time`">
+              <span :style="{ height: `${row.height}px` }" />
+              <small>{{ row.label }}</small>
+              <b>{{ formatDurationText(row.totalSeconds) }}</b>
+            </div>
+          </div>
+          <div v-if="todayTimeLogs.length" class="time-log-list">
+            <article v-for="log in todayTimeLogs" :key="log.id">
+              <div>
+                <strong>{{ log.name }}</strong>
+                <small>{{ log.type === 'review' ? '复习' : '主任务' }}</small>
+              </div>
+              <span>{{ formatDurationText(log.durationSeconds) }}</span>
+              <button type="button" @click="deleteTimeLog(log.date, log.id)">删除</button>
             </article>
           </div>
         </section>
@@ -1375,6 +1684,30 @@ function taskDisplayName(task: Task) {
         </article>
       </section>
     </section>
+
+    <div v-if="showTimerModal && runningTimer" class="modal timer-modal">
+      <section class="modal-box timer-modal-box">
+        <button class="modal-close-button" type="button" title="关闭并清空当前计时" @click="closeTimerModal">×</button>
+        <span class="timer-type">{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
+        <h3>{{ runningTimer.name }}</h3>
+        <strong class="timer-display">{{ formatDuration(currentTimerSeconds()) }}</strong>
+        <p>{{ runningTimer.paused ? '已暂停，可以重置或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
+        <label class="timer-edit-field">保存时长
+          <input
+            type="text"
+            :value="timerEditDirty ? timerEditText : formatDuration(currentTimerSeconds())"
+            placeholder="例如 25:30 或 1:02:00"
+            @input="updateTimerEdit(($event.target as HTMLInputElement).value)"
+          >
+        </label>
+        <div class="timer-modal-actions">
+          <button type="button" @click="toggleActiveTimer">{{ timerActionLabel() }}</button>
+          <button class="ghost" type="button" @click="resetTimer(true)">重置</button>
+          <button class="ghost" type="button" @click="resetTimer(false)">重新开始</button>
+          <button class="primary" type="button" @click="saveRunningTimer">保存</button>
+        </div>
+      </section>
+    </div>
 
     <div v-if="importTaskId" class="modal">
       <form class="modal-box import-modal" @submit.prevent="applyImportSubItems">
