@@ -3,7 +3,7 @@ import { LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { ChevronDown, ChevronRight, Minus, Plus, X } from '@lucide/vue';
+import { CalendarDays, ChevronDown, ChevronRight, Flag, Hourglass, Minus, Plus, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
@@ -1602,14 +1602,17 @@ function taskDisplayName(task: Task) {
     <section v-if="tab === 'today'" class="page dashboard-page">
       <section class="plan-strip">
         <div>
+          <CalendarDays class="plan-strip-icon" :size="18" stroke-width="2.4" aria-hidden="true" />
           <span>计划开始日期</span>
           <strong>{{ data.settings.startDate }}</strong>
         </div>
         <div>
+          <Flag class="plan-strip-icon" :size="18" stroke-width="2.4" aria-hidden="true" />
           <span>最终截止日期（考试日期）</span>
           <strong>{{ data.settings.deadline }}</strong>
         </div>
         <div>
+          <Hourglass class="plan-strip-icon" :size="18" stroke-width="2.4" aria-hidden="true" />
           <span>距离{{ activePhaseProgress?.name || '当前阶段' }}截止日期</span>
           <strong>{{ activePhaseDeadlineDays }} 天</strong>
         </div>

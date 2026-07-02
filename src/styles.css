@@ -4797,7 +4797,8 @@ nav button:focus-visible {
 
 /* Today page palette refresh */
 :root {
-  --pte-mist: #EBE8E7;
+  --pte-mist: #FAF8F6;
+  --pte-sidebar: #FCFBF9;
   --pte-rose: #EA7186;
   --pte-honey: #F2C76E;
   --pte-indigo: #7A77B9;
@@ -4805,7 +4806,7 @@ nav button:focus-visible {
   --pte-ink: #221f2a;
   --pte-muted: #746f7a;
   --pte-line: #eee4e5;
-  --pte-surface: rgba(255, 255, 255, .9);
+  --pte-surface: #FFFFFF;
 }
 
 body {
@@ -4815,9 +4816,9 @@ body {
 
 .topbar {
   color: var(--pte-ink);
-  background: linear-gradient(180deg, rgba(255, 255, 255, .9), rgba(250, 247, 247, .88));
-  border-right-color: rgba(122, 119, 185, .16);
-  box-shadow: 12px 0 34px rgba(122, 119, 185, .07);
+  background: var(--pte-sidebar);
+  border-right-color: #E9E3E0;
+  box-shadow: none;
 }
 
 .brand-mark {
@@ -4874,10 +4875,7 @@ nav button.active {
 
 .dashboard-page,
 .page {
-  background:
-    radial-gradient(circle at 18% 4%, rgba(189, 157, 234, .15), transparent 27%),
-    radial-gradient(circle at 94% 14%, rgba(242, 199, 110, .14), transparent 24%),
-    linear-gradient(180deg, #fbfaf9, var(--pte-mist));
+  background: var(--pte-mist);
 }
 
 .plan-strip,
@@ -4924,26 +4922,22 @@ nav button.active {
   box-shadow: inset 0 -3px 0 rgba(122, 119, 185, .7);
 }
 
-.plan-strip div::after {
+.plan-strip-icon {
   position: absolute;
-  top: 14px;
-  left: 0;
-  width: 40px;
+  top: 50%;
+  left: 21px;
+  transform: translate(-50%, calc(-50% - 1px));
+  z-index: 1;
   color: var(--pte-rose);
-  content: "始";
-  font-size: 15px;
-  font-weight: 900;
-  text-align: center;
+  pointer-events: none;
 }
 
-.plan-strip div:nth-child(2)::after {
+.plan-strip div:nth-child(2) .plan-strip-icon {
   color: #d99620;
-  content: "截";
 }
 
-.plan-strip div:nth-child(3)::after {
+.plan-strip div:nth-child(3) .plan-strip-icon {
   color: var(--pte-indigo);
-  content: "余";
 }
 
 .plan-strip strong {
@@ -4995,16 +4989,14 @@ nav button.active {
   align-content: center;
   gap: 8px;
   padding: 24px 22px 18px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--phase-color) 8%, white), rgba(255, 255, 255, .92)),
-    #fff;
+  background: #FFFFFF;
   border: 1px solid color-mix(in srgb, var(--phase-color) 38%, #e9dfdf);
   border-radius: 8px;
-  box-shadow: 0 12px 28px rgba(72, 62, 92, .05);
+  box-shadow: none;
 }
 
 .phase-overview-grid.phase-overview-flow article.phase-step-card.current {
-  box-shadow: 0 16px 34px color-mix(in srgb, var(--phase-color) 18%, transparent);
+  box-shadow: none;
 }
 
 .phase-step-card:not(:last-child)::after {
@@ -5094,7 +5086,7 @@ nav button.active {
 
 .today-itemized-panel {
   border-color: rgba(234, 113, 134, .35);
-  background: rgba(255, 255, 255, .74);
+  background: #FFFFFF;
 }
 
 .today-progress-cell.boxed {
@@ -5142,12 +5134,12 @@ nav button.active {
 .today-footer,
 .review-add-panel,
 .review-register-panel {
-  background: rgba(255, 255, 255, .58);
+  background: #FFFFFF;
   border-color: rgba(122, 119, 185, .14);
 }
 
 .review-list .review-task-card {
-  background: linear-gradient(180deg, rgba(255, 255, 255, .9), rgba(251, 248, 249, .88));
+  background: #FFFFFF;
   border-color: rgba(122, 119, 185, .14);
 }
 
