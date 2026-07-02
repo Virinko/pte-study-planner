@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { LineChart } from 'echarts/charts';
+import { GridComponent, TooltipComponent } from 'echarts/components';
+import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
+import { CanvasRenderer } from 'echarts/renderers';
+import { ChevronDown, ChevronRight, Minus, Plus, X } from '@lucide/vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
-import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+
+use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频'];
+const examTypeOptions = ['RS', 'WE', 'FIB', 'DI', 'WFD', 'SST', 'RL', 'RA', 'RTS', 'SGD', 'SWT'];
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },
@@ -26,13 +34,14 @@ const tabs = [
   ['notes', '每日备注'],
   ['sync', 'GitHub 同步'],
 ] as const;
-const sidebarItems: { key: (typeof tabs)[number][0]; label: string }[] = [
-  { key: 'today', label: '今日任务' },
-  { key: 'settings', label: '阶段计划与任务管理' },
-  { key: 'progress', label: '进度总览与数据统计' },
-  { key: 'notes', label: '每日备注' },
-  { key: 'sync', label: '进度同步' },
+const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string }[] = [
+  { key: 'today', label: '今日任务', icon: '📌' },
+  { key: 'settings', label: '阶段计划', icon: '🗓️' },
+  { key: 'progress', label: '进度统计', icon: '📊' },
+  { key: 'notes', label: '每日备注', icon: '📝' },
+  { key: 'sync', label: '进度同步', icon: '🔄' },
 ];
+type TrendRange = '7' | '30' | 'all';
 
 interface RunningTimer {
   type: TimeLogType;
@@ -40,6 +49,7 @@ interface RunningTimer {
   reviewPlanId?: string;
   name: string;
   date: string;
+  firstStartedAt: number;
   startedAt: number;
   accumulatedSeconds: number;
   paused: boolean;
@@ -55,6 +65,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     endDate: phase.endDate || (index === 0 ? addDays(settings.deadline, -Math.max(0, settings.bufferDays)) : undefined),
   }));
   const tasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => normalizeTask(task, phases[0]?.id || ''));
+  const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
   return {
     ...base,
     ...source,
@@ -64,7 +75,8 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyNotes: source?.dailyNotes ?? base.dailyNotes,
     reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
-    timeLogs: normalizeTimeLogs(source?.timeLogs ?? base.timeLogs),
+    timeLogs: entriesToTimeLogs(studyTimeEntries),
+    studyTimeEntries,
   };
 }
 
@@ -147,6 +159,59 @@ function normalizeTimeLog(log: Partial<TimeLogEntry>, fallbackDate: string): Tim
   };
 }
 
+function normalizeStudyTimeEntries(source: Partial<StudyTimeEntry>[] | undefined, legacy: Partial<StudyData['timeLogs']>): StudyTimeEntry[] {
+  const entries = Array.isArray(source) && source.length > 0
+    ? source.map((entry) => normalizeStudyTimeEntry(entry, entry.date || todayIso()))
+    : Object.entries(legacy || {}).flatMap(([date, logs]) => (logs || []).map((log) => normalizeStudyTimeEntry(log, date)));
+  return entries
+    .filter((entry) => entry.durationSeconds > 0)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function normalizeStudyTimeEntry(entry: Partial<StudyTimeEntry> & Partial<TimeLogEntry>, fallbackDate: string): StudyTimeEntry {
+  const timeType: StudyTimeType = entry.timeType === 'review' || entry.type === 'review' ? 'review' : 'main';
+  const taskName = entry.taskName || entry.name || (timeType === 'review' ? '复习计时' : '任务计时');
+  const source: StudyTimeSource = entry.source === 'manual' ? 'manual' : 'timer';
+  const createdAt = entry.createdAt || new Date().toISOString();
+  const durationSeconds = Math.max(0, Math.floor(Number(entry.durationSeconds || 0)));
+  const endAt = entry.endAt || createdAt;
+  const startAt = entry.startAt || inferStartAt(endAt, durationSeconds);
+  return {
+    id: entry.id || crypto.randomUUID(),
+    date: entry.date || fallbackDate,
+    taskId: entry.taskId || '',
+    reviewPlanId: entry.reviewPlanId || '',
+    taskName,
+    examType: (entry.examType || examTypeFromName(taskName)).toUpperCase(),
+    durationSeconds,
+    timeType,
+    source,
+    note: entry.note || '',
+    startAt,
+    endAt,
+    createdAt,
+  };
+}
+
+function entriesToTimeLogs(entries: StudyTimeEntry[]): StudyData['timeLogs'] {
+  return entries.reduce<StudyData['timeLogs']>((acc, entry) => {
+    const log: TimeLogEntry = {
+      id: entry.id,
+      date: entry.date,
+      type: entry.timeType === 'review' ? 'review' : 'task',
+      taskId: entry.taskId || '',
+      reviewPlanId: entry.reviewPlanId || '',
+      name: entry.taskName,
+      durationSeconds: entry.durationSeconds,
+      startAt: entry.startAt,
+      endAt: entry.endAt,
+      createdAt: entry.createdAt,
+    };
+    acc[entry.date] = [...(acc[entry.date] || []), log];
+    return acc;
+  }, {});
+}
+
 function normalizeSubItem(item: Partial<SubItem>): SubItem {
   return {
     id: item.id || crypto.randomUUID(),
@@ -219,6 +284,7 @@ function loadRunningTimer(): RunningTimer | null {
       reviewPlanId: timer.reviewPlanId || '',
       name: timer.name || (timer.type === 'review' ? '复习计时' : '任务计时'),
       date: timer.date || todayIso(),
+      firstStartedAt: Number(timer.firstStartedAt || timer.startedAt || Date.now()),
       startedAt: Number(timer.startedAt || Date.now()),
       accumulatedSeconds: Math.max(0, Math.floor(Number(timer.accumulatedSeconds || 0))),
       paused: Boolean(timer.paused),
@@ -241,7 +307,11 @@ const reviewAddTargetInput = ref(5);
 const expandedItemizedTasks = ref<Record<string, boolean>>({});
 const expandedSubItemLists = ref<Record<string, boolean>>({});
 const selectedProgressPhaseId = ref('');
-const reviewTrendRange = ref<7 | 30>(7);
+const progressTrendRange = ref<TrendRange>('7');
+const timeTrendRange = ref<TrendRange>('7');
+const selectedTimePointDate = ref('');
+const showAllTaskProgress = ref(false);
+const showAllTimeEntries = ref(false);
 const selectedNoteDate = ref(todayIso());
 const noteDraft = ref(data.value.dailyNotes?.[todayIso()] || '');
 const importTaskId = ref('');
@@ -250,9 +320,17 @@ const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
 const showTimerModal = ref(Boolean(runningTimer.value));
 const timerEditText = ref('');
 const timerEditDirty = ref(false);
+const manualStudyExamType = ref('RS');
+const manualStudyHours = ref('');
+const manualStudyMinutes = ref('');
+const manualStudySeconds = ref('');
+const manualStudyTimeType = ref<StudyTimeType>('main');
+const manualStudyNote = ref('');
 const nowMs = ref(Date.now());
+const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 let tokenResolver: ((token: string) => void) | null = null;
 let timerInterval: number | undefined;
+let timeTrendChartInstance: ECharts | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
@@ -271,9 +349,10 @@ const ghConfig = computed(() => ({
   path: data.value.settings.githubPath.trim(),
 }));
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
-const todayTimeLogs = computed(() => data.value.timeLogs[todayIso()] || []);
-const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.type === 'task').reduce((sum, log) => sum + log.durationSeconds, 0));
-const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.type === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
+const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
+const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
+const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
+const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayStudySeconds = computed(() => todayTaskSeconds.value + todayReviewSeconds.value);
 const runningTimerSeconds = computed(() => currentTimerSeconds());
 const todayLogByTask = computed(() => {
@@ -315,8 +394,9 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const todayStatus = todayCompleted > dailyTarget ? '超额完成' : doneToday ? '已完成' : '待完成';
   return {
     ...task,
-    accent: taskAccent(index),
+    accent: taskAccentByName(task.name, index),
     initials: taskInitials(task.name),
+    softColor: taskSoftColor(task.name, index),
     totalTarget: taskTotalTarget(task),
     percent: pct(task.completed, taskTotalTarget(task)),
     remaining: taskRemaining(task),
@@ -332,13 +412,16 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
 }));
 const todayTarget = computed(() => todayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(todayLogTotal.value, todayTarget.value));
-const todayTotalTraining = computed(() => todayLogTotal.value + todayReviewDone.value);
+const todayTaskRemaining = computed(() => Math.max(0, todayTarget.value - todayLogTotal.value));
+const completedTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => task.doneToday));
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
   const done = tasks.reduce((sum, task) => sum + task.completed, 0);
   const target = tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0);
-  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index) };
+  const today = todayIso();
+  const status = target > 0 && done >= target ? '已完成' : today < item.startDate ? '未开始' : '当前';
+  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status };
 }));
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
@@ -348,8 +431,9 @@ const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
 
 const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   ...task,
-  accent: taskAccent(index),
+  accent: taskAccentByName(task.name, index),
   initials: taskInitials(task.name),
+  softColor: taskSoftColor(task.name, index),
   totalTarget: taskTotalTarget(task),
   percent: pct(task.completed, taskTotalTarget(task)),
   remaining: taskRemaining(task),
@@ -358,6 +442,7 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
   status: task.completed >= taskTotalTarget(task) ? '完成' : '正常',
 })));
+const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || phaseProgress.value[0]);
 const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
 
@@ -365,42 +450,232 @@ const activePhaseProgress = computed(() => phaseProgress.value.find((item) => it
 const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysBetweenInclusive(todayIso(), activePhaseProgress.value.endDate) : 0);
 
 const trendRows = computed(() => {
-  const rows = Array.from({ length: 7 }, (_, index) => {
-    const date = addDays(todayIso(), index - 6);
+  const rows = dateRangeRows(progressTrendRange.value).map((date) => {
     const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
-    const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
-    return { date, label: date.slice(5), mainTotal, reviewTotal, total: mainTotal + reviewTotal };
+    return { date, label: trendLabel(date, progressTrendRange.value), total: mainTotal };
   });
   const max = Math.max(1, ...rows.map((row) => row.total));
-  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.total / max) * 76)) }));
+  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.total / max) * 88)) }));
 });
 const reviewTrendRows = computed(() => {
-  const days = reviewTrendRange.value;
-  return Array.from({ length: days }, (_, index) => {
-    const date = addDays(todayIso(), index - days + 1);
+  const rows = dateRangeRows('7').map((date) => {
     const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
-    return { date, label: days === 30 ? date.slice(8) : date.slice(5), reviewTotal };
+    return { date, label: trendLabel(date, '7'), reviewTotal };
   });
+  const max = Math.max(1, ...rows.map((row) => row.reviewTotal));
+  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.reviewTotal / max) * 94)) }));
 });
 const timeTrendRows = computed(() => {
-  const rows = Array.from({ length: 7 }, (_, index) => {
-    const date = addDays(todayIso(), index - 6);
-    const totalSeconds = (data.value.timeLogs[date] || []).reduce((sum, log) => sum + log.durationSeconds, 0);
-    return { date, label: date.slice(5), totalSeconds };
+  const rows = dateRangeRows(timeTrendRange.value).map((date) => {
+    const totalSeconds = studyTimeEntries.value.filter((log) => log.date === date).reduce((sum, log) => sum + log.durationSeconds, 0);
+    return { date, label: trendLabel(date, timeTrendRange.value), totalSeconds };
   });
   const max = Math.max(1, ...rows.map((row) => row.totalSeconds));
-  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.totalSeconds / max) * 76)) }));
+  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.totalSeconds / max) * 94)) }));
 });
+const timeByExamTypeRows = computed(() => {
+  const grouped = todayTimeLogs.value
+    .reduce<Record<string, number>>((acc, entry) => {
+      const type = (entry.examType || examTypeFromName(entry.taskName)).toUpperCase();
+      acc[type] = (acc[type] || 0) + entry.durationSeconds;
+      return acc;
+    }, {});
+  return Object.entries(grouped)
+    .map(([type, seconds], index) => ({ type, seconds, color: taskTypeColor(type, index), softColor: taskTypeSoftColor(type, index) }))
+    .sort((a, b) => b.seconds - a.seconds);
+});
+const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
+const todayReviewItems = computed(() => todayReviewPlans.value.map((plan, index) => {
+  const task = data.value.tasks.find((item) => item.id === plan.taskId);
+  const type = taskInitials(plan.taskName);
+  return {
+    ...plan,
+    type,
+    color: taskTypeColor(type, index),
+    softColor: taskTypeSoftColor(type, index),
+    status: plan.completed >= plan.target ? '已复习' : '待复习',
+    familiarity: reviewFamiliarity(task),
+    round: plan.sourceDate === todayIso() ? '手动添加' : `第 ${daysBetweenInclusive(plan.sourceDate, todayIso())} 天`,
+  };
+}));
+
+function timeTrendAxisInterval(rowCount: number) {
+  if (rowCount <= 8) return 0;
+  return Math.max(1, Math.ceil(rowCount / 7) - 1);
+}
+
+function buildTimeTrendChartOption(): EChartsCoreOption {
+  const rows = timeTrendRows.value;
+  const rowByDate = new Map(rows.map((row) => [row.date, row]));
+  const maxSeconds = Math.max(1, ...rows.map((row) => row.totalSeconds));
+  const maxHours = Math.max(3, Math.ceil(maxSeconds / 3600));
+  const intervalHours = maxHours <= 3 ? 1 : Math.ceil(maxHours / 3);
+  const yMax = Math.ceil(maxHours / intervalHours) * intervalHours * 3600;
+  const yInterval = intervalHours * 3600;
+
+  return {
+    animationDuration: 450,
+    grid: {
+      top: 28,
+      right: 18,
+      bottom: 58,
+      left: 60,
+    },
+    tooltip: {
+      trigger: 'axis',
+      triggerOn: 'mousemove|click|mousewheel',
+      confine: true,
+      backgroundColor: '#ffffff',
+      borderColor: '#edf1f7',
+      borderWidth: 1,
+      padding: [10, 12],
+      textStyle: {
+        color: '#617087',
+        fontSize: 14,
+        fontWeight: 400,
+      },
+      extraCssText: 'box-shadow: 0 12px 22px rgba(15, 23, 42, .14); border-radius: 12px;',
+      formatter(params: unknown) {
+        const item = (Array.isArray(params) ? params[0] : params) as { data?: { date?: string; tooltipLabel?: string } } | undefined;
+        const data = item?.data as { date?: string; tooltipLabel?: string } | undefined;
+        if (!data?.date) return '';
+        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#ff6b1a;font-weight:500">${data.tooltipLabel}</strong></div>`;
+      },
+    },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: rows.map((row) => row.date),
+      axisLine: { lineStyle: { color: '#e0e7f1' } },
+      axisTick: { show: false },
+      axisLabel: {
+        interval: timeTrendAxisInterval(rows.length),
+        margin: 14,
+        color: '#617087',
+        fontSize: 15,
+        fontWeight: 400,
+        lineHeight: 21,
+        formatter(value: string) {
+          const row = rowByDate.get(value);
+          return row?.label || value;
+        },
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yMax,
+      interval: yInterval,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: '#dfe5ee',
+          type: 'dashed',
+        },
+      },
+      axisLabel: {
+        color: '#617087',
+        fontSize: 15,
+        fontWeight: 400,
+        formatter(value: number) {
+          if (value === 0) return '0';
+          return `${Math.round(value / 3600)}小时`;
+        },
+      },
+    },
+    series: [
+      {
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 9,
+        showSymbol: true,
+        data: rows.map((row) => ({
+          value: row.totalSeconds,
+          date: row.date,
+          tooltipLabel: formatDurationCompact(row.totalSeconds),
+        })),
+        lineStyle: {
+          color: '#ff6b1a',
+          width: 2.5,
+        },
+        itemStyle: {
+          color: '#ffffff',
+          borderColor: '#ff6b1a',
+          borderWidth: 2.5,
+        },
+        areaStyle: {
+          color: new graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: 'rgba(251, 146, 60, .30)' },
+            { offset: .72, color: 'rgba(251, 146, 60, .10)' },
+            { offset: 1, color: 'rgba(251, 146, 60, 0)' },
+          ]),
+        },
+        emphasis: {
+          scale: true,
+          itemStyle: {
+            color: '#fff7ed',
+            borderWidth: 3,
+          },
+        },
+      },
+    ],
+  };
+}
+
+async function renderTimeTrendChart() {
+  if (tab.value !== 'progress') return;
+  await nextTick();
+  const el = timeTrendChartEl.value;
+  if (!el) return;
+  if (!timeTrendChartInstance || timeTrendChartInstance.isDisposed()) {
+    timeTrendChartInstance = init(el);
+  }
+  const chart = timeTrendChartInstance;
+  chart.setOption(buildTimeTrendChartOption(), true);
+  chart.off('click');
+  chart.on('click', (params) => {
+    const data = params.data as { date?: string } | undefined;
+    if (!data?.date || typeof params.dataIndex !== 'number') return;
+    selectTimePoint(data.date);
+    chart.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: params.dataIndex });
+  });
+  chart.resize();
+}
+
+function resizeTimeTrendChart() {
+  timeTrendChartInstance?.resize();
+}
+
+function disposeTimeTrendChart() {
+  timeTrendChartInstance?.dispose();
+  timeTrendChartInstance = null;
+}
 
 onMounted(() => {
   timerInterval = window.setInterval(() => {
     nowMs.value = Date.now();
   }, 1000);
+  window.addEventListener('resize', resizeTimeTrendChart);
+  void renderTimeTrendChart();
 });
 
 onBeforeUnmount(() => {
   if (timerInterval) window.clearInterval(timerInterval);
+  window.removeEventListener('resize', resizeTimeTrendChart);
+  disposeTimeTrendChart();
 });
+
+watch(tab, (nextTab) => {
+  if (nextTab === 'progress') void renderTimeTrendChart();
+  else disposeTimeTrendChart();
+});
+
+watch(timeTrendRows, () => {
+  void renderTimeTrendChart();
+}, { deep: true });
 
 function saveLocal(next: StudyData) {
   const stamped = { ...normalizeData(next), updatedAt: new Date().toISOString() };
@@ -443,8 +718,12 @@ function timerEntryLabel(type: TimeLogType, id: string) {
 
 function savedTimeSeconds(type: TimeLogType, id: string) {
   return todayTimeLogs.value
-    .filter((log) => log.type === type && (type === 'review' ? log.reviewPlanId === id : log.taskId === id))
+    .filter((log) => log.timeType === (type === 'review' ? 'review' : 'main') && (type === 'review' ? log.reviewPlanId === id : log.taskId === id))
     .reduce((sum, log) => sum + log.durationSeconds, 0);
+}
+
+function selectTimePoint(date: string) {
+  selectedTimePointDate.value = date;
 }
 
 function timerActionLabel() {
@@ -469,6 +748,7 @@ function openTimer(type: TimeLogType, id: string, name: string) {
     reviewPlanId: type === 'review' ? id : '',
     name,
     date: todayIso(),
+    firstStartedAt: timestamp,
     startedAt: timestamp,
     accumulatedSeconds: 0,
     paused: true,
@@ -499,6 +779,7 @@ function resetTimer(paused = true) {
   nowMs.value = timestamp;
   runningTimer.value = {
     ...runningTimer.value,
+    firstStartedAt: timestamp,
     accumulatedSeconds: 0,
     startedAt: timestamp,
     paused,
@@ -536,28 +817,109 @@ function saveRunningTimer() {
   persistRunningTimer();
   if (durationSeconds <= 0) return;
   const date = timer.date || todayIso();
-  const entry: TimeLogEntry = {
+  const endAt = timerEditDirty ? new Date().toISOString() : timerEndAtIso(timer);
+  const startAt = timerEditDirty ? inferStartAt(endAt, durationSeconds) : new Date(timer.firstStartedAt || Date.now()).toISOString();
+  const entry: StudyTimeEntry = {
     id: crypto.randomUUID(),
     date,
-    type: timer.type,
     taskId: timer.taskId || '',
     reviewPlanId: timer.reviewPlanId || '',
-    name: timer.name,
+    taskName: timer.name,
+    examType: examTypeFromName(timer.name),
     durationSeconds,
-    createdAt: new Date().toISOString(),
+    timeType: timer.type === 'review' ? 'review' : 'main',
+    source: 'timer',
+    note: timer.type === 'review' ? '复习计时' : '主任务计时',
+    startAt,
+    endAt,
+    createdAt: endAt,
   };
+  const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
   saveLocal({
     ...data.value,
-    timeLogs: {
-      ...data.value.timeLogs,
-      [date]: [...(data.value.timeLogs[date] || []), entry],
-    },
+    studyTimeEntries,
+    timeLogs: entriesToTimeLogs(studyTimeEntries),
+  });
+}
+
+function addManualStudyTime() {
+  const hours = Number(manualStudyHours.value || 0);
+  const minutes = Number(manualStudyMinutes.value || 0);
+  const seconds = Number(manualStudySeconds.value || 0);
+  const durationSeconds = Math.floor(hours * 3600 + minutes * 60 + seconds);
+  if (
+    !Number.isFinite(hours)
+    || !Number.isFinite(minutes)
+    || !Number.isFinite(seconds)
+    || hours < 0
+    || minutes < 0
+    || seconds < 0
+    || minutes >= 60
+    || seconds >= 60
+    || durationSeconds <= 0
+  ) {
+    alert('请输入有效时长，分钟和秒需小于 60');
+    return;
+  }
+  const examType = manualStudyExamType.value.toUpperCase();
+  const date = todayIso();
+  const endAt = new Date().toISOString();
+  const startAt = inferStartAt(endAt, durationSeconds);
+  const entry: StudyTimeEntry = {
+    id: crypto.randomUUID(),
+    date,
+    taskId: '',
+    reviewPlanId: '',
+    taskName: `${examType} 手动计时`,
+    examType,
+    durationSeconds,
+    timeType: manualStudyTimeType.value,
+    source: 'manual',
+    note: manualStudyNote.value.trim() || '手动添加',
+    startAt,
+    endAt,
+    createdAt: endAt,
+  };
+  const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
+  manualStudyHours.value = '';
+  manualStudyMinutes.value = '';
+  manualStudySeconds.value = '';
+  manualStudyNote.value = '';
+  saveLocal({
+    ...data.value,
+    studyTimeEntries,
+    timeLogs: entriesToTimeLogs(studyTimeEntries),
   });
 }
 
 function deleteTimeLog(date: string, id: string) {
-  const logs = (data.value.timeLogs[date] || []).filter((log) => log.id !== id);
-  saveLocal({ ...data.value, timeLogs: { ...data.value.timeLogs, [date]: logs } });
+  const studyTimeEntries = studyTimeEntriesFromData(data.value).filter((log) => !(log.date === date && log.id === id));
+  saveLocal({ ...data.value, studyTimeEntries, timeLogs: entriesToTimeLogs(studyTimeEntries) });
+}
+
+function inferStartAt(endAt: string, durationSeconds: number) {
+  const endMs = new Date(endAt).getTime();
+  if (!Number.isFinite(endMs)) return endAt;
+  return new Date(endMs - Math.max(0, durationSeconds) * 1000).toISOString();
+}
+
+function timerEndAtIso(timer: RunningTimer) {
+  const timestamp = timer.paused ? timer.startedAt : nowMs.value;
+  return new Date(timestamp).toISOString();
+}
+
+function timerPreviewStartAt(timer: RunningTimer) {
+  const endAt = timerEndAtIso(timer);
+  if (!timerEditDirty.value) return new Date(timer.firstStartedAt || timer.startedAt).toISOString();
+  const durationSeconds = parseDurationInput(timerEditText.value);
+  if (durationSeconds === null) return '';
+  return inferStartAt(endAt, durationSeconds);
+}
+
+function timerPreviewRange(timer: RunningTimer) {
+  const startAt = timerPreviewStartAt(timer);
+  if (!startAt) return '--:-- - --:--';
+  return `${formatClockTime(startAt)}-${formatClockTime(timerEndAtIso(timer))}`;
 }
 
 function formatDuration(seconds: number) {
@@ -570,13 +932,46 @@ function formatDuration(seconds: number) {
 }
 
 function parseDurationInput(value: string) {
-  const text = value.trim();
+  const text = value.trim().toLowerCase();
   if (!text) return null;
-  if (/^\d+$/.test(text)) return Math.max(0, Number(text) * 60);
-  const parts = text.split(':').map((part) => Number(part));
-  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
-  if (parts.length === 2) return Math.floor(parts[0] * 60 + parts[1]);
-  if (parts.length === 3) return Math.floor(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  if (/^\d+$/.test(text)) {
+    if (text.length <= 2) return Math.max(0, Number(text) * 60);
+    const minutesText = text.slice(-2);
+    const hoursText = text.slice(0, -2);
+    const hours = Number(hoursText);
+    const minutes = Number(minutesText);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes) || minutes >= 60) return null;
+    return Math.max(0, hours * 3600 + minutes * 60);
+  }
+
+  const compactTime = text.replace(/\s+/g, '');
+  if (/^\d+:\d{1,2}(:\d{1,2})?$/.test(compactTime)) {
+    const parts = compactTime.split(':').map((part) => Number(part));
+    if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+    if (parts.length === 2) return Math.floor(parts[0] * 60 + parts[1]);
+    if (parts.length === 3) return Math.floor(parts[0] * 3600 + parts[1] * 60 + parts[2]);
+  }
+
+  const spacedParts = text.split(/\s+/).filter(Boolean).map((part) => Number(part));
+  if (spacedParts.length === 2 && spacedParts.every((part) => Number.isFinite(part) && part >= 0)) {
+    return Math.floor(spacedParts[0] * 3600 + spacedParts[1] * 60);
+  }
+
+  const durationPattern = /(\d+(?:\.\d+)?)\s*(小时|时|h|hr|hrs|分钟|分|m|min|mins|秒|s|sec|secs)/g;
+  let total = 0;
+  let matched = false;
+  let match: RegExpExecArray | null;
+  while ((match = durationPattern.exec(text)) !== null) {
+    matched = true;
+    const amount = Number(match[1]);
+    const unit = match[2];
+    if (!Number.isFinite(amount) || amount < 0) return null;
+    if (['小时', '时', 'h', 'hr', 'hrs'].includes(unit)) total += amount * 3600;
+    else if (['分钟', '分', 'm', 'min', 'mins'].includes(unit)) total += amount * 60;
+    else total += amount;
+  }
+  if (matched) return Math.floor(total);
+
   return null;
 }
 
@@ -590,6 +985,27 @@ function formatDurationText(seconds: number) {
   if (minutes > 0) return `${minutes} 分 ${secs} 秒`;
   if (total < 60) return `${total} 秒`;
   return `${total} 秒`;
+}
+
+function formatDurationCompact(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}小时${String(minutes).padStart(2, '0')}分${String(secs).padStart(2, '0')}秒`;
+  return `${minutes}分${String(secs).padStart(2, '0')}秒`;
+}
+
+function formatClockRange(log: StudyTimeEntry) {
+  const endAt = log.endAt || log.createdAt;
+  const startAt = log.startAt || inferStartAt(endAt, log.durationSeconds);
+  return `${formatClockTime(startAt)}-${formatClockTime(endAt)}`;
+}
+
+function formatClockTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--:--';
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function updateSettings(patch: Partial<StudyData['settings']>) {
@@ -1039,17 +1455,97 @@ function addDays(iso: string, days: number) {
   return `${year}-${month}-${day}`;
 }
 
+function dateRangeRows(range: TrendRange) {
+  const today = todayIso();
+  const startDate = range === 'all' ? data.value.settings.startDate : addDays(today, -(Number(range) - 1));
+  const days = daysBetweenInclusive(startDate, today);
+  return Array.from({ length: days }, (_, index) => addDays(startDate, index));
+}
+
+function trendLabel(date: string, range: TrendRange) {
+  return range === 'all' || range === '30' ? date.slice(5) : date.slice(5);
+}
+
+function studyTimeEntriesFromData(source: StudyData) {
+  return normalizeStudyTimeEntries(source.studyTimeEntries, source.timeLogs);
+}
+
 function taskInitials(name: string) {
   const letters = name.match(/[A-Za-z]+/g)?.join('').slice(0, 3);
   return (letters || name.slice(0, 2) || 'T').toUpperCase();
 }
 
+function examTypeFromName(name: string) {
+  return taskInitials(name).slice(0, 3) || 'GEN';
+}
+
+function taskTypeColor(type: string, fallbackIndex = 0) {
+  const key = type.toUpperCase();
+  const colors: Record<string, string> = {
+    RS: '#7A77B9',
+    WE: '#EA7186',
+    DI: '#BD9DEA',
+    RTS: '#5d87c9',
+    FIB: '#23a6b8',
+    WFD: '#d69b18',
+    SST: '#8e6bd8',
+    RL: '#43a875',
+    RA: '#f06d7f',
+    SGD: '#b9842a',
+    SWT: '#8d8386',
+  };
+  return colors[key] || ['#7A77B9', '#EA7186', '#F2C76E', '#BD9DEA', '#8d8386'][fallbackIndex % 5];
+}
+
+function taskTypeSoftColor(type: string, fallbackIndex = 0) {
+  const key = type.toUpperCase();
+  const colors: Record<string, string> = {
+    RS: '#f1effa',
+    WE: '#fff0f2',
+    DI: '#f6efff',
+    RTS: '#eef5ff',
+    FIB: '#eaf9fb',
+    WFD: '#fff7df',
+    SST: '#f3edff',
+    RL: '#edf9f1',
+    RA: '#fff0f4',
+    SGD: '#fff7df',
+    SWT: '#f5f2f2',
+  };
+  return colors[key] || ['#f1effa', '#fff0f2', '#fff7df', '#f6efff', '#f5f2f2'][fallbackIndex % 5];
+}
+
+function taskAccentByName(name: string, fallbackIndex = 0) {
+  return taskTypeColor(taskInitials(name), fallbackIndex);
+}
+
+function taskSoftColor(name: string, fallbackIndex = 0) {
+  return taskTypeSoftColor(taskInitials(name), fallbackIndex);
+}
+
+function timeLogDisplayName(log: StudyTimeEntry) {
+  const type = log.examType.trim();
+  const name = log.taskName.trim();
+  if (!type) return name;
+  return name.replace(new RegExp(`^${type}\\s+`, 'i'), '').trim() || name;
+}
+
 function taskAccent(index: number) {
-  return ['#1167d8', '#12a150', '#f26a00', '#744fd7', '#0f8ca0'][index % 5];
+  return ['#7A77B9', '#EA7186', '#F2C76E', '#BD9DEA', '#8d8386'][index % 5];
 }
 
 function phaseAccent(index: number) {
-  return ['#1167d8', '#12a150', '#f26a00'][index % 3];
+  return ['#7A77B9', '#EA7186', '#F2C76E', '#BD9DEA'][index % 4];
+}
+
+function reviewFamiliarity(task?: Task) {
+  if (!task || task.subItems.length === 0) return '综合';
+  const order: Familiarity[] = ['生', '半熟', '熟', '可默写'];
+  const counts = task.subItems.reduce<Record<string, number>>((acc, item) => {
+    acc[item.familiarity] = (acc[item.familiarity] || 0) + 1;
+    return acc;
+  }, {});
+  return [...order].sort((a, b) => (counts[b] || 0) - (counts[a] || 0))[0] || '综合';
 }
 
 function subItemStatusLabel(status: SubItemStatus) {
@@ -1093,7 +1589,8 @@ function taskDisplayName(task: Task) {
           type="button"
           @click="tab = item.key"
         >
-          {{ item.label }}
+          <span class="nav-emoji" aria-hidden="true">{{ item.icon }}</span>
+          <span>{{ item.label }}</span>
         </button>
       </nav>
       <div class="sidebar-note">
@@ -1120,15 +1617,23 @@ function taskDisplayName(task: Task) {
       </section>
 
       <section class="dashboard-card phase-overview">
-        <h2>阶段进度总览</h2>
-        <div class="phase-overview-grid">
-          <article v-for="item in phaseProgress" :key="item.id" :style="{ '--phase-color': item.accent }">
+        <h2>阶段进度</h2>
+        <div class="phase-overview-grid phase-overview-flow">
+          <article
+            v-for="(item, index) in phaseProgress"
+            :key="item.id"
+            class="phase-step-card"
+            :class="{ current: item.id === activePhaseProgress?.id }"
+            :style="{ '--phase-color': item.accent }"
+          >
+            <span class="phase-index">{{ index + 1 }}</span>
             <strong>{{ item.name }}</strong>
-            <span>{{ item.startDate.slice(5) }} 至 {{ item.endDate.slice(5) }}（{{ item.days }}天）</span>
-            <div class="ring small" :style="{ '--percent': `${item.percent}%`, '--ring-color': item.accent }">
+            <small>{{ item.startDate.slice(5).replace('-', '.') }} - {{ item.endDate.slice(5).replace('-', '.') }}</small>
+            <div class="phase-step-progress">
+              <span class="progress-track"><i :style="{ width: `${item.percent}%`, background: item.accent }" /></span>
               <b>{{ item.percent }}%</b>
             </div>
-            <small>{{ item.done }} / {{ item.target }}</small>
+            <span class="phase-count">{{ item.done }} / {{ item.target }}</span>
           </article>
         </div>
       </section>
@@ -1195,9 +1700,13 @@ function taskDisplayName(task: Task) {
                   {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}
                 </button>
                 <template v-else>
-                  <button type="button" @click="applyManualAmount(task, -1)">-</button>
+                  <button type="button" @click="applyManualAmount(task, -1)">
+                    <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
+                  </button>
                   <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
-                  <button type="button" @click="applyManualAmount(task, 1)">+</button>
+                  <button type="button" @click="applyManualAmount(task, 1)">
+                    <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
+                  </button>
                 </template>
               </span>
             </div>
@@ -1217,7 +1726,10 @@ function taskDisplayName(task: Task) {
                 </div>
                 <p v-else class="muted">今天还没有选择完成篇目。</p>
                 <details v-if="historicalDoneCount(task) > 0" class="history-done">
-                  <summary>此前已完成 {{ historicalDoneCount(task) }} 篇</summary>
+                  <summary>
+                    <ChevronRight class="summary-icon" :size="16" stroke-width="2.6" aria-hidden="true" />
+                    <span>此前已完成 {{ historicalDoneCount(task) }} 篇</span>
+                  </summary>
                   <div v-for="group in historicalDoneGroups(task)" :key="group.date" class="history-done-group">
                     <time>{{ group.date }}</time>
                     <div class="today-done-items compact">
@@ -1242,18 +1754,23 @@ function taskDisplayName(task: Task) {
                       >
                       {{ item.title }}
                     </label>
-                    <select
-                      :value="item.familiarity"
-                      @change="updateTodaySubItemFamiliarity(task, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
-                    >
-                      <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
-                    </select>
+                    <label class="select-control compact-select">
+                      <select
+                        :value="item.familiarity"
+                        @change="updateTodaySubItemFamiliarity(task, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
+                      >
+                        <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
+                      </select>
+                      <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+                    </label>
                   </div>
                 </div>
                 <p v-else-if="task.subItems.length === 0" class="muted">请先在计划设置中新增或批量导入篇目。</p>
                 <p v-else class="muted">所有篇目都已完成，可在左侧完成详情中查看或取消。</p>
                 <button v-if="pendingSubItems(task).length > 10" class="text-button" type="button" @click="toggleSubItemList(task.id)">
-                  {{ expandedSubItemLists[task.id] ? '收起' : `展开未完成（${pendingSubItems(task).length}）⌄` }}
+                  {{ expandedSubItemLists[task.id] ? '收起' : `展开未完成（${pendingSubItems(task).length}）` }}
+                  <ChevronDown v-if="!expandedSubItemLists[task.id]" :size="15" stroke-width="2.4" aria-hidden="true" />
+                  <ChevronRight v-else :size="15" stroke-width="2.4" aria-hidden="true" />
                 </button>
               </section>
             </div>
@@ -1294,14 +1811,20 @@ function taskDisplayName(task: Task) {
           <div class="review-add-panel">
             <strong>新增复习计划</strong>
             <div class="review-add-form">
-              <select v-model="reviewAddDate">
-                <option value="today">今日复习</option>
-                <option value="tomorrow">明日复习</option>
-              </select>
-              <select v-model="reviewAddTaskId">
-                <option value="">选择任务</option>
-                <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ task.name }}</option>
-              </select>
+              <label class="select-control">
+                <select v-model="reviewAddDate">
+                  <option value="today">今日复习</option>
+                  <option value="tomorrow">明日复习</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+              </label>
+              <label class="select-control">
+                <select v-model="reviewAddTaskId">
+                  <option value="">选择任务</option>
+                  <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ task.name }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+              </label>
               <input v-model.number="reviewAddTargetInput" type="number" min="0">
               <button type="button" @click="addReviewPlan">添加</button>
             </div>
@@ -1334,9 +1857,13 @@ function taskDisplayName(task: Task) {
                     <span class="progress-track"><i :style="{ width: `${pct(plan.completed, plan.target)}%`, background: '#7a3ed2' }" /></span>
                   </span>
                   <div class="row-actions review-actions">
-                    <button type="button" @click="addReviewProgress(todayIso(), plan, -1)">-</button>
+                    <button type="button" @click="addReviewProgress(todayIso(), plan, -1)">
+                      <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
+                    </button>
                     <input class="manual-input" type="number" min="0" :value="reviewAmount(plan.id)" @input="setReviewAmount(plan.id, ($event.target as HTMLInputElement).value)">
-                    <button type="button" @click="addReviewProgress(todayIso(), plan, reviewAmount(plan.id))">+</button>
+                    <button type="button" @click="addReviewProgress(todayIso(), plan, reviewAmount(plan.id))">
+                      <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
+                    </button>
                   </div>
                   <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
                 </div>
@@ -1367,9 +1894,12 @@ function taskDisplayName(task: Task) {
         <div class="dashboard-title">
           <h2>总进度详情</h2>
           <label class="phase-filter">阶段
-            <select v-model="selectedProgressPhaseId">
-              <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}</option>
-            </select>
+            <span class="select-control">
+              <select v-model="selectedProgressPhaseId">
+                <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}</option>
+              </select>
+              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+            </span>
           </label>
         </div>
         <div class="dashboard-table detail-table">
@@ -1400,118 +1930,200 @@ function taskDisplayName(task: Task) {
         </div>
       </section>
     </section>
-    <section v-else-if="tab === 'progress'" class="page">
-      <div class="progress-layout">
-        <section class="panel hero-progress">
-          <div class="ring" :style="{ '--percent': `${overallPercent}%` }">
-            <strong>{{ overallPercent }}%</strong>
+    <section v-else-if="tab === 'progress'" class="page progress-page">
+      <div class="progress-page-head">
+        <div>
+          <h2>进度总览与数据统计</h2>
+          <p>温和复盘每一天的主任务、复习训练和学习时长。</p>
+        </div>
+        <div class="plan-summary-pills">
+          <span>计划周期 <strong>{{ data.settings.startDate }} ~ {{ data.settings.deadline }}</strong></span>
+          <span>计划剩余天数 <strong>{{ daysLeft }} 天</strong></span>
+        </div>
+      </div>
+
+      <div class="progress-layout progress-dashboard">
+        <section class="panel hero-progress warm-card">
+          <div class="overview-ring-block">
+            <div class="ring warm-ring" :style="{ '--percent': `${overallPercent}%` }">
+              <strong>{{ overallPercent }}%</strong>
+            </div>
+            <div>
+              <strong>总进度</strong>
+              <span>总体完成率</span>
+            </div>
           </div>
-          <div>
-            <p>总进度</p>
+          <div class="overview-numbers">
+            <span>已完成 / 总任务</span>
             <h2>{{ overallDone }} <small>/ {{ overallTarget }}</small></h2>
-            <span>{{ overallPercent }}%</span>
-            <p>已完成 {{ overallDone }} 项/页，共 {{ overallTarget }} 项/页</p>
+            <div>
+              <article><small>已完成任务数</small><strong>{{ overallDone }}</strong></article>
+              <article><small>剩余任务数</small><strong>{{ totalRemaining }}</strong></article>
+              <article><small>总任务数</small><strong>{{ overallTarget }}</strong></article>
+            </div>
           </div>
-          <div class="trend-card">
-            <h3>近 7 天完成趋势</h3>
-            <div class="bars">
+          <div class="trend-card warm-trend">
+            <div class="chart-head">
+              <h3>近期完成趋势</h3>
+              <div class="segmented compact">
+                <button type="button" :class="{ active: progressTrendRange === '7' }" @click="progressTrendRange = '7'">近 7 天</button>
+                <button type="button" :class="{ active: progressTrendRange === '30' }" @click="progressTrendRange = '30'">近 30 天</button>
+                <button type="button" :class="{ active: progressTrendRange === 'all' }" @click="progressTrendRange = 'all'">全部</button>
+              </div>
+            </div>
+            <div class="bars soft-bars" :class="{ dense: trendRows.length > 12 }">
               <div v-for="row in trendRows" :key="row.date">
                 <span :style="{ height: `${row.height}px` }" />
                 <small>{{ row.label }}</small>
               </div>
             </div>
-            <p class="trend-caption">主任务 + 复习任务总训练量</p>
           </div>
         </section>
 
-        <section class="panel review-progress-card">
+        <section class="panel progress-module review-progress-card">
           <div class="section-heading">
             <div>
               <h2>复习训练</h2>
-              <p class="muted">复习完成量独立统计；今日总练习量 = 主任务完成量 + 复习完成量。</p>
+              <p class="muted">复习独立统计，不计入主任务完成量。</p>
             </div>
-            <div class="segmented compact">
-              <button type="button" :class="{ active: reviewTrendRange === 7 }" @click="reviewTrendRange = 7">近7天</button>
-              <button type="button" :class="{ active: reviewTrendRange === 30 }" @click="reviewTrendRange = 30">近30天</button>
-            </div>
+            <span class="range-chip">近 7 天</span>
           </div>
-          <div class="review-stats">
-            <article><span>今日主任务完成</span><strong>{{ todayLogTotal }}</strong></article>
-            <article><span>今日复习完成</span><strong>{{ todayReviewDone }} / {{ todayReviewTarget }}</strong></article>
+          <div class="review-stats soft-stats">
+            <article><span>今日待复习</span><strong>{{ todayReviewTarget }}</strong></article>
+            <article><span>今日已复习</span><strong>{{ todayReviewDone }}</strong></article>
             <article><span>明日待复习</span><strong>{{ tomorrowReviewTarget }}</strong></article>
-            <article><span>今日总训练量</span><strong>{{ todayTotalTraining }}</strong></article>
+            <article><span>复习完成率</span><strong>{{ pct(todayReviewDone, todayReviewTarget) }}%</strong></article>
           </div>
-          <div class="review-trend" :class="{ monthly: reviewTrendRange === 30 }">
+          <div class="review-trend soft-line-bars" :class="{ monthly: reviewTrendRows.length > 12 }">
             <article v-for="row in reviewTrendRows" :key="`${row.date}-review`">
-              <span>{{ row.label }}</span>
+              <span :style="{ height: `${row.height}px` }" />
               <strong>{{ row.reviewTotal }}</strong>
-              <small>复习量</small>
+              <small>{{ row.label }}</small>
             </article>
+          </div>
+          <div class="review-items-block">
+            <h3>今日复习题目</h3>
+            <div v-if="todayReviewItems.length" class="review-item-list">
+              <article v-for="item in todayReviewItems" :key="`${item.id}-review-item`">
+                <span class="type-badge" :style="{ color: item.color, background: item.softColor }">{{ item.type }}</span>
+                <div>
+                  <strong>{{ item.taskName }} 复习</strong>
+                  <small>{{ item.completed }} / {{ item.target }} · {{ item.round }}</small>
+                </div>
+                <em :class="item.status === '已复习' ? 'status-ok' : 'status-warn'">{{ item.status }}</em>
+                <b>{{ item.familiarity }}</b>
+              </article>
+            </div>
+            <p v-else class="soft-empty">今天暂无复习题目，可以去主任务推进一点。</p>
           </div>
         </section>
 
-        <section class="panel time-progress-card">
+        <section class="panel progress-module time-progress-card">
           <div class="section-heading">
             <div>
               <h2>学习时长</h2>
-              <p class="muted">主任务和复习任务分别计时，运行中的计时只保存在本机。</p>
+              <p class="muted">从每次学习时长流水汇总，删除记录后自动重算。</p>
+            </div>
+            <div class="segmented compact">
+              <button type="button" :class="{ active: timeTrendRange === '7' }" @click="timeTrendRange = '7'">近 7 天</button>
+              <button type="button" :class="{ active: timeTrendRange === '30' }" @click="timeTrendRange = '30'">近 30 天</button>
+              <button type="button" :class="{ active: timeTrendRange === 'all' }" @click="timeTrendRange = 'all'">全部</button>
             </div>
           </div>
-          <div class="review-stats">
-            <article><span>今日主任务</span><strong>{{ formatDurationText(todayTaskSeconds) }}</strong></article>
-            <article><span>今日复习</span><strong>{{ formatDurationText(todayReviewSeconds) }}</strong></article>
-            <article><span>今日总计</span><strong>{{ formatDurationText(todayStudySeconds) }}</strong></article>
+          <div class="time-line-chart" :class="{ dense: timeTrendRows.length > 12 }">
+            <div class="time-chart-title"><span aria-hidden="true">📈</span><strong>{{ timeTrendRange === '7' ? '近 7 天' : timeTrendRange === '30' ? '近 30 天' : '全部' }}学习时长趋势</strong></div>
+            <div ref="timeTrendChartEl" class="time-echarts" role="img" aria-label="学习时长趋势图" />
           </div>
-          <div class="time-trend">
-            <div v-for="row in timeTrendRows" :key="`${row.date}-time`">
-              <span :style="{ height: `${row.height}px` }" />
-              <small>{{ row.label }}</small>
-              <b>{{ formatDurationText(row.totalSeconds) }}</b>
+          <div class="review-stats soft-stats time-stats">
+            <article><span>今日主任务时长</span><strong>{{ formatDurationCompact(todayTaskSeconds) }}</strong></article>
+            <article><span>今日复习时长</span><strong>{{ formatDurationCompact(todayReviewSeconds) }}</strong></article>
+            <article><span>今日总计</span><strong>{{ formatDurationCompact(todayStudySeconds) }}</strong></article>
+          </div>
+          <div class="time-type-grid">
+            <article v-for="row in timeByExamTypeRows" :key="row.type" :style="{ '--type-color': row.color, '--type-soft': row.softColor }">
+              <span>{{ row.type }}</span>
+              <strong>{{ formatDurationCompact(row.seconds) }}</strong>
+            </article>
+            <p v-if="timeByExamTypeRows.length === 0" class="soft-empty">今天还没有学习时长记录。</p>
+          </div>
+          <div class="time-log-block">
+            <div class="chart-head">
+              <h3>今日添加记录</h3>
+              <button v-if="recentTodayTimeEntries.length > 5" class="text-button expand-button" type="button" @click="showAllTimeEntries = !showAllTimeEntries">
+                {{ showAllTimeEntries ? '收起' : '展开全部' }}
+              </button>
+              <form class="manual-time-form" @submit.prevent="addManualStudyTime">
+                <label class="select-control">
+                  <select v-model="manualStudyExamType" aria-label="题型">
+                    <option v-for="type in examTypeOptions" :key="type" :value="type">{{ type }}</option>
+                  </select>
+                  <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+                </label>
+                <div class="duration-split-input" aria-label="学习时长">
+                  <input v-model="manualStudyHours" aria-label="小时" type="number" inputmode="numeric" min="0" placeholder="时">
+                  <input v-model="manualStudyMinutes" aria-label="分钟" type="number" inputmode="numeric" min="0" max="59" placeholder="分">
+                  <input v-model="manualStudySeconds" aria-label="秒" type="number" inputmode="numeric" min="0" max="59" placeholder="秒">
+                </div>
+                <label class="select-control">
+                  <select v-model="manualStudyTimeType" aria-label="类型">
+                    <option value="main">主任务</option>
+                    <option value="review">复习</option>
+                  </select>
+                  <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+                </label>
+                <button type="submit">添加</button>
+              </form>
             </div>
+            <div v-if="visibleTodayTimeEntries.length" class="time-log-list rich-time-log-list">
+              <article v-for="log in visibleTodayTimeEntries" :key="log.id">
+                <span class="type-badge time-log-type" :style="{ color: taskTypeColor(log.examType), background: taskTypeSoftColor(log.examType) }">{{ log.examType }}</span>
+                <strong class="time-log-title">{{ timeLogDisplayName(log) }}</strong>
+                <time class="time-log-range">{{ formatClockRange(log) }}</time>
+                <span class="time-log-duration">{{ formatDurationCompact(log.durationSeconds) }}</span>
+                <small class="time-log-kind">{{ log.timeType === 'review' ? '复习' : '主任务' }}</small>
+                <button class="trash-button" type="button" title="删除记录" @click="deleteTimeLog(log.date, log.id)">
+                  <X :size="17" stroke-width="3" aria-hidden="true" />
+                </button>
+              </article>
+            </div>
+            <p v-else class="soft-empty">今天还没有添加学习时长记录。</p>
           </div>
-          <div v-if="todayTimeLogs.length" class="time-log-list">
-            <article v-for="log in todayTimeLogs" :key="log.id">
+        </section>
+
+        <section class="panel progress-module phase-progress-module">
+          <h2>阶段进度</h2>
+          <div class="phase-progress-list">
+            <article v-for="item in phaseProgress" :key="item.id" :style="{ '--phase-color': item.accent }">
               <div>
-                <strong>{{ log.name }}</strong>
-                <small>{{ log.type === 'review' ? '复习' : '主任务' }}</small>
+                <strong>{{ item.name }}</strong>
+                <em :class="item.status === '已完成' ? 'status-ok' : item.status === '当前' ? 'status-extra' : 'status-warn'">{{ item.status }}</em>
               </div>
-              <span>{{ formatDurationText(log.durationSeconds) }}</span>
-              <button type="button" @click="deleteTimeLog(log.date, log.id)">删除</button>
+              <small>{{ item.startDate }} ~ {{ item.endDate }}</small>
+              <span>{{ item.done }} / {{ item.target }}</span>
+              <div class="progress slim"><span :style="{ width: `${item.percent}%`, background: item.accent }" /></div>
+              <b>{{ item.percent }}%</b>
             </article>
           </div>
         </section>
 
-        <section class="panel">
-          <h2>阶段进度</h2>
-          <article v-for="item in phaseProgress" :key="item.id" class="compact-row">
-            <div>
-              <strong>{{ item.name }}</strong>
-              <small>{{ item.done }} / {{ item.target }}</small>
-            </div>
-            <div class="progress slim"><span :style="{ width: `${item.percent}%`, background: item.accent }" /></div>
-            <b>{{ item.percent }}%</b>
-          </article>
-        </section>
-
-        <section class="panel">
-          <h2>题型任务进度</h2>
-          <article v-for="task in taskProgressRows" :key="task.id" class="compact-row task-compact">
-            <div class="mini-badge" :style="{ background: task.accent }">{{ task.initials }}</div>
-            <div>
-              <strong>{{ task.name }}</strong>
-              <small>{{ task.completed }} / {{ task.totalTarget }}<template v-if="task.repeatCount > 1"> · 第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</template></small>
-            </div>
-            <div class="progress slim"><span :style="{ width: `${task.percent}%`, background: task.accent }" /></div>
-            <b>{{ task.percent }}%</b>
-          </article>
+        <section class="panel progress-module task-progress-module">
+          <div class="section-heading">
+            <h2>题型任务进度</h2>
+            <button v-if="taskProgressRows.length > 6" class="text-button expand-button" type="button" @click="showAllTaskProgress = !showAllTaskProgress">
+              {{ showAllTaskProgress ? '收起' : '展开全部' }}
+            </button>
+          </div>
+          <div class="task-progress-list">
+            <article v-for="task in visibleTaskProgressRows" :key="task.id">
+              <span class="type-badge" :style="{ color: task.accent, background: task.softColor }">{{ task.initials }}</span>
+              <div>
+                <strong>{{ task.name }}</strong>
+                <small>{{ task.completed }} / {{ task.totalTarget }}<template v-if="task.repeatCount > 1"> · 第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</template></small>
+              </div>
+              <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
+            </article>
+          </div>
           <p v-if="taskProgressRows.length === 0" class="muted">暂无任务，整体进度按 0% 显示。</p>
-        </section>
-
-        <section class="panel stat-strip">
-          <article><span>当前总任务</span><strong>{{ overallTarget }}</strong></article>
-          <article><span>已完成</span><strong>{{ overallDone }}</strong></article>
-          <article><span>剩余</span><strong>{{ totalRemaining }}</strong></article>
-          <article><span>计划总天数</span><strong>{{ daysLeft }} 天</strong></article>
         </section>
       </div>
     </section>
@@ -1558,15 +2170,24 @@ function taskDisplayName(task: Task) {
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
               <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
-              <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
-                <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
-              </select>
-              <select :value="task.frequencyType" @change="updateTask(task.id, { frequencyType: ($event.target as HTMLSelectElement).value as FrequencyType })">
-                <option v-for="frequencyType in frequencyTypes" :key="frequencyType" :value="frequencyType">{{ frequencyType }}</option>
-              </select>
-              <select :value="task.trackingMode" @change="updateTask(task.id, { trackingMode: ($event.target as HTMLSelectElement).value as TrackingMode })">
-                <option v-for="mode in trackingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
-              </select>
+              <label class="select-control table-select">
+                <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
+                  <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+              </label>
+              <label class="select-control table-select">
+                <select :value="task.frequencyType" @change="updateTask(task.id, { frequencyType: ($event.target as HTMLSelectElement).value as FrequencyType })">
+                  <option v-for="frequencyType in frequencyTypes" :key="frequencyType" :value="frequencyType">{{ frequencyType }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+              </label>
+              <label class="select-control table-select">
+                <select :value="task.trackingMode" @change="updateTask(task.id, { trackingMode: ($event.target as HTMLSelectElement).value as TrackingMode })">
+                  <option v-for="mode in trackingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+              </label>
               <div class="task-date-control" :class="{ expanded: task.startDate || task.endDate }">
                 <label class="task-date-toggle">
                   <input
@@ -1693,6 +2314,10 @@ function taskDisplayName(task: Task) {
         <span class="timer-type">{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
         <h3>{{ runningTimer.name }}</h3>
         <strong class="timer-display">{{ formatDuration(currentTimerSeconds()) }}</strong>
+        <div class="timer-time-range">
+          <span>计时时段</span>
+          <strong>{{ timerPreviewRange(runningTimer) }}</strong>
+        </div>
         <p>{{ runningTimer.paused ? '已暂停，可以重置或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
         <label class="timer-edit-field">保存时长
           <input

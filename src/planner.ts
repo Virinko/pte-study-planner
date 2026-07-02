@@ -25,6 +25,7 @@ export function defaultData(): StudyData {
     dailyNotes: {},
     reviewPlans: {},
     timeLogs: {},
+    studyTimeEntries: [],
   };
 }
 
