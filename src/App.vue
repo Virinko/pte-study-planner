@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { LineChart } from 'echarts/charts';
+import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { CalendarDays, ChevronDown, ChevronRight, Flag, Hourglass, Minus, Plus, X } from '@lucide/vue';
+import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Flag, Hourglass, Minus, PencilLine, Plus, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
 import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
-use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
+use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
@@ -327,9 +327,13 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const nowMs = ref(Date.now());
+const progressTrendChartEl = ref<HTMLDivElement | null>(null);
+const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 let tokenResolver: ((token: string) => void) | null = null;
 let timerInterval: number | undefined;
+let progressTrendChartInstance: ECharts | null = null;
+let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
@@ -377,6 +381,15 @@ const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum 
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
+const planTotalDays = computed(() => daysBetweenInclusive(data.value.settings.startDate, data.value.settings.deadline));
+const planRemainingDays = computed(() => {
+  const today = todayIso();
+  if (today < data.value.settings.startDate) return planTotalDays.value;
+  if (today > data.value.settings.deadline) return 0;
+  return daysBetweenInclusive(today, data.value.settings.deadline);
+});
+const planElapsedDays = computed(() => Math.max(0, planTotalDays.value - planRemainingDays.value));
+const planTimePercent = computed(() => pct(planElapsedDays.value, planTotalDays.value));
 const estimatedHours = computed(() => Math.max(0.5, Math.round(todayTarget.value * 3.5) / 10));
 const lastSyncedAt = computed(() => data.value.updatedAt ? new Date(data.value.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
 const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
@@ -505,6 +518,170 @@ function timeTrendAxisInterval(rowCount: number) {
   return Math.max(1, Math.ceil(rowCount / 7) - 1);
 }
 
+function buildProgressTrendChartOption(): EChartsCoreOption {
+  const rows = trendRows.value;
+  const max = Math.max(5, ...rows.map((row) => row.total));
+  const interval = max <= 5 ? 1 : Math.ceil(max / 4);
+  const yMax = Math.ceil(max / interval) * interval;
+
+  return {
+    animationDuration: 450,
+    grid: {
+      top: 20,
+      right: 16,
+      bottom: 40,
+      left: 28,
+    },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: '#ffffff',
+      borderColor: '#edf1f7',
+      borderWidth: 1,
+      padding: [8, 10],
+      textStyle: {
+        color: '#617087',
+        fontSize: 12,
+        fontWeight: 400,
+      },
+      extraCssText: 'box-shadow: 0 10px 20px rgba(15, 23, 42, .12); border-radius: 10px;',
+      formatter(params: unknown) {
+        const item = (Array.isArray(params) ? params[0] : params) as { data?: { date?: string; value?: number } } | undefined;
+        const data = item?.data;
+        if (!data?.date) return '';
+        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#5f7df2;font-weight:500">${data.value || 0} 项</strong></div>`;
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: rows.map((row) => row.label),
+      axisLine: { lineStyle: { color: '#e0e7f1' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#667389',
+        fontSize: rows.length > 12 ? 10 : 12,
+        fontWeight: 600,
+        margin: 10,
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yMax,
+      interval,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: '#e6ebf4',
+          type: 'solid',
+        },
+      },
+    },
+    series: [
+      {
+        type: 'bar',
+        barWidth: rows.length > 12 ? 11 : 18,
+        data: rows.map((row) => ({
+          value: row.total,
+          date: row.date,
+        })),
+        itemStyle: {
+          color: '#6f95f7',
+          borderRadius: [9, 9, 0, 0],
+        },
+      },
+    ],
+  };
+}
+
+function buildReviewTrendChartOption(): EChartsCoreOption {
+  const rows = reviewTrendRows.value;
+  const max = Math.max(5, ...rows.map((row) => row.reviewTotal));
+  const interval = max <= 5 ? 1 : Math.ceil(max / 4);
+  const yMax = Math.ceil(max / interval) * interval;
+
+  return {
+    animationDuration: 450,
+    grid: {
+      top: 24,
+      right: 16,
+      bottom: 42,
+      left: 26,
+    },
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: '#ffffff',
+      borderColor: '#edf1f7',
+      borderWidth: 1,
+      padding: [8, 10],
+      textStyle: {
+        color: '#617087',
+        fontSize: 12,
+        fontWeight: 400,
+      },
+      extraCssText: 'box-shadow: 0 10px 20px rgba(15, 23, 42, .12); border-radius: 10px;',
+      formatter(params: unknown) {
+        const item = (Array.isArray(params) ? params[0] : params) as { data?: { date?: string; value?: number } } | undefined;
+        const data = item?.data;
+        if (!data?.date) return '';
+        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#7d5df2;font-weight:500">${data.value || 0} 题</strong></div>`;
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: rows.map((row) => row.label),
+      axisLine: { lineStyle: { color: '#e0e7f1' } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: '#667389',
+        fontSize: 12,
+        fontWeight: 600,
+        margin: 10,
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yMax,
+      interval,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: '#e6ebf4',
+          type: 'solid',
+        },
+      },
+    },
+    series: [
+      {
+        type: 'bar',
+        barWidth: 18,
+        data: rows.map((row) => ({
+          value: row.reviewTotal,
+          date: row.date,
+        })),
+        label: {
+          show: true,
+          position: 'bottom',
+          distance: 2,
+          color: '#7d5df2',
+          fontSize: 12,
+          fontWeight: 700,
+        },
+        itemStyle: {
+          color: '#8b5cf6',
+          borderRadius: [9, 9, 0, 0],
+        },
+      },
+    ],
+  };
+}
+
 function buildTimeTrendChartOption(): EChartsCoreOption {
   const rows = timeTrendRows.value;
   const rowByDate = new Map(rows.map((row) => [row.date, row]));
@@ -590,7 +767,7 @@ function buildTimeTrendChartOption(): EChartsCoreOption {
         type: 'line',
         smooth: true,
         symbol: 'circle',
-        symbolSize: 9,
+        symbolSize: 6,
         showSymbol: true,
         data: rows.map((row) => ({
           value: row.totalSeconds,
@@ -604,7 +781,7 @@ function buildTimeTrendChartOption(): EChartsCoreOption {
         itemStyle: {
           color: '#ffffff',
           borderColor: '#ff6b1a',
-          borderWidth: 2.5,
+          borderWidth: 2,
         },
         areaStyle: {
           color: new graphic.LinearGradient(0, 0, 0, 1, [
@@ -617,7 +794,7 @@ function buildTimeTrendChartOption(): EChartsCoreOption {
           scale: true,
           itemStyle: {
             color: '#fff7ed',
-            borderWidth: 3,
+            borderWidth: 2.5,
           },
         },
       },
@@ -645,11 +822,47 @@ async function renderTimeTrendChart() {
   chart.resize();
 }
 
-function resizeTimeTrendChart() {
+async function renderProgressTrendChart() {
+  if (tab.value !== 'progress') return;
+  await nextTick();
+  const el = progressTrendChartEl.value;
+  if (!el) return;
+  if (!progressTrendChartInstance || progressTrendChartInstance.isDisposed()) {
+    progressTrendChartInstance = init(el);
+  }
+  progressTrendChartInstance.setOption(buildProgressTrendChartOption(), true);
+  progressTrendChartInstance.resize();
+}
+
+async function renderReviewTrendChart() {
+  if (tab.value !== 'progress') return;
+  await nextTick();
+  const el = reviewTrendChartEl.value;
+  if (!el) return;
+  if (!reviewTrendChartInstance || reviewTrendChartInstance.isDisposed()) {
+    reviewTrendChartInstance = init(el);
+  }
+  reviewTrendChartInstance.setOption(buildReviewTrendChartOption(), true);
+  reviewTrendChartInstance.resize();
+}
+
+function renderProgressCharts() {
+  void renderProgressTrendChart();
+  void renderReviewTrendChart();
+  void renderTimeTrendChart();
+}
+
+function resizeProgressCharts() {
+  progressTrendChartInstance?.resize();
+  reviewTrendChartInstance?.resize();
   timeTrendChartInstance?.resize();
 }
 
-function disposeTimeTrendChart() {
+function disposeProgressCharts() {
+  progressTrendChartInstance?.dispose();
+  progressTrendChartInstance = null;
+  reviewTrendChartInstance?.dispose();
+  reviewTrendChartInstance = null;
   timeTrendChartInstance?.dispose();
   timeTrendChartInstance = null;
 }
@@ -658,20 +871,28 @@ onMounted(() => {
   timerInterval = window.setInterval(() => {
     nowMs.value = Date.now();
   }, 1000);
-  window.addEventListener('resize', resizeTimeTrendChart);
-  void renderTimeTrendChart();
+  window.addEventListener('resize', resizeProgressCharts);
+  renderProgressCharts();
 });
 
 onBeforeUnmount(() => {
   if (timerInterval) window.clearInterval(timerInterval);
-  window.removeEventListener('resize', resizeTimeTrendChart);
-  disposeTimeTrendChart();
+  window.removeEventListener('resize', resizeProgressCharts);
+  disposeProgressCharts();
 });
 
 watch(tab, (nextTab) => {
-  if (nextTab === 'progress') void renderTimeTrendChart();
-  else disposeTimeTrendChart();
+  if (nextTab === 'progress') renderProgressCharts();
+  else disposeProgressCharts();
 });
+
+watch(trendRows, () => {
+  void renderProgressTrendChart();
+}, { deep: true });
+
+watch(reviewTrendRows, () => {
+  void renderReviewTrendChart();
+}, { deep: true });
 
 watch(timeTrendRows, () => {
   void renderTimeTrendChart();
@@ -1974,12 +2195,7 @@ function taskDisplayName(task: Task) {
                 <button type="button" :class="{ active: progressTrendRange === 'all' }" @click="progressTrendRange = 'all'">全部</button>
               </div>
             </div>
-            <div class="bars soft-bars" :class="{ dense: trendRows.length > 12 }">
-              <div v-for="row in trendRows" :key="row.date">
-                <span :style="{ height: `${row.height}px` }" />
-                <small>{{ row.label }}</small>
-              </div>
-            </div>
+            <div ref="progressTrendChartEl" class="progress-trend-echarts" role="img" aria-label="近期完成趋势图" />
           </div>
         </section>
 
@@ -1997,13 +2213,7 @@ function taskDisplayName(task: Task) {
             <article><span>明日待复习</span><strong>{{ tomorrowReviewTarget }}</strong></article>
             <article><span>复习完成率</span><strong>{{ pct(todayReviewDone, todayReviewTarget) }}%</strong></article>
           </div>
-          <div class="review-trend soft-line-bars" :class="{ monthly: reviewTrendRows.length > 12 }">
-            <article v-for="row in reviewTrendRows" :key="`${row.date}-review`">
-              <span :style="{ height: `${row.height}px` }" />
-              <strong>{{ row.reviewTotal }}</strong>
-              <small>{{ row.label }}</small>
-            </article>
-          </div>
+          <div ref="reviewTrendChartEl" class="review-echarts" role="img" aria-label="近 7 天复习趋势图" />
           <div class="review-items-block">
             <h3>今日复习题目</h3>
             <div v-if="todayReviewItems.length" class="review-item-list">
@@ -2034,7 +2244,7 @@ function taskDisplayName(task: Task) {
             </div>
           </div>
           <div class="time-line-chart" :class="{ dense: timeTrendRows.length > 12 }">
-            <div class="time-chart-title"><span aria-hidden="true">📈</span><strong>{{ timeTrendRange === '7' ? '近 7 天' : timeTrendRange === '30' ? '近 30 天' : '全部' }}学习时长趋势</strong></div>
+            <div class="time-chart-title"><span aria-hidden="true"><TrendingUp :size="18" stroke-width="2.4" /></span><strong>{{ timeTrendRange === '7' ? '近 7 天' : timeTrendRange === '30' ? '近 30 天' : '全部' }}学习时长趋势</strong></div>
             <div ref="timeTrendChartEl" class="time-echarts" role="img" aria-label="学习时长趋势图" />
           </div>
           <div class="review-stats soft-stats time-stats">
@@ -2132,33 +2342,95 @@ function taskDisplayName(task: Task) {
     </section>
 
     <section v-else-if="tab === 'settings'" class="page">
-      <div class="settings-grid">
-        <label class="setting-card">开始日期<input type="date" :value="data.settings.startDate" @input="updateSettings({ startDate: ($event.target as HTMLInputElement).value })"></label>
-        <label class="setting-card">最终截止日期<input type="date" :value="data.settings.deadline" @input="updateSettings({ deadline: ($event.target as HTMLInputElement).value })"></label>
-        <label class="setting-card">缓冲天数<input type="number" :value="data.settings.bufferDays" @input="updateSettings({ bufferDays: Number(($event.target as HTMLInputElement).value) })"></label>
-      </div>
+      <section class="settings-planner-panel">
+        <div class="settings-hero">
+          <span class="settings-hero-icon"><CalendarDays :size="30" stroke-width="2.3" aria-hidden="true" /></span>
+          <div>
+            <h2>备考计划设置</h2>
+            <p>科学规划备考周期与阶段任务，合理分配时间，高效达成学习目标。</p>
+          </div>
+        </div>
 
-      <section class="panel">
-        <div class="section-heading">
-          <h2>阶段</h2>
+        <div class="settings-subheading">
+          <CalendarDays :size="18" stroke-width="2.4" aria-hidden="true" />
+          <h3>计划周期</h3>
+        </div>
+        <div class="settings-cycle-card">
+          <label class="settings-date-field">开始日期
+            <span class="settings-input-shell">
+              <CalendarDays :size="16" stroke-width="2.4" aria-hidden="true" />
+              <input type="date" :value="data.settings.startDate" @input="updateSettings({ startDate: ($event.target as HTMLInputElement).value })">
+            </span>
+          </label>
+          <label class="settings-date-field">结束日期
+            <span class="settings-input-shell">
+              <CalendarDays :size="16" stroke-width="2.4" aria-hidden="true" />
+              <input type="date" :value="data.settings.deadline" @input="updateSettings({ deadline: ($event.target as HTMLInputElement).value })">
+            </span>
+          </label>
+          <div class="settings-stat-card">
+            <span class="settings-stat-icon purple"><CalendarDays :size="23" stroke-width="2.4" aria-hidden="true" /></span>
+            <div>
+              <span>计划总天数</span>
+              <strong>{{ planTotalDays }} <small>天</small></strong>
+            </div>
+          </div>
+          <div class="settings-stat-card">
+            <span class="settings-stat-icon teal"><Hourglass :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+            <div>
+              <span>剩余天数</span>
+              <strong>{{ planRemainingDays }} <small>天</small></strong>
+            </div>
+          </div>
+          <div class="settings-progress-stat">
+            <div>
+              <span>完成进度</span>
+              <strong>{{ planTimePercent }}%</strong>
+            </div>
+            <span class="settings-progress-track"><i :style="{ width: `${planTimePercent}%` }" /></span>
+            <p><span>已学习 {{ planElapsedDays }} 天/阶段</span><span>{{ planRemainingDays }} 天/未完成</span></p>
+          </div>
+        </div>
+
+        <div class="section-heading settings-phase-heading">
+          <div class="settings-subheading">
+            <Flag :size="18" stroke-width="2.4" aria-hidden="true" />
+            <h3>阶段安排</h3>
+          </div>
           <button class="ghost strong" type="button" @click="addPhase">+ 新增阶段</button>
         </div>
         <div class="phase-cards">
-          <article v-for="(item, index) in phaseProgress" :key="item.id" class="phase-card" :style="{ borderColor: item.accent }">
-            <input :value="item.name" @input="updatePhase(item.id, { name: ($event.target as HTMLInputElement).value })">
-            <div class="phase-date-grid">
-              <label>开始日期<input type="date" :value="item.startDate" @input="updatePhase(item.id, { startDate: ($event.target as HTMLInputElement).value })"></label>
-              <label>结束日期<input type="date" :value="item.endDate" @input="updatePhase(item.id, { endDate: ($event.target as HTMLInputElement).value })"></label>
+          <article v-for="(item, index) in phaseProgress" :key="item.id" class="phase-card" :style="{ '--phase-color': item.accent }">
+            <div class="phase-card-title">
+              <span class="phase-card-index">{{ index + 1 }}</span>
+              <span class="phase-name-shell">
+                <input :value="item.name" @input="updatePhase(item.id, { name: ($event.target as HTMLInputElement).value })">
+                <PencilLine :size="15" stroke-width="2.3" aria-hidden="true" />
+              </span>
+              <span class="phase-days-pill">阶段天数 {{ item.days }} 天</span>
             </div>
-            <p>阶段天数 <strong>{{ item.days }} 天</strong></p>
-            <small>今日建议量会按本阶段剩余天数动态均摊。</small>
-            <button class="text-button" type="button" @click="deletePhase(item.id)">删除阶段 {{ index + 1 }}</button>
+            <div class="phase-date-grid">
+              <label>时间范围
+                <span class="phase-range-shell">
+                  <input type="date" :value="item.startDate" @input="updatePhase(item.id, { startDate: ($event.target as HTMLInputElement).value })">
+                  <b>→</b>
+                  <input type="date" :value="item.endDate" @input="updatePhase(item.id, { endDate: ($event.target as HTMLInputElement).value })">
+                </span>
+              </label>
+            </div>
+            <div class="phase-card-footer">
+              <small>今日建议量会按本阶段剩余天数动态均摊。</small>
+              <button class="text-button danger" type="button" @click="deletePhase(item.id)"><Trash2 :size="15" stroke-width="2.4" aria-hidden="true" /> 删除</button>
+            </div>
           </article>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>任务</h2>
+      <section class="panel settings-task-panel">
+        <div class="settings-task-title">
+          <span class="settings-task-title-icon"><ClipboardList :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+          <h2>任务</h2>
+        </div>
         <div v-for="group in taskGroups" :key="group.phase.id" class="phase-task-block">
           <div class="section-heading phase-task-heading">
             <div>
@@ -2172,7 +2444,13 @@ function taskDisplayName(task: Task) {
               <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>轮次</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
-              <input :value="task.name" @input="updateTask(task.id, { name: ($event.target as HTMLInputElement).value })">
+              <label class="select-control table-select task-type-select">
+                <select :value="task.name" @change="updateTask(task.id, { name: ($event.target as HTMLSelectElement).value })">
+                  <option v-if="!examTypeOptions.includes(task.name)" :value="task.name">{{ task.name }}</option>
+                  <option v-for="type in examTypeOptions" :key="type" :value="type">{{ type }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+              </label>
               <label class="select-control table-select">
                 <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
                   <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
@@ -2224,7 +2502,7 @@ function taskDisplayName(task: Task) {
             <div v-for="task in group.tasks.filter((item) => item.trackingMode === 'itemized')" :key="`${task.id}-items`" class="subitem-manager">
               <div class="subitem-toolbar">
                 <strong>{{ task.name }} 子项目</strong>
-                <button type="button" @click="addSubItem(task.id)">新增子项目</button>
+                <button type="button" @click="addSubItem(task.id)">+ 新增子项目</button>
                 <button type="button" @click="openImportModal(task.id)">批量导入</button>
                 <button type="button" @click="copySubItems(task)">复制全部</button>
                 <button class="danger-light" type="button" @click="deleteAllSubItems(task)">批量删除</button>
