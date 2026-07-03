@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Flag, Hourglass, Minus, PencilLine, Plus, Trash2, TrendingUp, X } from '@lucide/vue';
+import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Minus, PencilLine, Plus, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
@@ -348,6 +348,7 @@ const selectedProgressPhaseId = ref('');
 const progressTrendRange = ref<TrendRange>('7');
 const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
+const practiceReportDate = ref(todayIso());
 const selectedTimePointDate = ref('');
 const showAllTaskProgress = ref(false);
 const showAllTimeEntries = ref(false);
@@ -587,6 +588,94 @@ const todayPracticeItems = computed(() => {
   });
   return [...mainItems, ...reviewItems].sort((a, b) => a.sourceOrder - b.sourceOrder);
 });
+const practiceReportQuickDates = computed(() => [
+  { label: '今天', date: todayIso() },
+  { label: '昨天', date: addDays(todayIso(), -1) },
+]);
+const practiceReportDisplayDate = computed(() => practiceReportDate.value.replaceAll('-', '/'));
+const practiceReportTimeEntries = computed(() => studyTimeEntries.value
+  .filter((log) => log.date === practiceReportDate.value)
+  .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+const practiceReportRows = computed(() => {
+  const rows = new Map<string, {
+    type: string;
+    color: string;
+    softColor: string;
+    mainCount: number;
+    reviewCount: number;
+    mainSeconds: number;
+    reviewSeconds: number;
+  }>();
+  const ensureRow = (type: string) => {
+    const key = (type || 'GEN').toUpperCase();
+    if (!rows.has(key)) {
+      const index = rows.size;
+      rows.set(key, {
+        type: key,
+        color: taskTypeColor(key, index),
+        softColor: taskTypeSoftColor(key, index),
+        mainCount: 0,
+        reviewCount: 0,
+        mainSeconds: 0,
+        reviewSeconds: 0,
+      });
+    }
+    return rows.get(key)!;
+  };
+
+  const taskById = new Map(data.value.tasks.map((task) => [task.id, task]));
+  const mainCountByTask = (data.value.dailyLogs[practiceReportDate.value] || []).reduce<Record<string, number>>((acc, log) => {
+    acc[log.taskId] = (acc[log.taskId] || 0) + (log.count ?? log.amount ?? 0);
+    return acc;
+  }, {});
+  Object.entries(mainCountByTask).forEach(([taskId, amount]) => {
+    const count = Math.max(0, Math.floor(amount));
+    if (count <= 0) return;
+    const task = taskById.get(taskId);
+    const row = ensureRow(task ? taskInitials(task.name) : 'GEN');
+    row.mainCount += count;
+  });
+
+  (data.value.reviewPlans[practiceReportDate.value] || []).forEach((plan) => {
+    const count = Math.max(0, Math.floor(plan.completed));
+    if (count <= 0) return;
+    const row = ensureRow(taskInitials(plan.taskName));
+    row.reviewCount += count;
+  });
+
+  practiceReportTimeEntries.value.forEach((log) => {
+    const seconds = Math.max(0, Math.floor(log.durationSeconds));
+    if (seconds <= 0) return;
+    const row = ensureRow(log.examType || examTypeFromName(log.taskName));
+    if (log.timeType === 'review') row.reviewSeconds += seconds;
+    else row.mainSeconds += seconds;
+  });
+
+  return [...rows.values()]
+    .map((row) => ({
+      ...row,
+      totalCount: row.mainCount + row.reviewCount,
+      totalSeconds: row.mainSeconds + row.reviewSeconds,
+    }))
+    .sort((a, b) => b.totalCount - a.totalCount || b.totalSeconds - a.totalSeconds || a.type.localeCompare(b.type));
+});
+const practiceReportTotals = computed(() => practiceReportRows.value.reduce((acc, row) => ({
+  mainCount: acc.mainCount + row.mainCount,
+  reviewCount: acc.reviewCount + row.reviewCount,
+  totalCount: acc.totalCount + row.totalCount,
+  mainSeconds: acc.mainSeconds + row.mainSeconds,
+  reviewSeconds: acc.reviewSeconds + row.reviewSeconds,
+  totalSeconds: acc.totalSeconds + row.totalSeconds,
+  typeCount: acc.typeCount + 1,
+}), {
+  mainCount: 0,
+  reviewCount: 0,
+  totalCount: 0,
+  mainSeconds: 0,
+  reviewSeconds: 0,
+  totalSeconds: 0,
+  typeCount: 0,
+}));
 
 function timeTrendAxisInterval(rowCount: number) {
   if (rowCount <= 8) return 0;
@@ -2554,6 +2643,99 @@ function taskDisplayName(task: Task) {
             </div>
             <p v-else class="soft-empty">今天还没有添加学习时长记录。</p>
           </div>
+        </section>
+
+        <section class="panel progress-module practice-report-card">
+          <div class="practice-report-top">
+            <div class="practice-report-title">
+              <span class="practice-report-title-icon">
+                <ClipboardList :size="24" stroke-width="2.4" aria-hidden="true" />
+              </span>
+              <div>
+                <h2>练习日报</h2>
+                <p>按日期查看题型练习量、学习时长和当天计时记录。</p>
+              </div>
+            </div>
+            <div class="practice-report-controls">
+              <div class="segmented compact report-day-tabs">
+                <button
+                  v-for="item in practiceReportQuickDates"
+                  :key="item.label"
+                  type="button"
+                  :class="{ active: practiceReportDate === item.date }"
+                  @click="practiceReportDate = item.date"
+                >
+                  {{ item.label }}
+                </button>
+              </div>
+              <label class="report-date-picker">
+                <CalendarDays :size="17" stroke-width="2.4" aria-hidden="true" />
+                <span>{{ practiceReportDisplayDate }}</span>
+                <input v-model="practiceReportDate" type="date" aria-label="选择练习日报日期">
+                <ChevronDown :size="15" stroke-width="2.5" aria-hidden="true" />
+              </label>
+            </div>
+          </div>
+
+          <div class="practice-report-hero">
+            <article class="report-stat-card purple">
+              <span class="report-stat-icon"><CalendarDays :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+              <div>
+                <span>练习日期</span>
+                <strong>{{ practiceReportDate }}</strong>
+              </div>
+            </article>
+            <article class="report-stat-card blue">
+              <span class="report-stat-icon"><PencilLine :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+              <div>
+                <span>练习量</span>
+                <strong>{{ practiceReportTotals.totalCount }} <small>题</small></strong>
+              </div>
+            </article>
+            <article class="report-stat-card green">
+              <span class="report-stat-icon"><Clock :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+              <div>
+                <span>学习时长</span>
+                <strong>{{ formatDurationCompact(practiceReportTotals.totalSeconds) }}</strong>
+              </div>
+            </article>
+            <article class="report-stat-card orange">
+              <span class="report-stat-icon"><TrendingUp :size="24" stroke-width="2.4" aria-hidden="true" /></span>
+              <div>
+                <span>题型数</span>
+                <strong>{{ practiceReportTotals.typeCount }} <small>类</small></strong>
+              </div>
+            </article>
+          </div>
+
+          <div class="practice-report-record-panel">
+            <div class="practice-report-record-head">
+              <div>
+                <TrendingUp :size="20" stroke-width="2.4" aria-hidden="true" />
+                <h3>题型练习记录</h3>
+              </div>
+            </div>
+
+            <div v-if="practiceReportRows.length" class="practice-report-type-list">
+              <article
+                v-for="row in practiceReportRows"
+                :key="row.type"
+                :style="{ '--type-color': row.color, '--type-soft': row.softColor }"
+              >
+                <span class="type-badge">{{ row.type }}</span>
+                <div>
+                  <strong>{{ row.totalCount }} 题</strong>
+                  <small>主 {{ row.mainCount }} · 复习 {{ row.reviewCount > 0 ? row.reviewCount : '--' }}</small>
+                </div>
+                <span class="report-row-time">
+                  <Clock :size="16" stroke-width="2.4" aria-hidden="true" />
+                  <b>{{ formatDurationCompact(row.totalSeconds) }}</b>
+                </span>
+              </article>
+            </div>
+            <p v-else class="soft-empty">这一天还没有练习量或学习时长记录。</p>
+          </div>
+
         </section>
       </div>
     </section>
