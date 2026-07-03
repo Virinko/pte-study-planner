@@ -1583,7 +1583,7 @@ function deleteReviewPlan(date: string, planId: string) {
 }
 
 function isItemizedExpanded(taskId: string) {
-  return expandedItemizedTasks.value[taskId] ?? true;
+  return expandedItemizedTasks.value[taskId] ?? false;
 }
 
 function toggleItemizedDetails(taskId: string) {
