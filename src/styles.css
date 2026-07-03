@@ -4010,7 +4010,12 @@ nav button.active::after {
 }
 
 .review-item-list article {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: 82px minmax(0, 1fr) auto auto;
+}
+
+.review-item-list .type-badge {
+  width: 82px;
+  justify-self: stretch;
 }
 
 .review-item-list b {
@@ -4717,8 +4722,8 @@ nav button.active::after {
 .progress-task-list article,
 .review-item-list article,
 .task-progress-list article {
-  min-height: 58px;
-  padding: 10px 12px;
+  min-height: 48px;
+  padding: 7px 12px;
   background: #ffffff;
   border: 0;
   border-radius: 14px;
@@ -4740,7 +4745,7 @@ nav button.active::after {
 
 .type-badge {
   min-width: 38px;
-  height: 30px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 999px;
   font-size: 12px;
@@ -6172,7 +6177,7 @@ nav button.active {
 }
 
 .progress-page .review-progress-card .review-echarts {
-  height: 188px;
+  height: 152px;
 }
 
 input,

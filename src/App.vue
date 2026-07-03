@@ -549,19 +549,38 @@ const timeByExamTypeRows = computed(() => {
 });
 const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
-const todayReviewItems = computed(() => todayReviewPlans.value.map((plan, index) => {
-  const task = data.value.tasks.find((item) => item.id === plan.taskId);
-  const type = taskInitials(plan.taskName);
-  return {
-    ...plan,
-    type,
-    color: taskTypeColor(type, index),
-    softColor: taskTypeSoftColor(type, index),
-    status: plan.completed >= plan.target ? '已复习' : '待复习',
-    familiarity: reviewFamiliarity(task),
-    round: plan.sourceDate === todayIso() ? '手动添加' : `第 ${daysBetweenInclusive(plan.sourceDate, todayIso())} 天`,
-  };
-}));
+const todayPracticeItems = computed(() => {
+  const mainItems = todayTaskRows.value.filter((task) => task.doneToday || task.todayStatus === '超额完成').map((task, index) => {
+    const unit = task.trackingMode === 'itemized' ? '篇' : '题';
+    return {
+      id: `task-${task.id}`,
+      type: task.initials,
+      countText: `${task.todayCompleted} ${unit}`,
+      color: task.accent,
+      softColor: task.softColor,
+      status: task.todayStatus,
+      statusClass: task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : 'status-warn',
+      label: '主任务',
+      sourceOrder: index,
+    };
+  });
+  const reviewItems = todayReviewPlans.value.filter((plan) => plan.completed >= plan.target).map((plan, index) => {
+    const task = data.value.tasks.find((item) => item.id === plan.taskId);
+    const type = taskInitials(plan.taskName);
+    return {
+      id: `review-${plan.id}`,
+      type,
+      countText: `${plan.completed} 题`,
+      color: taskTypeColor(type, index),
+      softColor: taskTypeSoftColor(type, index),
+      status: plan.completed >= plan.target ? '已复习' : '待复习',
+      statusClass: plan.completed >= plan.target ? 'status-ok' : 'status-warn',
+      label: reviewFamiliarity(task),
+      sourceOrder: todayTaskRows.value.length + index,
+    };
+  });
+  return [...mainItems, ...reviewItems].sort((a, b) => a.sourceOrder - b.sourceOrder);
+});
 
 function timeTrendAxisInterval(rowCount: number) {
   if (rowCount <= 8) return 0;
@@ -655,9 +674,9 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
   return {
     animationDuration: 450,
     grid: {
-      top: 24,
+      top: 20,
       right: 16,
-      bottom: 42,
+      bottom: 16,
       left: 10,
       containLabel: true,
     },
@@ -690,7 +709,7 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
         color: '#667389',
         fontSize: 12,
         fontWeight: 600,
-        margin: 10,
+        margin: 8,
       },
     },
     yAxis: {
@@ -1844,49 +1863,49 @@ function examTypeFromName(name: string) {
 function taskTypeColor(type: string, fallbackIndex = 0) {
   const key = type.toUpperCase();
   const colors: Record<string, string> = {
-    RS: '#7A77B9',
-    WE: '#EA7186',
-    DI: '#BD9DEA',
-    RTS: '#5d87c9',
-    FIB: '#23a6b8',
-    'FIB-L': '#23a6b8',
-    'FIB-R': '#11a8a2',
-    'FIB-RW': '#15958d',
-    HIW: '#0d9488',
-    ASQ: '#64748b',
-    RP: '#2563eb',
-    WFD: '#d69b18',
-    SST: '#8e6bd8',
-    RL: '#43a875',
-    RA: '#f06d7f',
-    SGD: '#b9842a',
-    SWT: '#8d8386',
+    RA: '#D65C62',
+    RS: '#D95F87',
+    WE: '#D87945',
+    SWT: '#E0913A',
+    WFD: '#D5A42F',
+    SGD: '#A8A43C',
+    RL: '#4AA66D',
+    FIB: '#33A88A',
+    'FIB-L': '#38AA86',
+    'FIB-R': '#279E9A',
+    'FIB-RW': '#2A93B8',
+    HIW: '#3C82C4',
+    ASQ: '#5C6FD3',
+    RP: '#7D63C8',
+    DI: '#A965C8',
+    RTS: '#C65D9E',
+    SST: '#CF5F79',
   };
-  return colors[key] || ['#7A77B9', '#EA7186', '#F2C76E', '#BD9DEA', '#8d8386'][fallbackIndex % 5];
+  return colors[key] || ['#D65C62', '#D87945', '#D5A42F', '#4AA66D', '#279E9A', '#3C82C4', '#7D63C8', '#C65D9E'][fallbackIndex % 8];
 }
 
 function taskTypeSoftColor(type: string, fallbackIndex = 0) {
   const key = type.toUpperCase();
   const colors: Record<string, string> = {
-    RS: '#f1effa',
-    WE: '#fff0f2',
-    DI: '#f6efff',
-    RTS: '#eef5ff',
-    FIB: '#eaf9fb',
-    'FIB-L': '#eaf9fb',
-    'FIB-R': '#e8fbf9',
-    'FIB-RW': '#e7f8f4',
-    HIW: '#e7faf7',
-    ASQ: '#f1f5f9',
-    RP: '#eff6ff',
-    WFD: '#fff7df',
-    SST: '#f3edff',
-    RL: '#edf9f1',
-    RA: '#fff0f4',
-    SGD: '#fff7df',
-    SWT: '#f5f2f2',
+    RA: '#fff0f0',
+    RS: '#fff0f5',
+    WE: '#fff2e8',
+    SWT: '#fff4df',
+    WFD: '#fff8dc',
+    SGD: '#f8f7dd',
+    RL: '#ecf8ef',
+    FIB: '#e9f8f3',
+    'FIB-L': '#e9f8f2',
+    'FIB-R': '#e6f8f6',
+    'FIB-RW': '#e7f5fa',
+    HIW: '#eaf3fb',
+    ASQ: '#eef1ff',
+    RP: '#f2effb',
+    DI: '#f7effb',
+    RTS: '#fff0f8',
+    SST: '#fff0f3',
   };
-  return colors[key] || ['#f1effa', '#fff0f2', '#fff7df', '#f6efff', '#f5f2f2'][fallbackIndex % 5];
+  return colors[key] || ['#fff0f0', '#fff2e8', '#fff8dc', '#ecf8ef', '#e6f8f6', '#eaf3fb', '#f2effb', '#fff0f8'][fallbackIndex % 8];
 }
 
 function taskAccentByName(name: string, fallbackIndex = 0) {
@@ -2383,19 +2402,18 @@ function taskDisplayName(task: Task) {
           </div>
           <div ref="reviewTrendChartEl" class="review-echarts" role="img" aria-label="练习趋势图" />
           <div class="review-items-block">
-            <h3>今日复习题目</h3>
-            <div v-if="todayReviewItems.length" class="review-item-list">
-              <article v-for="item in todayReviewItems" :key="`${item.id}-review-item`">
+            <h3>今日练习条目</h3>
+            <div v-if="todayPracticeItems.length" class="review-item-list">
+              <article v-for="item in todayPracticeItems" :key="`${item.id}-practice-item`">
                 <span class="type-badge" :style="{ color: item.color, background: item.softColor }">{{ item.type }}</span>
                 <div>
-                  <strong>{{ item.taskName }} 复习</strong>
-                  <small>{{ item.completed }} / {{ item.target }} · {{ item.round }}</small>
+                  <strong>{{ item.countText }}</strong>
                 </div>
-                <em :class="item.status === '已复习' ? 'status-ok' : 'status-warn'">{{ item.status }}</em>
-                <b>{{ item.familiarity }}</b>
+                <em :class="item.statusClass">{{ item.status }}</em>
+                <b>{{ item.label }}</b>
               </article>
             </div>
-            <p v-else class="soft-empty">今天暂无复习题目，可以去主任务推进一点。</p>
+            <p v-else class="soft-empty">今天还没有练习条目。</p>
           </div>
         </section>
 
