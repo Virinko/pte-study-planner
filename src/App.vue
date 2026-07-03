@@ -308,6 +308,7 @@ const expandedItemizedTasks = ref<Record<string, boolean>>({});
 const expandedSubItemLists = ref<Record<string, boolean>>({});
 const selectedProgressPhaseId = ref('');
 const progressTrendRange = ref<TrendRange>('7');
+const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
 const selectedTimePointDate = ref('');
 const showAllTaskProgress = ref(false);
@@ -433,8 +434,9 @@ const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const done = tasks.reduce((sum, task) => sum + task.completed, 0);
   const target = tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0);
   const today = todayIso();
-  const status = target > 0 && done >= target ? '已完成' : today < item.startDate ? '未开始' : '当前';
-  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status };
+  const status = target > 0 && done >= target ? '已完成' : today < item.startDate ? '未开始' : today > item.endDate ? '已结束' : '进行中';
+  const remainingDays = today < item.startDate ? item.days : today > item.endDate ? 0 : daysBetweenInclusive(today, item.endDate);
+  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status, remainingDays };
 }));
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
@@ -452,11 +454,12 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   remaining: taskRemaining(task),
   currentRound: taskCurrentRound(task),
   roundCompleted: taskRoundCompleted(task),
+  totalStudySeconds: totalStudySecondsForTask(task),
   phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
   status: task.completed >= taskTotalTarget(task) ? '完成' : '正常',
 })));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
-const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || phaseProgress.value[0]);
+const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || activePhaseProgress.value || phaseProgress.value[0]);
 const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
 
 const activePhaseProgress = computed(() => phaseProgress.value.find((item) => item.id === phase.value?.id) || phaseProgress.value[0]);
@@ -470,14 +473,21 @@ const trendRows = computed(() => {
   const max = Math.max(1, ...rows.map((row) => row.total));
   return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.total / max) * 88)) }));
 });
-const reviewTrendRows = computed(() => {
-  const rows = dateRangeRows('7').map((date) => {
+const practiceTrendRows = computed(() => {
+  const rows = dateRangeRows(practiceTrendRange.value).map((date) => {
+    const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
     const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
-    return { date, label: trendLabel(date, '7'), reviewTotal };
+    const practiceTotal = mainTotal + reviewTotal;
+    return { date, label: trendLabel(date, practiceTrendRange.value), mainTotal, reviewTotal, practiceTotal };
   });
-  const max = Math.max(1, ...rows.map((row) => row.reviewTotal));
-  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.reviewTotal / max) * 94)) }));
+  const max = Math.max(1, ...rows.map((row) => row.practiceTotal));
+  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.practiceTotal / max) * 94)) }));
 });
+const todayPracticeTotal = computed(() => todayLogTotal.value + todayReviewDone.value);
+const todayPracticeTypeCount = computed(() => new Set([
+  ...todayTaskRows.value.filter((task) => task.todayCompleted > 0).map((task) => task.initials),
+  ...todayReviewPlans.value.filter((plan) => plan.completed > 0).map((plan) => taskInitials(plan.taskName)),
+]).size);
 const timeTrendRows = computed(() => {
   const rows = dateRangeRows(timeTrendRange.value).map((date) => {
     const totalSeconds = studyTimeEntries.value.filter((log) => log.date === date).reduce((sum, log) => sum + log.durationSeconds, 0);
@@ -596,9 +606,9 @@ function buildProgressTrendChartOption(): EChartsCoreOption {
   };
 }
 
-function buildReviewTrendChartOption(): EChartsCoreOption {
-  const rows = reviewTrendRows.value;
-  const max = Math.max(5, ...rows.map((row) => row.reviewTotal));
+function buildPracticeTrendChartOption(): EChartsCoreOption {
+  const rows = practiceTrendRows.value;
+  const max = Math.max(5, ...rows.map((row) => row.practiceTotal));
   const interval = max <= 5 ? 1 : Math.ceil(max / 4);
   const yMax = Math.ceil(max / interval) * interval;
 
@@ -627,7 +637,7 @@ function buildReviewTrendChartOption(): EChartsCoreOption {
         const item = (Array.isArray(params) ? params[0] : params) as { data?: { date?: string; value?: number } } | undefined;
         const data = item?.data;
         if (!data?.date) return '';
-        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#7d5df2;font-weight:500">${data.value || 0} 题</strong></div>`;
+        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#7d5df2;font-weight:500">${data.value || 0} 次练习</strong></div>`;
       },
     },
     xAxis: {
@@ -660,19 +670,11 @@ function buildReviewTrendChartOption(): EChartsCoreOption {
     series: [
       {
         type: 'bar',
-        barWidth: 18,
+        barWidth: rows.length > 12 ? 11 : 18,
         data: rows.map((row) => ({
-          value: row.reviewTotal,
+          value: row.practiceTotal,
           date: row.date,
         })),
-        label: {
-          show: true,
-          position: 'bottom',
-          distance: 2,
-          color: '#7d5df2',
-          fontSize: 12,
-          fontWeight: 700,
-        },
         itemStyle: {
           color: '#8b5cf6',
           borderRadius: [9, 9, 0, 0],
@@ -842,7 +844,7 @@ async function renderReviewTrendChart() {
   if (!reviewTrendChartInstance || reviewTrendChartInstance.isDisposed()) {
     reviewTrendChartInstance = init(el);
   }
-  reviewTrendChartInstance.setOption(buildReviewTrendChartOption(), true);
+  reviewTrendChartInstance.setOption(buildPracticeTrendChartOption(), true);
   reviewTrendChartInstance.resize();
 }
 
@@ -890,13 +892,17 @@ watch(trendRows, () => {
   void renderProgressTrendChart();
 }, { deep: true });
 
-watch(reviewTrendRows, () => {
+watch(practiceTrendRows, () => {
   void renderReviewTrendChart();
 }, { deep: true });
 
 watch(timeTrendRows, () => {
   void renderTimeTrendChart();
 }, { deep: true });
+
+watch([phaseProgress, phase], () => {
+  if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
+}, { immediate: true });
 
 function saveLocal(next: StudyData) {
   const stamped = { ...normalizeData(next), updatedAt: new Date().toISOString() };
@@ -940,6 +946,13 @@ function timerEntryLabel(type: TimeLogType, id: string) {
 function savedTimeSeconds(type: TimeLogType, id: string) {
   return todayTimeLogs.value
     .filter((log) => log.timeType === (type === 'review' ? 'review' : 'main') && (type === 'review' ? log.reviewPlanId === id : log.taskId === id))
+    .reduce((sum, log) => sum + log.durationSeconds, 0);
+}
+
+function totalStudySecondsForTask(task: Task) {
+  const type = taskInitials(task.name);
+  return studyTimeEntries.value
+    .filter((log) => log.taskId === task.id || (!log.taskId && (log.examType || examTypeFromName(log.taskName)).toUpperCase() === type))
     .reduce((sum, log) => sum + log.durationSeconds, 0);
 }
 
@@ -1230,29 +1243,56 @@ function formatClockTime(value: string) {
 }
 
 function updateSettings(patch: Partial<StudyData['settings']>) {
-  saveLocal({ ...data.value, settings: { ...data.value.settings, ...patch } });
+  const settings = { ...data.value.settings, ...patch };
+  const phases = syncPhaseBoundaries(data.value.phases, settings);
+  saveLocal({ ...data.value, settings, phases });
 }
 
 function updatePhase(id: string, patch: Partial<Phase>) {
-  saveLocal({ ...data.value, phases: data.value.phases.map((item) => item.id === id ? { ...item, ...patch } : item) });
+  const sorted = [...data.value.phases].sort((a, b) => a.order - b.order);
+  const firstId = sorted[0]?.id;
+  const lastId = sorted[sorted.length - 1]?.id;
+  const settings = {
+    ...data.value.settings,
+    ...(id === firstId && patch.startDate ? { startDate: patch.startDate } : {}),
+    ...(id === lastId && patch.endDate ? { deadline: patch.endDate } : {}),
+  };
+  const phases = syncPhaseBoundaries(
+    data.value.phases.map((item) => item.id === id ? { ...item, ...patch } : item),
+    settings,
+  );
+  saveLocal({ ...data.value, settings, phases });
 }
 
 function deletePhase(id: string) {
+  const phases = syncPhaseBoundaries(data.value.phases.filter((item) => item.id !== id), data.value.settings);
   saveLocal({
     ...data.value,
-    phases: data.value.phases.filter((item) => item.id !== id),
+    phases,
     tasks: data.value.tasks.filter((task) => task.phaseId !== id),
   });
 }
 
 function addPhase() {
   const last = schedule.value[schedule.value.length - 1];
-  const effectiveEnd = addDays(data.value.settings.deadline, -Math.max(0, data.value.settings.bufferDays));
   const startDate = last ? addDays(last.endDate, 1) : data.value.settings.startDate;
-  const endDate = startDate > effectiveEnd ? startDate : effectiveEnd;
+  const endDate = startDate > data.value.settings.deadline ? startDate : data.value.settings.deadline;
   saveLocal({
     ...data.value,
-    phases: [...data.value.phases, { id: crypto.randomUUID(), name: '新阶段', order: data.value.phases.length + 1, startDate, endDate }],
+    phases: syncPhaseBoundaries([...data.value.phases, { id: crypto.randomUUID(), name: '新阶段', order: data.value.phases.length + 1, startDate, endDate }], data.value.settings),
+  });
+}
+
+function syncPhaseBoundaries(phases: Phase[], settings: StudyData['settings']) {
+  const sorted = [...phases].sort((a, b) => a.order - b.order);
+  if (sorted.length === 0) return sorted;
+  const firstId = sorted[0].id;
+  const lastId = sorted[sorted.length - 1].id;
+  return phases.map((phase) => {
+    if (phase.id === firstId && phase.id === lastId) return { ...phase, startDate: settings.startDate, endDate: settings.deadline };
+    if (phase.id === firstId) return { ...phase, startDate: settings.startDate };
+    if (phase.id === lastId) return { ...phase, endDate: settings.deadline };
+    return phase;
   });
 }
 
@@ -1851,6 +1891,7 @@ function taskDisplayName(task: Task) {
             :style="{ '--phase-color': item.accent }"
           >
             <span class="phase-index">{{ index + 1 }}</span>
+            <b class="phase-status-corner" :class="{ active: item.status === '进行中' }">{{ item.status }}</b>
             <strong>{{ item.name }}</strong>
             <small>{{ item.startDate.slice(5).replace('-', '.') }} - {{ item.endDate.slice(5).replace('-', '.') }}</small>
             <div class="phase-step-progress">
@@ -1858,6 +1899,9 @@ function taskDisplayName(task: Task) {
               <b>{{ item.percent }}%</b>
             </div>
             <span class="phase-count">{{ item.done }} / {{ item.target }}</span>
+            <span class="phase-extra-info">
+              <em>剩余 {{ item.remainingDays }} 天</em>
+            </span>
           </article>
         </div>
       </section>
@@ -1884,7 +1928,11 @@ function taskDisplayName(task: Task) {
           </div>
           <div>
             <span>阶段剩余天数</span>
-            <strong>{{ daysBetweenInclusive(todayIso(), activePhaseProgress.endDate) }} 天</strong>
+            <strong>{{ activePhaseProgress.remainingDays }} 天</strong>
+          </div>
+          <div>
+            <span>阶段状态</span>
+            <strong>{{ activePhaseProgress.status }}</strong>
           </div>
         </div>
 
@@ -2128,13 +2176,15 @@ function taskDisplayName(task: Task) {
         </div>
         <div class="dashboard-table detail-table">
           <div class="dashboard-table-head">
-            <span>任务名称</span><span>所属阶段</span><span>已完成 / 目标</span><span>进度</span><span>剩余</span><span>状态</span>
+            <span>任务名称</span><span>所属阶段</span><span>轮次</span><span>已完成 / 目标</span><span>进度</span><span>总练习时长</span><span>剩余</span><span>状态</span>
           </div>
           <div v-for="task in filteredTaskProgressRows" :key="task.id" class="dashboard-table-row">
             <strong>{{ task.name }}</strong>
             <span>{{ task.phaseName }}</span>
+            <span>{{ task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
             <span>{{ task.completed }} / {{ task.totalTarget }}</span>
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
+            <span>{{ formatDurationCompact(task.totalStudySeconds) }}</span>
             <span>{{ task.remaining }} 题</span>
             <em :class="task.status === '正常' || task.status === '完成' ? 'status-ok' : 'status-warn'">{{ task.status }}</em>
           </div>
@@ -2158,7 +2208,7 @@ function taskDisplayName(task: Task) {
       <div class="progress-page-head">
         <div>
           <h2>进度总览与数据统计</h2>
-          <p>温和复盘每一天的主任务、复习训练和学习时长。</p>
+          <p>温和复盘每一天的主任务、练习记录和学习时长。</p>
         </div>
         <div class="plan-summary-pills">
           <span>计划周期 <strong>{{ data.settings.startDate }} ~ {{ data.settings.deadline }}</strong></span>
@@ -2202,18 +2252,22 @@ function taskDisplayName(task: Task) {
         <section class="panel progress-module review-progress-card">
           <div class="section-heading">
             <div>
-              <h2>复习训练</h2>
-              <p class="muted">复习独立统计，不计入主任务完成量。</p>
+              <h2>练习模块</h2>
+              <p class="muted">汇总主任务与复习完成量，覆盖所有题型。</p>
             </div>
-            <span class="range-chip">近 7 天</span>
+            <div class="segmented compact">
+              <button type="button" :class="{ active: practiceTrendRange === '7' }" @click="practiceTrendRange = '7'">近 7 天</button>
+              <button type="button" :class="{ active: practiceTrendRange === '30' }" @click="practiceTrendRange = '30'">近 30 天</button>
+              <button type="button" :class="{ active: practiceTrendRange === 'all' }" @click="practiceTrendRange = 'all'">全部</button>
+            </div>
           </div>
           <div class="review-stats soft-stats">
-            <article><span>今日待复习</span><strong>{{ todayReviewTarget }}</strong></article>
-            <article><span>今日已复习</span><strong>{{ todayReviewDone }}</strong></article>
-            <article><span>明日待复习</span><strong>{{ tomorrowReviewTarget }}</strong></article>
-            <article><span>复习完成率</span><strong>{{ pct(todayReviewDone, todayReviewTarget) }}%</strong></article>
+            <article><span>今日主任务</span><strong>{{ todayLogTotal }}</strong></article>
+            <article><span>今日复习</span><strong>{{ todayReviewDone }}</strong></article>
+            <article><span>今日练习合计</span><strong>{{ todayPracticeTotal }}</strong></article>
+            <article><span>已练题型</span><strong>{{ todayPracticeTypeCount }}</strong></article>
           </div>
-          <div ref="reviewTrendChartEl" class="review-echarts" role="img" aria-label="近 7 天复习趋势图" />
+          <div ref="reviewTrendChartEl" class="review-echarts" role="img" aria-label="练习趋势图" />
           <div class="review-items-block">
             <h3>今日复习题目</h3>
             <div v-if="todayReviewItems.length" class="review-item-list">
@@ -2302,46 +2356,10 @@ function taskDisplayName(task: Task) {
             <p v-else class="soft-empty">今天还没有添加学习时长记录。</p>
           </div>
         </section>
-
-        <section class="panel progress-module phase-progress-module">
-          <h2>阶段进度</h2>
-          <div class="phase-progress-list">
-            <article v-for="item in phaseProgress" :key="item.id" :style="{ '--phase-color': item.accent }">
-              <div>
-                <strong>{{ item.name }}</strong>
-                <em :class="item.status === '已完成' ? 'status-ok' : item.status === '当前' ? 'status-extra' : 'status-warn'">{{ item.status }}</em>
-              </div>
-              <small>{{ item.startDate }} ~ {{ item.endDate }}</small>
-              <span>{{ item.done }} / {{ item.target }}</span>
-              <div class="progress slim"><span :style="{ width: `${item.percent}%`, background: item.accent }" /></div>
-              <b>{{ item.percent }}%</b>
-            </article>
-          </div>
-        </section>
-
-        <section class="panel progress-module task-progress-module">
-          <div class="section-heading">
-            <h2>题型任务进度</h2>
-            <button v-if="taskProgressRows.length > 6" class="text-button expand-button" type="button" @click="showAllTaskProgress = !showAllTaskProgress">
-              {{ showAllTaskProgress ? '收起' : '展开全部' }}
-            </button>
-          </div>
-          <div class="task-progress-list">
-            <article v-for="task in visibleTaskProgressRows" :key="task.id">
-              <span class="type-badge" :style="{ color: task.accent, background: task.softColor }">{{ task.initials }}</span>
-              <div>
-                <strong>{{ task.name }}</strong>
-                <small>{{ task.completed }} / {{ task.totalTarget }}<template v-if="task.repeatCount > 1"> · 第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</template></small>
-              </div>
-              <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
-            </article>
-          </div>
-          <p v-if="taskProgressRows.length === 0" class="muted">暂无任务，整体进度按 0% 显示。</p>
-        </section>
       </div>
     </section>
 
-    <section v-else-if="tab === 'settings'" class="page">
+    <section v-else-if="tab === 'settings'" class="page settings-page">
       <section class="settings-planner-panel">
         <div class="settings-hero">
           <span class="settings-hero-icon"><CalendarDays :size="30" stroke-width="2.3" aria-hidden="true" /></span>
@@ -2437,39 +2455,39 @@ function taskDisplayName(task: Task) {
               <h3>{{ group.phase.name }}</h3>
               <p>{{ group.phase.startDate }} ~ {{ group.phase.endDate }}，{{ group.phase.days }} 天</p>
             </div>
-            <button class="ghost strong" type="button" @click="addTask(group.phase.id)">+ 新增本阶段任务</button>
+            <button class="ghost strong purple-soft-button" type="button" @click="addTask(group.phase.id)">+ 新增本阶段任务</button>
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
               <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>轮次</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
-              <label class="select-control table-select task-type-select">
+              <label class="select-control table-select task-type-select table-field" data-label="任务">
                 <select :value="task.name" @change="updateTask(task.id, { name: ($event.target as HTMLSelectElement).value })">
                   <option v-if="!examTypeOptions.includes(task.name)" :value="task.name">{{ task.name }}</option>
                   <option v-for="type in examTypeOptions" :key="type" :value="type">{{ type }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
-              <label class="select-control table-select">
+              <label class="select-control table-select table-field" data-label="平台">
                 <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
                   <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
-              <label class="select-control table-select">
+              <label class="select-control table-select table-field" data-label="频率">
                 <select :value="task.frequencyType" @change="updateTask(task.id, { frequencyType: ($event.target as HTMLSelectElement).value as FrequencyType })">
                   <option v-for="frequencyType in frequencyTypes" :key="frequencyType" :value="frequencyType">{{ frequencyType }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
-              <label class="select-control table-select">
+              <label class="select-control table-select table-field" data-label="记录">
                 <select :value="task.trackingMode" @change="updateTask(task.id, { trackingMode: ($event.target as HTMLSelectElement).value as TrackingMode })">
                   <option v-for="mode in trackingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
-              <div class="task-date-control" :class="{ expanded: task.startDate || task.endDate }">
+              <div class="task-date-control table-field" data-label="任务日期" :class="{ expanded: task.startDate || task.endDate }">
                 <label class="task-date-toggle">
                   <input
                     type="checkbox"
@@ -2484,25 +2502,33 @@ function taskDisplayName(task: Task) {
                 </div>
                 <span v-else>跟随阶段</span>
               </div>
-              <label class="review-toggle">
+              <label class="review-toggle table-field" data-label="复习">
                 <input type="checkbox" :checked="task.reviewEnabled" @change="updateTask(task.id, { reviewEnabled: ($event.target as HTMLInputElement).checked })">
                 开启
               </label>
-              <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
-              <input type="number" min="1" :value="task.repeatCount" :disabled="task.trackingMode === 'itemized'" @input="updateTask(task.id, { repeatCount: Number(($event.target as HTMLInputElement).value) })">
-              <input
-                type="number"
-                :value="task.completed"
-                :disabled="task.trackingMode === 'itemized' && task.subItems.length > 0"
-                @input="updateTask(task.id, { completed: Number(($event.target as HTMLInputElement).value) })"
-              >
-              <strong class="suggestion-cell">{{ plannedDailyTarget(task, group.phase) }}</strong>
-              <button class="icon-button" type="button" @click="deleteTask(task.id)">删除</button>
+              <label class="table-field number-field" data-label="题库量">
+                <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
+              </label>
+              <label class="table-field number-field" data-label="轮次">
+                <input type="number" min="1" :value="task.repeatCount" :disabled="task.trackingMode === 'itemized'" @input="updateTask(task.id, { repeatCount: Number(($event.target as HTMLInputElement).value) })">
+              </label>
+              <label class="table-field number-field" data-label="完成">
+                <input
+                  type="number"
+                  :value="task.completed"
+                  :disabled="task.trackingMode === 'itemized' && task.subItems.length > 0"
+                  @input="updateTask(task.id, { completed: Number(($event.target as HTMLInputElement).value) })"
+                >
+              </label>
+              <strong class="suggestion-cell table-field" data-label="建议">{{ plannedDailyTarget(task, group.phase) }}</strong>
+              <div class="action-cell table-field" data-label="操作">
+                <button class="icon-button" type="button" @click="deleteTask(task.id)">删除</button>
+              </div>
             </div>
             <div v-for="task in group.tasks.filter((item) => item.trackingMode === 'itemized')" :key="`${task.id}-items`" class="subitem-manager">
               <div class="subitem-toolbar">
                 <strong>{{ task.name }} 子项目</strong>
-                <button type="button" @click="addSubItem(task.id)">+ 新增子项目</button>
+                <button class="purple-soft-button" type="button" @click="addSubItem(task.id)">+ 新增子项目</button>
                 <button type="button" @click="openImportModal(task.id)">批量导入</button>
                 <button type="button" @click="copySubItems(task)">复制全部</button>
                 <button class="danger-light" type="button" @click="deleteAllSubItems(task)">批量删除</button>

@@ -49,16 +49,20 @@ const taskWork = (t: Task) => taskRemaining(t);
 
 export function buildSchedule(data: StudyData): PhaseSchedule[] {
   const phases = [...data.phases].sort((a, b) => a.order - b.order);
-  const effectiveEnd = addDays(data.settings.deadline, -Math.max(0, data.settings.bufferDays));
-  const totalDays = Math.max(1, daysBetweenInclusive(data.settings.startDate, effectiveEnd));
+  const planStart = data.settings.startDate;
+  const planEnd = data.settings.deadline;
+  const totalDays = Math.max(1, daysBetweenInclusive(planStart, planEnd));
   const weights = phases.map((p) => Math.max(1, data.tasks.filter((t) => t.phaseId === p.id).reduce((s, t) => s + taskWork(t), 0)));
   const totalWeight = weights.reduce((a, b) => a + b, 0) || phases.length || 1;
-  let cursor = data.settings.startDate;
+  let cursor = planStart;
   let used = 0;
   return phases.map((p, idx) => {
+    const isFirst = idx === 0;
+    const isLast = idx === phases.length - 1;
     if (p.startDate && p.endDate) {
-      const startDate = p.startDate;
-      const endDate = p.endDate < startDate ? startDate : p.endDate;
+      const startDate = isFirst ? planStart : p.startDate;
+      const requestedEnd = isLast ? planEnd : p.endDate;
+      const endDate = requestedEnd < startDate ? startDate : requestedEnd;
       const days = daysBetweenInclusive(startDate, endDate);
       cursor = addDays(endDate, 1);
       used += days;
