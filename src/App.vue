@@ -16,7 +16,41 @@ const GITHUB_KEY = 'pte-study-planner-github-config';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频'];
-const examTypeOptions = ['RS', 'WE', 'FIB', 'DI', 'WFD', 'SST', 'RL', 'RA', 'RTS', 'SGD', 'SWT'];
+const taskScoreRows = [
+  { name: 'SGD', skill: '听力', percent: 20 },
+  { name: 'RS', skill: '听力', percent: 17 },
+  { name: 'RL', skill: '听力', percent: 13 },
+  { name: 'WFD', skill: '听力', percent: 13 },
+  { name: 'SST', skill: '听力', percent: 10 },
+  { name: 'FIB-L', skill: '听力', percent: 8 },
+  { name: 'HIW', skill: '听力', percent: 8 },
+  { name: 'ASQ', skill: '听力', percent: 4 },
+  { name: 'DI', skill: '口语', percent: 31 },
+  { name: 'SGD', skill: '口语', percent: 19 },
+  { name: 'RS', skill: '口语', percent: 16 },
+  { name: 'RL', skill: '口语', percent: 13 },
+  { name: 'RTS', skill: '口语', percent: 13 },
+  { name: 'RA', skill: '口语', percent: 9 },
+  { name: 'FIB-RW', skill: '阅读', percent: 25 },
+  { name: 'SWT', skill: '阅读', percent: 23 },
+  { name: 'FIB-R', skill: '阅读', percent: 20 },
+  { name: 'HIW', skill: '阅读', percent: 13 },
+  { name: 'RP', skill: '阅读', percent: 9 },
+  { name: 'WE', skill: '写作', percent: 31 },
+  { name: 'SWT', skill: '写作', percent: 28 },
+  { name: 'WFD', skill: '写作', percent: 23 },
+  { name: 'SST', skill: '写作', percent: 18 },
+] as const;
+const taskPriorityOptions = Object.values(taskScoreRows.reduce<Record<string, { name: string; score: number; sources: { skill: string; percent: number }[] }>>((map, row) => {
+  const item = map[row.name] || { name: row.name, score: 0, sources: [] };
+  item.score += row.percent;
+  item.sources.push({ skill: row.skill, percent: row.percent });
+  map[row.name] = item;
+  return map;
+}, {})).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+const taskPriorityByName = new Map(taskPriorityOptions.map((item) => [item.name, item]));
+const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => [item.name, index]));
+const examTypeOptions = [...taskPriorityOptions.map((item) => item.name), 'FIB'];
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },
@@ -251,8 +285,8 @@ function inferFrequencyType(name: string): FrequencyType {
 }
 
 function inferTrackingMode(name: string): TrackingMode {
-  const prefix = name.trim().match(/^[A-Za-z]+/)?.[0]?.toUpperCase();
-  return prefix === 'WE' || prefix === 'SST' || prefix === 'RL' ? 'itemized' : 'count_only';
+  const prefix = taskInitials(name);
+  return prefix === 'WE' || prefix === 'SWT' || prefix === 'SST' || prefix === 'RL' ? 'itemized' : 'count_only';
 }
 
 function load(): StudyData {
@@ -422,8 +456,11 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     todayStatus,
     remainingToday,
     doneToday,
+    priorityScore: taskPriorityScore(task.name),
+    priorityRank: taskPriorityRank(task.name),
+    sourceIndex: index,
   };
-}));
+}).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const todayTarget = computed(() => todayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(todayLogTotal.value, todayTarget.value));
 const todayTaskRemaining = computed(() => Math.max(0, todayTarget.value - todayLogTotal.value));
@@ -455,9 +492,12 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   currentRound: taskCurrentRound(task),
   roundCompleted: taskRoundCompleted(task),
   totalStudySeconds: totalStudySecondsForTask(task),
+  priorityScore: taskPriorityScore(task.name),
+  priorityRank: taskPriorityRank(task.name),
+  sourceIndex: index,
   phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
-  status: task.completed >= taskTotalTarget(task) ? '完成' : '正常',
-})));
+  status: taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task) ? '完成' : '正常',
+})).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || activePhaseProgress.value || phaseProgress.value[0]);
 const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
@@ -618,7 +658,8 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
       top: 24,
       right: 16,
       bottom: 42,
-      left: 26,
+      left: 10,
+      containLabel: true,
     },
     tooltip: {
       trigger: 'axis',
@@ -659,7 +700,13 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
       interval,
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { show: false },
+      axisLabel: {
+        show: true,
+        color: '#667389',
+        fontSize: 12,
+        fontWeight: 600,
+        margin: 10,
+      },
       splitLine: {
         lineStyle: {
           color: '#e6ebf4',
@@ -910,6 +957,27 @@ function saveLocal(next: StudyData) {
   localStorage.setItem(KEY, JSON.stringify(stamped));
   const { githubOwner, githubRepo, githubBranch, githubPath } = stamped.settings;
   localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
+}
+
+function restartStudyPlan() {
+  const confirmed = window.confirm('确定清除本地所有阶段、任务、进度、复习、计时和备注数据，并重新开始吗？GitHub 配置会保留，远端数据不会自动删除。');
+  if (!confirmed) return;
+  const fresh = defaultData();
+  const { githubOwner, githubRepo, githubBranch, githubPath } = data.value.settings;
+  const settings = { ...fresh.settings, githubOwner, githubRepo, githubBranch, githubPath };
+  const phases = syncPhaseBoundaries(fresh.phases, settings);
+  runningTimer.value = null;
+  showTimerModal.value = false;
+  timerEditText.value = '';
+  timerEditDirty.value = false;
+  persistRunningTimer();
+  selectedProgressPhaseId.value = phases[0]?.id || '';
+  selectedNoteDate.value = todayIso();
+  noteDraft.value = '';
+  reviewAddTaskId.value = '';
+  manualAmounts.value = {};
+  reviewAmounts.value = {};
+  saveLocal({ ...fresh, settings, phases });
 }
 
 function timerIdentity(type: TimeLogType, id: string) {
@@ -1300,8 +1368,8 @@ function updateTask(id: string, patch: Partial<Task>) {
   saveLocal({ ...data.value, tasks: data.value.tasks.map((task) => task.id === id ? normalizeTask({ ...task, ...patch }, data.value.phases[0]?.id || '') : task) });
 }
 
-function addTask(phaseId?: string) {
-  const targetPhase = phase.value || schedule.value[0];
+function addTask(phaseId?: string, name = '') {
+  const targetPhase = schedule.value.find((item) => item.id === phaseId) || phase.value || schedule.value[0];
   saveLocal({
     ...data.value,
     tasks: [
@@ -1309,15 +1377,15 @@ function addTask(phaseId?: string) {
       {
         id: crypto.randomUUID(),
         phaseId: phaseId || targetPhase?.id || data.value.phases[0]?.id || '',
-        name: 'RS 超高频',
+        name,
         platform: '多墨',
-        frequencyType: '超高频',
-        trackingMode: inferTrackingMode('RS 超高频'),
+        frequencyType: '全题库',
+        trackingMode: 'count_only',
         reviewEnabled: false,
-        startDate: targetPhase?.startDate,
-        endDate: targetPhase?.endDate,
+        startDate: undefined,
+        endDate: undefined,
         subItems: [],
-        target: 100,
+        target: 0,
         repeatCount: 1,
         completed: 0,
       },
@@ -1325,8 +1393,38 @@ function addTask(phaseId?: string) {
   });
 }
 
+function sortPhaseTasksByPriority(phaseId: string) {
+  const phaseTasks = data.value.tasks
+    .filter((task) => task.phaseId === phaseId)
+    .map((task, index) => ({ task, index }))
+    .sort((a, b) => taskPriorityScore(b.task.name) - taskPriorityScore(a.task.name) || taskPriorityRank(a.task.name) - taskPriorityRank(b.task.name) || a.index - b.index)
+    .map((entry) => entry.task);
+  let cursor = 0;
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((task) => task.phaseId === phaseId ? phaseTasks[cursor++] : task),
+  });
+}
+
 function deleteTask(id: string) {
   saveLocal({ ...data.value, tasks: data.value.tasks.filter((task) => task.id !== id) });
+}
+
+function examTypeOptionLabel(type: string) {
+  const priority = taskPriorityByName.get(type);
+  return priority ? `${type} ${priority.score}%` : type;
+}
+
+function taskPriorityScore(name: string) {
+  return taskPriorityByName.get(taskInitials(name))?.score || 0;
+}
+
+function taskPriorityRank(name: string) {
+  return taskPriorityRankByName.get(taskInitials(name)) ?? Number.MAX_SAFE_INTEGER;
+}
+
+function taskPrioritySourceText(sources: { skill: string; percent: number }[]) {
+  return sources.map((source) => `${source.skill} ${source.percent}%`).join(' + ');
 }
 
 function updateTaskSubItems(taskId: string, updater: (items: SubItem[]) => SubItem[]) {
@@ -1732,6 +1830,9 @@ function studyTimeEntriesFromData(source: StudyData) {
 }
 
 function taskInitials(name: string) {
+  const normalized = name.trim().toUpperCase();
+  const priorityName = taskPriorityOptions.find((item) => normalized === item.name || normalized.startsWith(`${item.name} `))?.name;
+  if (priorityName) return priorityName;
   const letters = name.match(/[A-Za-z]+/g)?.join('').slice(0, 3);
   return (letters || name.slice(0, 2) || 'T').toUpperCase();
 }
@@ -1748,6 +1849,12 @@ function taskTypeColor(type: string, fallbackIndex = 0) {
     DI: '#BD9DEA',
     RTS: '#5d87c9',
     FIB: '#23a6b8',
+    'FIB-L': '#23a6b8',
+    'FIB-R': '#11a8a2',
+    'FIB-RW': '#15958d',
+    HIW: '#0d9488',
+    ASQ: '#64748b',
+    RP: '#2563eb',
     WFD: '#d69b18',
     SST: '#8e6bd8',
     RL: '#43a875',
@@ -1766,6 +1873,12 @@ function taskTypeSoftColor(type: string, fallbackIndex = 0) {
     DI: '#f6efff',
     RTS: '#eef5ff',
     FIB: '#eaf9fb',
+    'FIB-L': '#eaf9fb',
+    'FIB-R': '#e8fbf9',
+    'FIB-RW': '#e7f8f4',
+    HIW: '#e7faf7',
+    ASQ: '#f1f5f9',
+    RP: '#eff6ff',
     WFD: '#fff7df',
     SST: '#f3edff',
     RL: '#edf9f1',
@@ -2176,10 +2289,11 @@ function taskDisplayName(task: Task) {
         </div>
         <div class="dashboard-table detail-table">
           <div class="dashboard-table-head">
-            <span>任务名称</span><span>所属阶段</span><span>轮次</span><span>已完成 / 目标</span><span>进度</span><span>总练习时长</span><span>剩余</span><span>状态</span>
+            <span>任务名称</span><span>权重</span><span>所属阶段</span><span>轮次</span><span>已完成 / 目标</span><span>进度</span><span>总练习时长</span><span>剩余</span><span>状态</span>
           </div>
           <div v-for="task in filteredTaskProgressRows" :key="task.id" class="dashboard-table-row">
             <strong>{{ task.name }}</strong>
+            <span>{{ task.priorityScore ? `${task.priorityScore}%` : '-' }}</span>
             <span>{{ task.phaseName }}</span>
             <span>{{ task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
             <span>{{ task.completed }} / {{ task.totalTarget }}</span>
@@ -2449,13 +2563,33 @@ function taskDisplayName(task: Task) {
           <span class="settings-task-title-icon"><ClipboardList :size="24" stroke-width="2.4" aria-hidden="true" /></span>
           <h2>任务</h2>
         </div>
+        <div class="task-priority-panel">
+          <div class="task-priority-heading">
+            <div>
+              <h3>题型优先级</h3>
+              <p>按跨科目贡分合并排序，新增任务时会按这个列表选择。</p>
+            </div>
+            <span><TrendingUp :size="16" stroke-width="2.4" aria-hidden="true" /> 交叉贡分</span>
+          </div>
+          <div class="task-priority-list">
+            <article v-for="(item, index) in taskPriorityOptions" :key="item.name">
+              <b>{{ index + 1 }}</b>
+              <strong>{{ item.name }}</strong>
+              <em>{{ item.score }}%</em>
+              <small>{{ taskPrioritySourceText(item.sources) }}</small>
+            </article>
+          </div>
+        </div>
         <div v-for="group in taskGroups" :key="group.phase.id" class="phase-task-block">
           <div class="section-heading phase-task-heading">
             <div>
               <h3>{{ group.phase.name }}</h3>
               <p>{{ group.phase.startDate }} ~ {{ group.phase.endDate }}，{{ group.phase.days }} 天</p>
             </div>
-            <button class="ghost strong purple-soft-button" type="button" @click="addTask(group.phase.id)">+ 新增本阶段任务</button>
+            <div class="phase-task-actions">
+              <button class="ghost strong weight-sort-button" type="button" :disabled="group.tasks.length < 2" @click="sortPhaseTasksByPriority(group.phase.id)">按权重排序</button>
+              <button class="ghost strong purple-soft-button" type="button" @click="addTask(group.phase.id)">+ 新增本阶段任务</button>
+            </div>
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
@@ -2465,7 +2599,7 @@ function taskDisplayName(task: Task) {
               <label class="select-control table-select task-type-select table-field" data-label="任务">
                 <select :value="task.name" @change="updateTask(task.id, { name: ($event.target as HTMLSelectElement).value })">
                   <option v-if="!examTypeOptions.includes(task.name)" :value="task.name">{{ task.name }}</option>
-                  <option v-for="type in examTypeOptions" :key="type" :value="type">{{ type }}</option>
+                  <option v-for="type in examTypeOptions" :key="type" :value="type">{{ examTypeOptionLabel(type) }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
@@ -2507,7 +2641,7 @@ function taskDisplayName(task: Task) {
                 开启
               </label>
               <label class="table-field number-field" data-label="题库量">
-                <input type="number" :value="task.target" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
+                <input type="number" :value="task.target || ''" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
               </label>
               <label class="table-field number-field" data-label="轮次">
                 <input type="number" min="1" :value="task.repeatCount" :disabled="task.trackingMode === 'itemized'" @input="updateTask(task.id, { repeatCount: Number(($event.target as HTMLInputElement).value) })">
@@ -2545,6 +2679,14 @@ function taskDisplayName(task: Task) {
           </div>
         </div>
         <p class="hint">提示：动态均摊 = Math.ceil(剩余任务量 / 当前阶段剩余有效练习天数)。如果今天少做，未完成量会在之后的剩余天数里重新均摊。</p>
+      </section>
+
+      <section class="panel restart-panel">
+        <div>
+          <h2>重新开始</h2>
+          <p>清空本地阶段、任务、每日进度、复习计划、学习时长和备注，重新生成一个新的默认计划。GitHub 配置会保留，远端数据不会自动删除。</p>
+        </div>
+        <button class="danger-restart-button" type="button" @click="restartStudyPlan">清除所有数据并重新开始</button>
       </section>
     </section>
 
