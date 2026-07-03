@@ -83,7 +83,7 @@ interface RunningTimer {
   reviewPlanId?: string;
   name: string;
   date: string;
-  firstStartedAt: number;
+  firstStartedAt?: number;
   startedAt: number;
   accumulatedSeconds: number;
   paused: boolean;
@@ -312,16 +312,20 @@ function loadRunningTimer(): RunningTimer | null {
     if (!raw) return null;
     const timer = JSON.parse(raw) as Partial<RunningTimer>;
     if (timer.type !== 'task' && timer.type !== 'review') return null;
+    const startedAt = Number(timer.startedAt || Date.now());
+    const accumulatedSeconds = Math.max(0, Math.floor(Number(timer.accumulatedSeconds || 0)));
+    const paused = Boolean(timer.paused);
+    const firstStartedAt = Number(timer.firstStartedAt || ((accumulatedSeconds > 0 || !paused) ? startedAt : 0));
     return {
       type: timer.type,
       taskId: timer.taskId || '',
       reviewPlanId: timer.reviewPlanId || '',
       name: timer.name || (timer.type === 'review' ? '复习计时' : '任务计时'),
       date: timer.date || todayIso(),
-      firstStartedAt: Number(timer.firstStartedAt || timer.startedAt || Date.now()),
-      startedAt: Number(timer.startedAt || Date.now()),
-      accumulatedSeconds: Math.max(0, Math.floor(Number(timer.accumulatedSeconds || 0))),
-      paused: Boolean(timer.paused),
+      firstStartedAt: firstStartedAt || undefined,
+      startedAt,
+      accumulatedSeconds,
+      paused,
     };
   } catch {
     return null;
@@ -353,7 +357,9 @@ const importTaskId = ref('');
 const importText = ref('');
 const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
 const showTimerModal = ref(Boolean(runningTimer.value));
-const timerEditText = ref('');
+const timerEditHours = ref('');
+const timerEditMinutes = ref('');
+const timerEditSeconds = ref('');
 const timerEditDirty = ref(false);
 const manualStudyExamType = ref('RS');
 const manualStudyHours = ref('');
@@ -987,7 +993,7 @@ function restartStudyPlan() {
   const phases = syncPhaseBoundaries(fresh.phases, settings);
   runningTimer.value = null;
   showTimerModal.value = false;
-  timerEditText.value = '';
+  clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
   selectedProgressPhaseId.value = phases[0]?.id || '';
@@ -1069,13 +1075,12 @@ function openTimer(type: TimeLogType, id: string, name: string) {
     reviewPlanId: type === 'review' ? id : '',
     name,
     date: todayIso(),
-    firstStartedAt: timestamp,
     startedAt: timestamp,
     accumulatedSeconds: 0,
     paused: true,
   };
   showTimerModal.value = true;
-  timerEditText.value = '';
+  clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
 }
@@ -1084,12 +1089,14 @@ function toggleActiveTimer() {
   if (!runningTimer.value) return;
   const seconds = currentTimerSeconds();
   const timestamp = Date.now();
+  const nextPaused = !runningTimer.value.paused;
   nowMs.value = timestamp;
   runningTimer.value = {
     ...runningTimer.value,
+    firstStartedAt: runningTimer.value.firstStartedAt || (nextPaused ? runningTimer.value.startedAt : timestamp),
     accumulatedSeconds: seconds,
     startedAt: timestamp,
-    paused: !runningTimer.value.paused,
+    paused: nextPaused,
   };
   persistRunningTimer();
 }
@@ -1100,12 +1107,12 @@ function resetTimer(paused = true) {
   nowMs.value = timestamp;
   runningTimer.value = {
     ...runningTimer.value,
-    firstStartedAt: timestamp,
+    firstStartedAt: paused ? undefined : timestamp,
     accumulatedSeconds: 0,
     startedAt: timestamp,
     paused,
   };
-  timerEditText.value = '';
+  clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
 }
@@ -1113,33 +1120,97 @@ function resetTimer(paused = true) {
 function closeTimerModal() {
   runningTimer.value = null;
   showTimerModal.value = false;
-  timerEditText.value = '';
+  clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
 }
 
-function updateTimerEdit(value: string) {
-  timerEditText.value = value;
+function clearTimerEditDraft() {
+  timerEditHours.value = '';
+  timerEditMinutes.value = '';
+  timerEditSeconds.value = '';
+}
+
+function durationParts(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds));
+  return {
+    hours: Math.floor(total / 3600),
+    minutes: Math.floor((total % 3600) / 60),
+    seconds: total % 60,
+  };
+}
+
+function syncTimerEditDraft(seconds: number) {
+  const parts = durationParts(seconds);
+  timerEditHours.value = String(parts.hours);
+  timerEditMinutes.value = String(parts.minutes);
+  timerEditSeconds.value = String(parts.seconds);
+}
+
+function ensureTimerEditDraft() {
+  if (timerEditDirty.value) return;
+  syncTimerEditDraft(currentTimerSeconds());
+}
+
+function updateTimerEditPart(part: 'hours' | 'minutes' | 'seconds', value: string) {
+  ensureTimerEditDraft();
+  if (part === 'hours') timerEditHours.value = value;
+  if (part === 'minutes') timerEditMinutes.value = value;
+  if (part === 'seconds') timerEditSeconds.value = value;
   timerEditDirty.value = true;
+}
+
+function timerEditPartValue(part: 'hours' | 'minutes' | 'seconds') {
+  if (timerEditDirty.value) {
+    if (part === 'hours') return timerEditHours.value;
+    if (part === 'minutes') return timerEditMinutes.value;
+    return timerEditSeconds.value;
+  }
+  const parts = durationParts(currentTimerSeconds());
+  return String(parts[part]);
+}
+
+function timerEditDurationSeconds() {
+  if (!timerEditDirty.value) return currentTimerSeconds();
+  const hours = Number(timerEditHours.value || 0);
+  const minutes = Number(timerEditMinutes.value || 0);
+  const seconds = Number(timerEditSeconds.value || 0);
+  if (
+    !Number.isFinite(hours)
+    || !Number.isFinite(minutes)
+    || !Number.isFinite(seconds)
+    || hours < 0
+    || minutes < 0
+    || seconds < 0
+    || minutes >= 60
+    || seconds >= 60
+  ) {
+    return null;
+  }
+  return Math.floor(hours * 3600 + minutes * 60 + seconds);
 }
 
 function saveRunningTimer() {
   const timer = runningTimer.value;
   if (!timer) return;
-  const durationSeconds = timerEditDirty.value ? parseDurationInput(timerEditText.value) : currentTimerSeconds();
+  const saveTimestamp = Date.now();
+  nowMs.value = saveTimestamp;
+  const durationSeconds = timerEditDurationSeconds();
   if (durationSeconds === null) {
-    alert('请输入有效时长，例如 25:30 或 1:02:00');
+    alert('请输入有效时长，分钟和秒需小于 60');
     return;
   }
+  const endAt = new Date(saveTimestamp).toISOString();
+  const startAt = timer.firstStartedAt
+    ? new Date(timer.firstStartedAt).toISOString()
+    : inferStartAt(endAt, durationSeconds);
   runningTimer.value = null;
   showTimerModal.value = false;
-  timerEditText.value = '';
+  clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
   if (durationSeconds <= 0) return;
   const date = timer.date || todayIso();
-  const endAt = timerEditDirty ? new Date().toISOString() : timerEndAtIso(timer);
-  const startAt = timerEditDirty ? inferStartAt(endAt, durationSeconds) : new Date(timer.firstStartedAt || Date.now()).toISOString();
   const entry: StudyTimeEntry = {
     id: crypto.randomUUID(),
     date,
@@ -1224,23 +1295,19 @@ function inferStartAt(endAt: string, durationSeconds: number) {
   return new Date(endMs - Math.max(0, durationSeconds) * 1000).toISOString();
 }
 
-function timerEndAtIso(timer: RunningTimer) {
-  const timestamp = timer.paused ? timer.startedAt : nowMs.value;
-  return new Date(timestamp).toISOString();
+function timerEndAtIso() {
+  return new Date(nowMs.value).toISOString();
 }
 
 function timerPreviewStartAt(timer: RunningTimer) {
-  const endAt = timerEndAtIso(timer);
-  if (!timerEditDirty.value) return new Date(timer.firstStartedAt || timer.startedAt).toISOString();
-  const durationSeconds = parseDurationInput(timerEditText.value);
-  if (durationSeconds === null) return '';
-  return inferStartAt(endAt, durationSeconds);
+  if (!timer.firstStartedAt) return '';
+  return new Date(timer.firstStartedAt).toISOString();
 }
 
 function timerPreviewRange(timer: RunningTimer) {
   const startAt = timerPreviewStartAt(timer);
   if (!startAt) return '--:-- - --:--';
-  return `${formatClockTime(startAt)}-${formatClockTime(timerEndAtIso(timer))}`;
+  return `${formatClockTime(startAt)}-${formatClockTime(timerEndAtIso())}`;
 }
 
 function formatDuration(seconds: number) {
@@ -2785,14 +2852,39 @@ function taskDisplayName(task: Task) {
           <span>计时时段</span>
           <strong>{{ timerPreviewRange(runningTimer) }}</strong>
         </div>
-        <p>{{ runningTimer.paused ? '已暂停，可以重置或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
+        <p>{{ !runningTimer.firstStartedAt ? '尚未开始，点击开始后会记录起点。' : runningTimer.paused ? '已暂停，可以重置或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
         <label class="timer-edit-field">保存时长
-          <input
-            type="text"
-            :value="timerEditDirty ? timerEditText : formatDuration(currentTimerSeconds())"
-            placeholder="例如 25:30 或 1:02:00"
-            @input="updateTimerEdit(($event.target as HTMLInputElement).value)"
-          >
+          <span class="timer-duration-inputs">
+            <input
+              type="number"
+              inputmode="numeric"
+              min="0"
+              :value="timerEditPartValue('hours')"
+              aria-label="小时"
+              @input="updateTimerEditPart('hours', ($event.target as HTMLInputElement).value)"
+            >
+            <small>时</small>
+            <input
+              type="number"
+              inputmode="numeric"
+              min="0"
+              max="59"
+              :value="timerEditPartValue('minutes')"
+              aria-label="分钟"
+              @input="updateTimerEditPart('minutes', ($event.target as HTMLInputElement).value)"
+            >
+            <small>分</small>
+            <input
+              type="number"
+              inputmode="numeric"
+              min="0"
+              max="59"
+              :value="timerEditPartValue('seconds')"
+              aria-label="秒"
+              @input="updateTimerEditPart('seconds', ($event.target as HTMLInputElement).value)"
+            >
+            <small>秒</small>
+          </span>
         </label>
         <div class="timer-modal-actions">
           <button type="button" @click="toggleActiveTimer">{{ timerActionLabel() }}</button>
