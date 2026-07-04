@@ -1207,7 +1207,6 @@ function resetTimer(paused = true) {
 }
 
 function closeTimerModal() {
-  runningTimer.value = null;
   showTimerModal.value = false;
   clearTimerEditDraft();
   timerEditDirty.value = false;
@@ -3026,7 +3025,7 @@ function taskDisplayName(task: Task) {
 
     <div v-if="showTimerModal && runningTimer" class="modal timer-modal">
       <section class="modal-box timer-modal-box">
-        <button class="modal-close-button" type="button" title="关闭并清空当前计时" @click="closeTimerModal">×</button>
+        <button class="modal-close-button" type="button" title="关闭弹窗，保留当前计时" @click="closeTimerModal">×</button>
         <span class="timer-type">{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
         <h3>{{ runningTimer.name }}</h3>
         <strong class="timer-display">{{ formatDuration(currentTimerSeconds()) }}</strong>
