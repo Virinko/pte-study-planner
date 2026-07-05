@@ -50,7 +50,7 @@ const taskPriorityOptions = Object.values(taskScoreRows.reduce<Record<string, { 
 }, {})).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 const taskPriorityByName = new Map(taskPriorityOptions.map((item) => [item.name, item]));
 const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => [item.name, index]));
-const examTypeOptions = [...taskPriorityOptions.map((item) => item.name), 'FIB'];
+const examTypeOptions = [...taskPriorityOptions.map((item) => item.name), '错题复习'];
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },
