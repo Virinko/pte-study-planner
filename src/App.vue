@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Minus, PencilLine, Plus, Trash2, TrendingUp, X } from '@lucide/vue';
+import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Minus, PencilLine, Plus, RotateCcw, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import { fetchGitHubData, saveGitHubData } from './github';
@@ -147,7 +147,7 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     subItems,
     target,
     repeatCount,
-    completed: Math.min(Math.max(0, completed), totalTarget || Math.max(0, completed)),
+    completed: Math.max(0, completed),
   };
 }
 
@@ -356,6 +356,10 @@ const selectedNoteDate = ref(todayIso());
 const noteDraft = ref(data.value.dailyNotes?.[todayIso()] || '');
 const importTaskId = ref('');
 const importText = ref('');
+const correctionTaskId = ref('');
+const correctionAmountInput = ref('');
+const correctionError = ref('');
+const correctionField = ref<HTMLInputElement | null>(null);
 const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
 const showTimerModal = ref(Boolean(runningTimer.value));
 const timerEditHours = ref('');
@@ -468,9 +472,12 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     sourceIndex: index,
   };
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
-const todayTarget = computed(() => todayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
-const todayPercent = computed(() => pct(todayLogTotal.value, todayTarget.value));
-const todayTaskRemaining = computed(() => Math.max(0, todayTarget.value - todayLogTotal.value));
+const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget));
+const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !(task.totalTarget > 0 && task.completed >= task.totalTarget)));
+const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
+const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
+const todayPercent = computed(() => pct(activeTodayLogTotal.value, todayTarget.value));
+const todayTaskRemaining = computed(() => Math.max(0, todayTarget.value - activeTodayLogTotal.value));
 const completedTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => task.doneToday));
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
@@ -487,6 +494,7 @@ const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
   phase,
   tasks: data.value.tasks.filter((task) => task.phaseId === phase.id),
 })));
+const correctionTask = computed(() => data.value.tasks.find((task) => task.id === correctionTaskId.value));
 
 const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   ...task,
@@ -503,7 +511,7 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   priorityRank: taskPriorityRank(task.name),
   sourceIndex: index,
   phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
-  status: taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task) ? '完成' : '正常',
+  status: taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task) ? '已结束' : '进行中',
 })).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || activePhaseProgress.value || phaseProgress.value[0]);
@@ -1542,6 +1550,74 @@ function updateTask(id: string, patch: Partial<Task>) {
   saveLocal({ ...data.value, tasks: data.value.tasks.map((task) => task.id === id ? normalizeTask({ ...task, ...patch }, data.value.phases[0]?.id || '') : task) });
 }
 
+function openCorrectionModal(task: Task) {
+  correctionTaskId.value = task.id;
+  correctionAmountInput.value = String(Math.min(task.completed, taskTotalTarget(task)));
+  correctionError.value = '';
+  void nextTick(() => correctionField.value?.focus());
+}
+
+function closeCorrectionModal() {
+  correctionTaskId.value = '';
+  correctionAmountInput.value = '';
+  correctionError.value = '';
+}
+
+function submitCorrection() {
+  const task = correctionTask.value;
+  if (!task) return;
+  const totalTarget = taskTotalTarget(task);
+  if (totalTarget <= 0) return;
+  const nextCompleted = Math.floor(Number(correctionAmountInput.value));
+  if (!Number.isFinite(nextCompleted) || nextCompleted < 0 || nextCompleted > totalTarget) {
+    correctionError.value = `请输入 0 到 ${totalTarget} 之间的整数。`;
+    return;
+  }
+
+  if (task.trackingMode === 'itemized' && task.subItems.length > 0) {
+    const doneEntries = task.subItems
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.status === 'done')
+      .sort((a, b) => (a.item.completedDate || '').localeCompare(b.item.completedDate || '') || a.index - b.index);
+    const keepIds = new Set(doneEntries.slice(0, nextCompleted).map(({ item }) => item.id));
+    const nextSubItems = task.subItems.map((item) => item.status === 'done' && !keepIds.has(item.id)
+      ? { ...item, status: 'not_started' as const, completedDate: '' }
+      : item);
+    const affectedDates = new Set(task.subItems.map((item) => item.completedDate).filter((date): date is string => Boolean(date)));
+    const dailyLogs = { ...data.value.dailyLogs };
+    affectedDates.forEach((date) => {
+      const logs = dailyLogs[date] || [];
+      const selectedIds = nextSubItems.filter((item) => item.completedDate === date).map((item) => item.id);
+      const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
+      dailyLogs[date] = selectedIds.length > 0 ? [...otherLogs, { taskId: task.id, count: selectedIds.length, subItemIds: selectedIds }] : otherLogs;
+    });
+    saveLocal({
+      ...data.value,
+      tasks: data.value.tasks.map((item) => item.id === task.id ? normalizeTask({ ...task, subItems: nextSubItems }, data.value.phases[0]?.id || '') : item),
+      dailyLogs,
+    });
+    closeCorrectionModal();
+    return;
+  }
+
+  const date = todayIso();
+  const logs = data.value.dailyLogs[date] || [];
+  const todayCompleted = logs
+    .filter((entry) => entry.taskId === task.id)
+    .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
+  const historicalCompleted = Math.max(0, task.completed - todayCompleted);
+  const nextTodayCompleted = Math.max(0, nextCompleted - historicalCompleted);
+  const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
+  const nextLogs = nextTodayCompleted > 0 ? [...otherLogs, { taskId: task.id, count: nextTodayCompleted }] : otherLogs;
+
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: nextCompleted } : item),
+    dailyLogs: { ...data.value.dailyLogs, [date]: nextLogs },
+  });
+  closeCorrectionModal();
+}
+
 function addTask(phaseId?: string, name = '') {
   const targetPhase = schedule.value.find((item) => item.id === phaseId) || phase.value || schedule.value[0];
   saveLocal({
@@ -2227,7 +2303,7 @@ function taskDisplayName(task: Task) {
           <div class="dashboard-table-head">
             <span>任务</span><span>计时</span><span>今日建议</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
           </div>
-          <template v-for="task in todayTaskRows" :key="task.id">
+          <template v-for="task in activeTodayTaskRows" :key="task.id">
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
               <strong class="task-name-cell">
                 <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
@@ -2345,7 +2421,7 @@ function taskDisplayName(task: Task) {
               </div>
             </div>
           </template>
-          <div v-if="todayTaskRows.length === 0" class="empty-row">今天还没有任务。</div>
+          <div v-if="activeTodayTaskRows.length === 0" class="empty-row">今天还没有待完成任务。</div>
         </div>
 
         <div class="today-footer">
@@ -2353,6 +2429,57 @@ function taskDisplayName(task: Task) {
           <span>预计完成时间：{{ estimatedHours }} 小时</span>
           <span>今日完成率：{{ todayPercent }}%</span>
         </div>
+
+        <section v-if="completedOverallTaskRows.length" class="completed-task-module">
+          <div class="completed-task-heading">
+            <div>
+              <h3>已结束题型</h3>
+              <p>总体进度已结束的题型会收纳在这里，不再占用今日待做列表。</p>
+            </div>
+            <strong>{{ completedOverallTaskRows.length }} 项</strong>
+          </div>
+          <div class="completed-task-list">
+            <div v-for="task in completedOverallTaskRows" :key="`completed-${task.id}`" class="completed-task-item" :style="{ '--task-accent': task.accent }">
+              <article class="completed-task-row">
+                <strong class="task-name-cell">
+                  <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
+                  <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                </strong>
+                <span class="completed-task-metrics">
+                  <span class="today-progress-cell overall-progress-cell">
+                    <span class="progress-meta">
+                      <strong>{{ task.completed }} / {{ task.totalTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                      <b>{{ task.percent }}%</b>
+                    </span>
+                    <span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span>
+                    <span class="completed-task-today">
+                      <small>今日完成</small>
+                      <strong>{{ task.todayCompleted }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                    </span>
+                  </span>
+                  <span class="completed-task-state">
+                    <em class="completed-task-status status-ok">已结束</em>
+                    <button class="completed-task-restore" type="button" title="修正完成数量" @click="openCorrectionModal(task)">
+                      <RotateCcw :size="15" stroke-width="2.5" aria-hidden="true" />
+                      <span>恢复</span>
+                    </button>
+                  </span>
+                </span>
+              </article>
+              <div v-if="task.reviewEnabled && task.doneToday && tomorrowReviewTargetForTask(task.id) === 0" class="review-register-panel completed-review-register">
+                <div>
+                  <strong>登记明日复习量</strong>
+                  <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
+                  <span v-else>填入明天需要复习的错题量，不计入主任务进度。</span>
+                </div>
+                <div class="review-register-actions">
+                  <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
+                  <button type="button" @click="setTomorrowReview(task)">保存</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
       </section>
 
       <section class="dashboard-card review-today-card">
@@ -2474,7 +2601,7 @@ function taskDisplayName(task: Task) {
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
             <span>{{ formatDurationCompact(task.totalStudySeconds) }}</span>
             <span>{{ task.remaining }} 题</span>
-            <em :class="task.status === '正常' || task.status === '完成' ? 'status-ok' : 'status-warn'">{{ task.status }}</em>
+            <em class="detail-progress-status" :class="task.status === '已结束' ? 'is-ended' : 'is-active'">{{ task.status }}</em>
           </div>
           <details v-for="task in filteredTaskProgressRows.filter((item) => item.trackingMode === 'itemized' && item.subItems.length > 0)" :key="`${task.id}-detail`" class="subitem-progress">
             <summary>{{ task.name }} 篇目明细：已完成 {{ itemizedDoneCount(task) }} / {{ task.subItems.length }}</summary>
@@ -3084,6 +3211,39 @@ function taskDisplayName(task: Task) {
         <div class="actions">
           <button type="submit">导入</button>
           <button class="ghost" type="button" @click="closeImportModal">取消</button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="correctionTask" class="modal">
+      <form class="modal-box correction-modal" @submit.prevent="submitCorrection">
+        <button class="modal-close-button" type="button" title="关闭弹窗" @click="closeCorrectionModal">×</button>
+        <span class="timer-type">修正总进度</span>
+        <div class="modal-title">
+          <h3>{{ taskDisplayName(correctionTask) }}</h3>
+          <p>请输入截至今天总进度的真实完成数量，不是今天新增完成量。</p>
+        </div>
+        <div class="correction-summary">
+          <span>当前记录</span>
+          <strong>{{ correctionTask.completed }} / {{ taskTotalTarget(correctionTask) }} {{ correctionTask.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+        </div>
+        <label class="correction-field">
+          <span>截至今天总进度的真实完成数量</span>
+          <input
+            ref="correctionField"
+            v-model="correctionAmountInput"
+            type="number"
+            inputmode="numeric"
+            min="0"
+            :max="taskTotalTarget(correctionTask)"
+            :aria-label="`${taskDisplayName(correctionTask)} 截至今天总进度的真实完成数量`"
+            @input="correctionError = ''"
+          >
+        </label>
+        <p v-if="correctionError" class="correction-error">{{ correctionError }}</p>
+        <div class="timer-modal-actions correction-actions">
+          <button class="ghost" type="button" @click="closeCorrectionModal">取消</button>
+          <button class="primary" type="submit">保存修正</button>
         </div>
       </form>
     </div>
