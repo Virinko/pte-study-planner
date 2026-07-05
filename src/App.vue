@@ -15,7 +15,7 @@ const KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
-const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频'];
+const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '错题复习'];
 const taskScoreRows = [
   { name: 'SGD', skill: '听力', percent: 20 },
   { name: 'RS', skill: '听力', percent: 17 },
@@ -50,7 +50,7 @@ const taskPriorityOptions = Object.values(taskScoreRows.reduce<Record<string, { 
 }, {})).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 const taskPriorityByName = new Map(taskPriorityOptions.map((item) => [item.name, item]));
 const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => [item.name, index]));
-const examTypeOptions = [...taskPriorityOptions.map((item) => item.name), '错题复习'];
+const examTypeOptions = taskPriorityOptions.map((item) => item.name);
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },

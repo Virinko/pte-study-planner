@@ -1,5 +1,5 @@
 export type PracticePlatform = '多墨' | '猩际' | '萤火虫' | '影子三千';
-export type FrequencyType = '全题库' | '超高频' | '非超高频';
+export type FrequencyType = '全题库' | '超高频' | '非超高频' | '错题复习';
 export type TrackingMode = 'count_only' | 'itemized';
 export type SubItemStatus = 'not_started' | 'doing' | 'done';
 export type Familiarity = '生' | '半熟' | '熟' | '可默写';
