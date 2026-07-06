@@ -437,6 +437,7 @@ const todayLogByTask = computed(() => {
   }, {});
   for (const task of data.value.tasks) {
     if (task.trackingMode === 'itemized') result[task.id] = todayDoneItems(task).length;
+    else result[task.id] = Math.min(Math.max(0, result[task.id] || 0), Math.max(0, task.completed));
   }
   return result;
 });
@@ -535,7 +536,6 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
   priorityScore: taskPriorityScore(task.name),
   priorityRank: taskPriorityRank(task.name),
   sourceIndex: index,
-  phaseName: schedule.value.find((item) => item.id === task.phaseId)?.name || '未分配阶段',
   status: taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task) ? '已结束' : '进行中',
 })).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
@@ -579,7 +579,7 @@ const timeTrendRows = computed(() => {
 const timeByExamTypeRows = computed(() => {
   const grouped = todayTimeLogs.value
     .reduce<Record<string, number>>((acc, entry) => {
-      const type = (entry.examType || examTypeFromName(entry.taskName)).toUpperCase();
+      const type = studyTimeExamType(entry);
       acc[type] = (acc[type] || 0) + entry.durationSeconds;
       return acc;
     }, {});
@@ -679,7 +679,7 @@ const practiceReportRows = computed(() => {
   practiceReportTimeEntries.value.forEach((log) => {
     const seconds = Math.max(0, Math.floor(log.durationSeconds));
     if (seconds <= 0) return;
-    const row = ensureRow(log.examType || examTypeFromName(log.taskName));
+    const row = ensureRow(studyTimeExamType(log));
     if (log.timeType === 'review') row.reviewSeconds += seconds;
     else row.mainSeconds += seconds;
   });
@@ -1165,10 +1165,15 @@ function savedTimeSeconds(type: TimeLogType, id: string) {
 }
 
 function totalStudySecondsForTask(task: Task) {
-  const type = taskInitials(task.name);
   return studyTimeEntries.value
-    .filter((log) => log.taskId === task.id || (!log.taskId && (log.examType || examTypeFromName(log.taskName)).toUpperCase() === type))
+    .filter((log) => log.taskId === task.id || (!log.taskId && log.timeType === 'review' && reviewPlanForId(log.reviewPlanId || '')?.taskId === task.id))
     .reduce((sum, log) => sum + log.durationSeconds, 0);
+}
+
+function studyTimeExamType(log: StudyTimeEntry) {
+  const linkedTask = data.value.tasks.find((task) => task.id === log.taskId)
+    || data.value.tasks.find((task) => task.id === reviewPlanForId(log.reviewPlanId || '')?.taskId);
+  return taskInitials(linkedTask?.name || log.examType || log.taskName);
 }
 
 function selectTimePoint(date: string) {
@@ -1181,7 +1186,7 @@ function timerActionLabel() {
   return currentTimerSeconds() > 0 ? '继续' : '开始';
 }
 
-function openTimer(type: TimeLogType, id: string, name: string) {
+function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '') {
   const identity = timerIdentity(type, id);
   if (runningTimerIdentity(runningTimer.value) === identity) {
     nowMs.value = Date.now();
@@ -1193,7 +1198,7 @@ function openTimer(type: TimeLogType, id: string, name: string) {
   nowMs.value = timestamp;
   runningTimer.value = {
     type,
-    taskId: type === 'task' ? id : '',
+    taskId: type === 'task' ? id : linkedTaskId,
     reviewPlanId: type === 'review' ? id : '',
     name,
     date: todayIso(),
@@ -1332,13 +1337,15 @@ function saveRunningTimer() {
   persistRunningTimer();
   if (durationSeconds <= 0) return;
   const date = timer.date || todayIso();
+  const linkedTaskId = timer.taskId || (timer.type === 'review' ? reviewPlanForId(timer.reviewPlanId || '')?.taskId || '' : '');
+  const linkedTask = data.value.tasks.find((task) => task.id === linkedTaskId);
   const entry: StudyTimeEntry = {
     id: crypto.randomUUID(),
     date,
-    taskId: timer.taskId || '',
+    taskId: linkedTaskId,
     reviewPlanId: timer.reviewPlanId || '',
     taskName: timer.name,
-    examType: examTypeFromName(timer.name),
+    examType: linkedTask ? taskInitials(linkedTask.name) : examTypeFromName(timer.name),
     durationSeconds,
     timeType: timer.type === 'review' ? 'review' : 'main',
     source: 'timer',
@@ -1572,7 +1579,37 @@ function syncPhaseBoundaries(phases: Phase[], settings: StudyData['settings']) {
 }
 
 function updateTask(id: string, patch: Partial<Task>) {
+  const task = data.value.tasks.find((item) => item.id === id);
+  if (task && Object.prototype.hasOwnProperty.call(patch, 'completed')) {
+    updateTaskCompleted(task, Number(patch.completed ?? 0), patch);
+    return;
+  }
   saveLocal({ ...data.value, tasks: data.value.tasks.map((task) => task.id === id ? normalizeTask({ ...task, ...patch }, data.value.phases[0]?.id || '') : task) });
+}
+
+function updateTaskCompleted(task: Task, completed: number, patch: Partial<Task> = {}) {
+  const nextCompleted = Math.max(0, Math.floor(Number(completed) || 0));
+  const nextTask = normalizeTask({ ...task, ...patch, completed: nextCompleted }, data.value.phases[0]?.id || '');
+  if (nextTask.trackingMode === 'itemized' && nextTask.subItems.length > 0) {
+    saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
+    return;
+  }
+
+  const date = todayIso();
+  const logs = data.value.dailyLogs[date] || [];
+  const todayCompleted = logs
+    .filter((entry) => entry.taskId === task.id)
+    .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
+  const historicalCompleted = Math.max(0, task.completed - todayCompleted);
+  const nextTodayCompleted = Math.max(0, nextTask.completed - historicalCompleted);
+  const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
+  const nextLogs = nextTodayCompleted > 0 ? [...otherLogs, { taskId: task.id, count: nextTodayCompleted }] : otherLogs;
+
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item),
+    dailyLogs: { ...data.value.dailyLogs, [date]: nextLogs },
+  });
 }
 
 function openCorrectionModal(task: Task) {
@@ -1855,6 +1892,15 @@ function tomorrowReviewTargetForTask(taskId: string) {
   return (data.value.reviewPlans[date] || [])
     .filter((plan) => plan.taskId === taskId && plan.sourceDate === todayIso())
     .reduce((sum, plan) => sum + plan.target, 0);
+}
+
+function reviewPlanForId(planId: string) {
+  return Object.values(data.value.reviewPlans).flat().find((plan) => plan.id === planId);
+}
+
+function reviewPlanTaskName(plan: ReviewPlan) {
+  const task = data.value.tasks.find((item) => item.id === plan.taskId);
+  return task ? taskDisplayName(task) : plan.taskName;
 }
 
 function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>) {
@@ -2197,7 +2243,7 @@ function taskSoftColor(name: string, fallbackIndex = 0) {
 }
 
 function timeLogDisplayName(log: StudyTimeEntry) {
-  const type = log.examType.trim();
+  const type = studyTimeExamType(log).trim();
   const name = log.taskName.trim();
   if (!type) return name;
   return name.replace(new RegExp(`^${type}\\s+`, 'i'), '').trim() || name;
@@ -2558,7 +2604,7 @@ function taskDisplayName(task: Task) {
               <label class="select-control">
                 <select v-model="reviewAddTaskId">
                   <option value="">选择任务</option>
-                  <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ task.name }}</option>
+                  <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ taskDisplayName(task) }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
               </label>
@@ -2575,8 +2621,8 @@ function taskDisplayName(task: Task) {
                 <div class="review-card-head">
                   <div class="review-card-info">
                     <div class="review-card-titleline">
-                      <strong>{{ plan.taskName }} 错题复习</strong>
-                      <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, `${plan.taskName} 错题复习`)">{{ timerEntryLabel('review', plan.id) }}</button>
+                      <strong>{{ reviewPlanTaskName(plan) }}</strong>
+                      <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, reviewPlanTaskName(plan), plan.taskId)">{{ timerEntryLabel('review', plan.id) }}</button>
                       <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">今日已学 {{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
                     </div>
                   </div>
@@ -2613,7 +2659,7 @@ function taskDisplayName(task: Task) {
             <div v-if="tomorrowReviewPlans.length" class="review-list compact">
               <article v-for="plan in tomorrowReviewPlans" :key="plan.id">
                 <div>
-                  <strong>{{ plan.taskName }} 错题复习</strong>
+                  <strong>{{ reviewPlanTaskName(plan) }}</strong>
                   <small>{{ plan.sourceDate === todayIso() ? '今日登记给明天' : `${plan.sourceDate} 登记` }}</small>
                 </div>
                 <label class="review-target-input">计划
@@ -2641,12 +2687,12 @@ function taskDisplayName(task: Task) {
         </div>
         <div class="dashboard-table detail-table">
           <div class="dashboard-table-head">
-            <span>任务名称</span><span>权重</span><span>所属阶段</span><span>轮次</span><span>已完成 / 目标</span><span>进度</span><span>总练习时长</span><span>剩余</span><span>状态</span>
+            <span>任务名称</span><span>权重</span><span>频率类型</span><span>轮次</span><span>已完成 / 目标</span><span>进度</span><span>总练习时长</span><span>剩余</span><span>状态</span>
           </div>
           <div v-for="task in filteredTaskProgressRows" :key="task.id" class="dashboard-table-row">
             <strong>{{ task.name }}</strong>
             <span>{{ task.priorityScore ? `${task.priorityScore}%` : '-' }}</span>
-            <span>{{ task.phaseName }}</span>
+            <span>{{ task.frequencyType }}</span>
             <span>{{ task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
             <span>{{ task.completed }} / {{ task.totalTarget }}</span>
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
@@ -2809,7 +2855,7 @@ function taskDisplayName(task: Task) {
             </div>
             <div v-if="visibleTodayTimeEntries.length" class="time-log-list rich-time-log-list">
               <article v-for="log in visibleTodayTimeEntries" :key="log.id">
-                <span class="type-badge time-log-type" :style="{ color: taskTypeColor(log.examType), background: taskTypeSoftColor(log.examType) }">{{ log.examType }}</span>
+                <span class="type-badge time-log-type" :style="{ color: taskTypeColor(studyTimeExamType(log)), background: taskTypeSoftColor(studyTimeExamType(log)) }">{{ studyTimeExamType(log) }}</span>
                 <strong class="time-log-title">{{ timeLogDisplayName(log) }}</strong>
                 <time class="time-log-range">{{ formatClockRange(log) }}</time>
                 <span class="time-log-duration">{{ formatDurationCompact(log.durationSeconds) }}</span>
