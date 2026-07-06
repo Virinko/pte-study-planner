@@ -109,6 +109,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyNotes: source?.dailyNotes ?? base.dailyNotes,
     reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
+    skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
     timeLogs: entriesToTimeLogs(studyTimeEntries),
     studyTimeEntries,
   };
@@ -169,6 +170,15 @@ function normalizeReviewPlan(plan: Partial<ReviewPlan>, tasks: Task[]): ReviewPl
     target: Math.max(0, Number(plan.target ?? 0)),
     completed: Math.max(0, Number(plan.completed ?? 0)),
   };
+}
+
+function normalizeSkippedReviewRegistrations(source: Partial<StudyData['skippedReviewRegistrations']>, tasks: Task[]): StudyData['skippedReviewRegistrations'] {
+  const taskIds = new Set(tasks.map((task) => task.id));
+  return Object.entries(source || {}).reduce<StudyData['skippedReviewRegistrations']>((acc, [date, ids]) => {
+    const uniqueIds = [...new Set(ids || [])].filter((id) => taskIds.has(id));
+    if (uniqueIds.length) acc[date] = uniqueIds;
+    return acc;
+  }, {});
 }
 
 function normalizeTimeLogs(source: Partial<StudyData['timeLogs']>): StudyData['timeLogs'] {
@@ -1786,6 +1796,30 @@ function setTomorrowReview(task: Task) {
   saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
 }
 
+function isTomorrowReviewRegistrationSkipped(taskId: string) {
+  return (data.value.skippedReviewRegistrations[todayIso()] || []).includes(taskId);
+}
+
+function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean }) {
+  return task.reviewEnabled
+    && task.doneToday
+    && tomorrowReviewTargetForTask(task.id) === 0
+    && !isTomorrowReviewRegistrationSkipped(task.id);
+}
+
+function cancelTomorrowReviewRegistration(task: Task) {
+  const date = todayIso();
+  const skippedToday = data.value.skippedReviewRegistrations[date] || [];
+  const nextSkipped = skippedToday.includes(task.id) ? skippedToday : [...skippedToday, task.id];
+  saveLocal({
+    ...data.value,
+    skippedReviewRegistrations: {
+      ...data.value.skippedReviewRegistrations,
+      [date]: nextSkipped,
+    },
+  });
+}
+
 function addReviewPlan() {
   const task = data.value.tasks.find((item) => item.id === reviewAddTaskId.value) || reviewEnabledTasks.value[0];
   const target = Math.max(0, Math.floor(reviewAddTargetInput.value || 0));
@@ -2424,7 +2458,7 @@ function taskDisplayName(task: Task) {
                 </button>
               </section>
             </div>
-            <div v-if="task.reviewEnabled && task.doneToday && tomorrowReviewTargetForTask(task.id) === 0" class="review-register-panel">
+            <div v-if="shouldShowTomorrowReviewRegister(task)" class="review-register-panel">
               <div>
                 <strong>登记明日复习量</strong>
                 <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
@@ -2432,7 +2466,8 @@ function taskDisplayName(task: Task) {
               </div>
               <div class="review-register-actions">
                 <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
-                <button type="button" @click="setTomorrowReview(task)">保存</button>
+                <button class="review-register-cancel" type="button" @click="cancelTomorrowReviewRegistration(task)">取消</button>
+                <button class="review-register-save" type="button" @click="setTomorrowReview(task)">保存</button>
               </div>
             </div>
           </template>
@@ -2481,7 +2516,7 @@ function taskDisplayName(task: Task) {
                   </span>
                 </span>
               </article>
-              <div v-if="task.reviewEnabled && task.doneToday && tomorrowReviewTargetForTask(task.id) === 0" class="review-register-panel completed-review-register">
+              <div v-if="shouldShowTomorrowReviewRegister(task)" class="review-register-panel completed-review-register">
                 <div>
                   <strong>登记明日复习量</strong>
                   <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
@@ -2489,7 +2524,8 @@ function taskDisplayName(task: Task) {
                 </div>
                 <div class="review-register-actions">
                   <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
-                  <button type="button" @click="setTomorrowReview(task)">保存</button>
+                  <button class="review-register-cancel" type="button" @click="cancelTomorrowReviewRegistration(task)">取消</button>
+                  <button class="review-register-save" type="button" @click="setTomorrowReview(task)">保存</button>
                 </div>
               </div>
             </div>

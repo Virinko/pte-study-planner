@@ -3175,9 +3175,18 @@ nav button.active::after {
 .review-register-actions button {
   min-height: 34px;
   padding: 6px 12px;
+  border-radius: 7px;
+}
+
+.review-register-actions .review-register-save {
   color: #fff;
   background: #7a3ed2;
-  border-radius: 7px;
+}
+
+.review-register-actions .review-register-cancel {
+  color: #667389;
+  background: #fff;
+  border: 1px solid #dbe2ef;
 }
 
 .review-toggle {
@@ -6535,7 +6544,7 @@ nav button.active {
 }
 
 .primary-action,
-.review-register-actions button,
+.review-register-actions .review-register-save,
 .review-add-form button,
 .panel-actions button,
 .timer-modal-actions .primary {

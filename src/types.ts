@@ -47,6 +47,7 @@ export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyNotes { [date: string]: string; }
 export interface ReviewPlan { id: string; taskId: string; taskName: string; sourceDate: string; target: number; completed: number; }
 export interface ReviewPlans { [date: string]: ReviewPlan[]; }
+export interface SkippedReviewRegistrations { [date: string]: string[]; }
 export type TimeLogType = 'task' | 'review';
 export type StudyTimeType = 'main' | 'review';
 export type StudyTimeSource = 'manual' | 'timer';
@@ -78,5 +79,5 @@ export interface StudyTimeEntry {
   endAt?: string;
   createdAt: string;
 }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }
