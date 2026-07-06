@@ -404,6 +404,21 @@ const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.
 const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayStudySeconds = computed(() => todayTaskSeconds.value + todayReviewSeconds.value);
+const planAverageStudyDays = computed(() => {
+  const today = todayIso();
+  const startDate = data.value.settings.startDate;
+  if (today < startDate) return 0;
+  return daysBetweenInclusive(startDate, today);
+});
+const planAverageDailyStudySeconds = computed(() => {
+  if (planAverageStudyDays.value <= 0) return 0;
+  const today = todayIso();
+  const startDate = data.value.settings.startDate;
+  const totalSeconds = studyTimeEntries.value
+    .filter((log) => log.date >= startDate && log.date <= today)
+    .reduce((sum, log) => sum + log.durationSeconds, 0);
+  return Math.floor(totalSeconds / planAverageStudyDays.value);
+});
 const runningTimerSeconds = computed(() => currentTimerSeconds());
 const todayLogByTask = computed(() => {
   const result = todayLogs.value.reduce<Record<string, number>>((acc, log) => {
@@ -2715,6 +2730,7 @@ function taskDisplayName(task: Task) {
             <div class="time-chart-title"><span aria-hidden="true"><TrendingUp :size="18" stroke-width="2.4" /></span><strong>{{ timeTrendRange === '7' ? '近 7 天' : timeTrendRange === '30' ? '近 30 天' : '全部' }}学习时长趋势</strong></div>
             <div ref="timeTrendChartEl" class="time-echarts" role="img" aria-label="学习时长趋势图" />
           </div>
+          <p class="time-average-note">从计划开始至今，平均每天学习 <strong>{{ formatDurationCompact(planAverageDailyStudySeconds) }}</strong></p>
           <div class="review-stats soft-stats time-stats">
             <article><span>今日主任务时长</span><strong>{{ formatDurationCompact(todayTaskSeconds) }}</strong></article>
             <article><span>今日复习时长</span><strong>{{ formatDurationCompact(todayReviewSeconds) }}</strong></article>

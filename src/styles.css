@@ -5667,6 +5667,26 @@ nav button:focus-visible {
   height: 238px;
 }
 
+.time-average-note {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  color: #617087;
+  background: #fff7f2;
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.time-average-note strong {
+  color: #ff6b1a;
+  font-size: 16px;
+}
+
 .time-chart-title {
   display: inline-flex;
   align-items: center;
