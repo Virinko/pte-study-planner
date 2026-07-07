@@ -590,7 +590,7 @@ const timeByExamTypeRows = computed(() => {
 const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
 const todayPracticeItems = computed(() => {
-  const mainItems = todayTaskRows.value.filter((task) => task.doneToday || task.todayStatus === '超额完成').map((task, index) => {
+  const mainItems = todayTaskRows.value.filter((task) => task.todayCompleted > 0 && (task.doneToday || task.todayStatus === '超额完成')).map((task, index) => {
     const unit = task.trackingMode === 'itemized' ? '篇' : '题';
     return {
       id: `task-${task.id}`,
@@ -604,7 +604,7 @@ const todayPracticeItems = computed(() => {
       sourceOrder: index,
     };
   });
-  const reviewItems = todayReviewPlans.value.filter((plan) => plan.completed >= plan.target).map((plan, index) => {
+  const reviewItems = todayReviewPlans.value.filter((plan) => plan.completed > 0 && plan.completed >= plan.target).map((plan, index) => {
     const task = data.value.tasks.find((item) => item.id === plan.taskId);
     const type = taskInitials(plan.taskName);
     return {

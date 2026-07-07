@@ -3342,7 +3342,8 @@ nav button.active::after {
 }
 
 .review-list.compact article {
-  grid-template-columns: 1fr 72px auto;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  column-gap: 16px;
 }
 
 .review-list article > div:first-child,
@@ -5890,7 +5891,7 @@ nav button:focus-visible {
   width: 100%;
   min-height: 44px;
   display: grid;
-  grid-template-columns: 62px 72px minmax(110px, 1fr) 140px 76px 30px;
+  grid-template-columns: 70px 72px minmax(110px, 1fr) 140px 76px 30px;
   align-items: center;
   gap: 25px;
   padding: 5px 15px;
@@ -6219,7 +6220,7 @@ nav button:focus-visible {
 }
 
 .progress-page .time-progress-card .time-log-type {
-  width: 58px;
+  width: 66px;
   min-width: 0;
   max-width: none;
   height: 26px;
