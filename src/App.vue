@@ -154,7 +154,7 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
 
 function normalizeReviewPlans(source: Partial<StudyData['reviewPlans']>, tasks: Task[]): StudyData['reviewPlans'] {
   return Object.entries(source || {}).reduce<StudyData['reviewPlans']>((acc, [date, plans]) => {
-    const normalized = (plans || []).map((plan) => normalizeReviewPlan(plan, tasks)).filter((plan) => plan.target > 0 || plan.completed > 0);
+    const normalized = (plans || []).map((plan) => normalizeReviewPlan(plan, tasks)).filter((plan) => plan.target > 0 || plan.completed > 0 || (plan.subItemIds?.length || 0) > 0);
     if (normalized.length) acc[date] = normalized;
     return acc;
   }, {});
@@ -162,13 +162,20 @@ function normalizeReviewPlans(source: Partial<StudyData['reviewPlans']>, tasks: 
 
 function normalizeReviewPlan(plan: Partial<ReviewPlan>, tasks: Task[]): ReviewPlan {
   const task = tasks.find((item) => item.id === plan.taskId);
+  const validSubItemIds = new Set(task?.subItems.map((item) => item.id) || []);
+  const subItemIds = [...new Set(plan.subItemIds || [])].filter((id) => validSubItemIds.has(id));
+  const completedSubItemIds = [...new Set(plan.completedSubItemIds || [])].filter((id) => subItemIds.includes(id));
+  const target = subItemIds.length > 0 ? subItemIds.length : Math.max(0, Number(plan.target ?? 0));
+  const completed = subItemIds.length > 0 ? completedSubItemIds.length : Math.max(0, Number(plan.completed ?? 0));
   return {
     id: plan.id || crypto.randomUUID(),
     taskId: plan.taskId || task?.id || '',
     taskName: plan.taskName || task?.name || '复习任务',
     sourceDate: plan.sourceDate || todayIso(),
-    target: Math.max(0, Number(plan.target ?? 0)),
-    completed: Math.max(0, Number(plan.completed ?? 0)),
+    target,
+    completed,
+    subItemIds,
+    completedSubItemIds,
   };
 }
 
@@ -349,13 +356,13 @@ const tokenInput = ref('');
 const tokenField = ref<HTMLInputElement | null>(null);
 const manualAmounts = ref<Record<string, number>>({});
 const reviewAmounts = ref<Record<string, number>>({});
+const selectedReviewSubItems = ref<Record<string, string[]>>({});
 const reviewAddTaskId = ref('');
 const reviewAddDate = ref<'today' | 'tomorrow'>('today');
 const reviewAddTargetInput = ref(5);
 const expandedItemizedTasks = ref<Record<string, boolean>>({});
 const expandedSubItemLists = ref<Record<string, boolean>>({});
 const selectedProgressPhaseId = ref('');
-const progressTrendRange = ref<TrendRange>('7');
 const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
 const practiceReportDate = ref(todayIso());
@@ -383,12 +390,10 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const nowMs = ref(Date.now());
-const progressTrendChartEl = ref<HTMLDivElement | null>(null);
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 let tokenResolver: ((token: string) => void) | null = null;
 let timerInterval: number | undefined;
-let progressTrendChartInstance: ECharts | null = null;
 let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
 
@@ -445,6 +450,7 @@ const todayLogTotal = computed(() => Object.values(todayLogByTask.value).reduce(
 const todayReviewPlans = computed(() => data.value.reviewPlans[todayIso()] || []);
 const tomorrowReviewPlans = computed(() => data.value.reviewPlans[addDays(todayIso(), 1)] || []);
 const reviewEnabledTasks = computed(() => data.value.tasks.filter((task) => task.reviewEnabled));
+const countReviewEnabledTasks = computed(() => reviewEnabledTasks.value.filter((task) => task.trackingMode !== 'itemized'));
 const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 const todayReviewDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
@@ -545,13 +551,22 @@ const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((t
 const activePhaseProgress = computed(() => phaseProgress.value.find((item) => item.id === phase.value?.id) || phaseProgress.value[0]);
 const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysBetweenInclusive(todayIso(), activePhaseProgress.value.endDate) : 0);
 
-const trendRows = computed(() => {
-  const rows = dateRangeRows(progressTrendRange.value).map((date) => {
-    const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
-    return { date, label: trendLabel(date, progressTrendRange.value), total: mainTotal };
-  });
-  const max = Math.max(1, ...rows.map((row) => row.total));
-  return rows.map((row) => ({ ...row, height: Math.max(8, Math.round((row.total / max) * 88)) }));
+const totalTrackedStudySeconds = computed(() => studyTimeEntries.value.reduce((sum, log) => sum + log.durationSeconds, 0));
+const totalMainStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
+const totalReviewStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
+const trackedStudyTypeRows = computed(() => Object.entries(studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
+  const type = studyTimeExamType(log);
+  acc[type] = (acc[type] || 0) + log.durationSeconds;
+  return acc;
+}, {}))
+  .map(([type, seconds], index) => ({ type, seconds, color: taskTypeColor(type, index), softColor: taskTypeSoftColor(type, index) }))
+  .sort((a, b) => b.seconds - a.seconds || a.type.localeCompare(b.type)));
+const peakStudyDay = computed(() => {
+  const rows = Object.entries(studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
+    acc[log.date] = (acc[log.date] || 0) + log.durationSeconds;
+    return acc;
+  }, {})).map(([date, seconds]) => ({ date, seconds }));
+  return rows.sort((a, b) => b.seconds - a.seconds || b.date.localeCompare(a.date))[0] || { date: '', seconds: 0 };
 });
 const practiceTrendRows = computed(() => {
   const rows = dateRangeRows(practiceTrendRange.value).map((date) => {
@@ -607,10 +622,11 @@ const todayPracticeItems = computed(() => {
   const reviewItems = todayReviewPlans.value.filter((plan) => plan.completed > 0 && plan.completed >= plan.target).map((plan, index) => {
     const task = data.value.tasks.find((item) => item.id === plan.taskId);
     const type = taskInitials(plan.taskName);
+    const unit = isItemizedReviewPlan(plan) ? '篇' : '题';
     return {
       id: `review-${plan.id}`,
       type,
-      countText: `${plan.completed} 题`,
+      countText: `${plan.completed} ${unit}`,
       color: taskTypeColor(type, index),
       softColor: taskTypeSoftColor(type, index),
       status: plan.completed >= plan.target ? '已复习' : '待复习',
@@ -713,84 +729,6 @@ const practiceReportTotals = computed(() => practiceReportRows.value.reduce((acc
 function timeTrendAxisInterval(rowCount: number) {
   if (rowCount <= 8) return 0;
   return Math.max(1, Math.ceil(rowCount / 7) - 1);
-}
-
-function buildProgressTrendChartOption(): EChartsCoreOption {
-  const rows = trendRows.value;
-  const max = Math.max(5, ...rows.map((row) => row.total));
-  const interval = max <= 5 ? 1 : Math.ceil(max / 4);
-  const yMax = Math.ceil(max / interval) * interval;
-
-  return {
-    animationDuration: 450,
-    grid: {
-      top: 20,
-      right: 16,
-      bottom: 40,
-      left: 28,
-    },
-    tooltip: {
-      trigger: 'axis',
-      confine: true,
-      backgroundColor: '#ffffff',
-      borderColor: '#edf1f7',
-      borderWidth: 1,
-      padding: [8, 10],
-      textStyle: {
-        color: '#617087',
-        fontSize: 12,
-        fontWeight: 400,
-      },
-      extraCssText: 'box-shadow: 0 10px 20px rgba(15, 23, 42, .12); border-radius: 10px;',
-      formatter(params: unknown) {
-        const item = (Array.isArray(params) ? params[0] : params) as { data?: { date?: string; value?: number } } | undefined;
-        const data = item?.data;
-        if (!data?.date) return '';
-        return `<div style="line-height:1.45"><div>${data.date}</div><strong style="color:#5f7df2;font-weight:500">${data.value || 0} 项</strong></div>`;
-      },
-    },
-    xAxis: {
-      type: 'category',
-      data: rows.map((row) => row.label),
-      axisLine: { lineStyle: { color: '#e0e7f1' } },
-      axisTick: { show: false },
-      axisLabel: {
-        color: '#667389',
-        fontSize: rows.length > 12 ? 10 : 12,
-        fontWeight: 600,
-        margin: 10,
-      },
-    },
-    yAxis: {
-      type: 'value',
-      min: 0,
-      max: yMax,
-      interval,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { show: false },
-      splitLine: {
-        lineStyle: {
-          color: '#e6ebf4',
-          type: 'solid',
-        },
-      },
-    },
-    series: [
-      {
-        type: 'bar',
-        barWidth: rows.length > 12 ? 11 : 18,
-        data: rows.map((row) => ({
-          value: row.total,
-          date: row.date,
-        })),
-        itemStyle: {
-          color: '#6f95f7',
-          borderRadius: [9, 9, 0, 0],
-        },
-      },
-    ],
-  };
 }
 
 function buildPracticeTrendChartOption(): EChartsCoreOption {
@@ -1018,18 +956,6 @@ async function renderTimeTrendChart() {
   chart.resize();
 }
 
-async function renderProgressTrendChart() {
-  if (tab.value !== 'progress') return;
-  await nextTick();
-  const el = progressTrendChartEl.value;
-  if (!el) return;
-  if (!progressTrendChartInstance || progressTrendChartInstance.isDisposed()) {
-    progressTrendChartInstance = init(el);
-  }
-  progressTrendChartInstance.setOption(buildProgressTrendChartOption(), true);
-  progressTrendChartInstance.resize();
-}
-
 async function renderReviewTrendChart() {
   if (tab.value !== 'progress') return;
   await nextTick();
@@ -1043,20 +969,16 @@ async function renderReviewTrendChart() {
 }
 
 function renderProgressCharts() {
-  void renderProgressTrendChart();
   void renderReviewTrendChart();
   void renderTimeTrendChart();
 }
 
 function resizeProgressCharts() {
-  progressTrendChartInstance?.resize();
   reviewTrendChartInstance?.resize();
   timeTrendChartInstance?.resize();
 }
 
 function disposeProgressCharts() {
-  progressTrendChartInstance?.dispose();
-  progressTrendChartInstance = null;
   reviewTrendChartInstance?.dispose();
   reviewTrendChartInstance = null;
   timeTrendChartInstance?.dispose();
@@ -1081,10 +1003,6 @@ watch(tab, (nextTab) => {
   if (nextTab === 'progress') renderProgressCharts();
   else disposeProgressCharts();
 });
-
-watch(trendRows, () => {
-  void renderProgressTrendChart();
-}, { deep: true });
 
 watch(practiceTrendRows, () => {
   void renderReviewTrendChart();
@@ -1840,8 +1758,72 @@ function isTomorrowReviewRegistrationSkipped(taskId: string) {
 function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean }) {
   return task.reviewEnabled
     && task.doneToday
+    && task.trackingMode !== 'itemized'
     && tomorrowReviewTargetForTask(task.id) === 0
     && !isTomorrowReviewRegistrationSkipped(task.id);
+}
+
+function reviewSelectionKey(taskId: string) {
+  return `${todayIso()}-${taskId}`;
+}
+
+function selectedReviewItemIds(taskId: string) {
+  return selectedReviewSubItems.value[reviewSelectionKey(taskId)] || [];
+}
+
+function isReviewSubItemSelected(taskId: string, itemId: string) {
+  return selectedReviewItemIds(taskId).includes(itemId);
+}
+
+function toggleReviewSubItem(taskId: string, itemId: string, checked: boolean) {
+  const key = reviewSelectionKey(taskId);
+  const current = selectedReviewSubItems.value[key] || [];
+  selectedReviewSubItems.value[key] = checked
+    ? [...new Set([...current, itemId])]
+    : current.filter((id) => id !== itemId);
+}
+
+function completedSubItems(task: Task) {
+  return task.subItems.filter((item) => item.status === 'done');
+}
+
+function clearReviewSubItemSelection(taskId: string) {
+  selectedReviewSubItems.value[reviewSelectionKey(taskId)] = [];
+}
+
+function addSelectedSubItemsToReview(task: Task, date: string) {
+  const selectedIds = selectedReviewItemIds(task.id).filter((id) => task.subItems.some((item) => item.id === id && item.status === 'done'));
+  if (!selectedIds.length) return;
+  const plans = data.value.reviewPlans[date] || [];
+  const existing = plans.find((plan) => plan.taskId === task.id && plan.sourceDate === todayIso() && isItemizedReviewPlan(plan));
+  const nextSubItemIds = [...new Set([...(existing?.subItemIds || []), ...selectedIds])];
+  const completedSubItemIds = (existing?.completedSubItemIds || []).filter((id) => nextSubItemIds.includes(id));
+  const nextPlan: ReviewPlan = {
+    id: existing?.id || crypto.randomUUID(),
+    taskId: task.id,
+    taskName: task.name,
+    sourceDate: todayIso(),
+    target: nextSubItemIds.length,
+    completed: completedSubItemIds.length,
+    subItemIds: nextSubItemIds,
+    completedSubItemIds,
+  };
+  saveLocal({
+    ...data.value,
+    reviewPlans: {
+      ...data.value.reviewPlans,
+      [date]: [...plans.filter((plan) => plan.id !== existing?.id), nextPlan],
+    },
+  });
+  clearReviewSubItemSelection(task.id);
+}
+
+function addSelectedSubItemsToTodayReview(task: Task) {
+  addSelectedSubItemsToReview(task, todayIso());
+}
+
+function addSelectedSubItemsToTomorrowReview(task: Task) {
+  addSelectedSubItemsToReview(task, addDays(todayIso(), 1));
 }
 
 function cancelTomorrowReviewRegistration(task: Task) {
@@ -1858,7 +1840,7 @@ function cancelTomorrowReviewRegistration(task: Task) {
 }
 
 function addReviewPlan() {
-  const task = data.value.tasks.find((item) => item.id === reviewAddTaskId.value) || reviewEnabledTasks.value[0];
+  const task = countReviewEnabledTasks.value.find((item) => item.id === reviewAddTaskId.value) || countReviewEnabledTasks.value[0];
   const target = Math.max(0, Math.floor(reviewAddTargetInput.value || 0));
   if (!task || target <= 0) return;
   const date = reviewAddDate.value === 'tomorrow' ? addDays(todayIso(), 1) : todayIso();
@@ -1903,14 +1885,57 @@ function reviewPlanTaskName(plan: ReviewPlan) {
   return task ? taskDisplayName(task) : plan.taskName;
 }
 
+function isItemizedReviewPlan(plan: ReviewPlan) {
+  return (plan.subItemIds?.length || 0) > 0;
+}
+
+function reviewPlanTask(plan: ReviewPlan) {
+  return data.value.tasks.find((item) => item.id === plan.taskId);
+}
+
+function reviewPlanSubItems(plan: ReviewPlan) {
+  const task = reviewPlanTask(plan);
+  const ids = plan.subItemIds || [];
+  return ids
+    .map((id) => task?.subItems.find((item) => item.id === id))
+    .filter((item): item is SubItem => Boolean(item));
+}
+
+function isReviewPlanSubItemDone(plan: ReviewPlan, itemId: string) {
+  return (plan.completedSubItemIds || []).includes(itemId);
+}
+
+function toggleReviewPlanSubItem(date: string, plan: ReviewPlan, itemId: string, checked: boolean) {
+  const current = plan.completedSubItemIds || [];
+  const completedSubItemIds = checked
+    ? [...new Set([...current, itemId])]
+    : current.filter((id) => id !== itemId);
+  updateReviewPlan(date, plan.id, { completedSubItemIds });
+}
+
+function updateReviewSubItemFamiliarity(taskId: string, itemId: string, familiarity: Familiarity) {
+  if (!isFamiliarity(familiarity)) return;
+  const nextTasks = data.value.tasks.map((task) => {
+    if (task.id !== taskId) return task;
+    const nextSubItems = task.subItems.map((item) => item.id === itemId ? { ...item, familiarity } : item);
+    return normalizeTask({ ...task, subItems: nextSubItems }, data.value.phases[0]?.id || '');
+  });
+  saveLocal({ ...data.value, tasks: nextTasks });
+}
+
 function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>) {
   const plans = data.value.reviewPlans[date] || [];
   const nextPlans = plans.map((plan) => {
     if (plan.id !== planId) return plan;
+    const nextSubItemIds = patch.subItemIds ?? plan.subItemIds ?? [];
+    if (nextSubItemIds.length > 0) {
+      const completedSubItemIds = [...new Set(patch.completedSubItemIds ?? plan.completedSubItemIds ?? [])].filter((id) => nextSubItemIds.includes(id));
+      return { ...plan, ...patch, subItemIds: nextSubItemIds, completedSubItemIds, target: nextSubItemIds.length, completed: completedSubItemIds.length };
+    }
     const target = Math.max(0, Number(patch.target ?? plan.target));
     const completed = Math.min(target, Math.max(0, Number(patch.completed ?? plan.completed)));
-    return { ...plan, ...patch, target, completed };
-  }).filter((plan) => plan.target > 0 || plan.completed > 0);
+    return { ...plan, ...patch, target, completed, subItemIds: [], completedSubItemIds: [] };
+  }).filter((plan) => plan.target > 0 || plan.completed > 0 || (plan.subItemIds?.length || 0) > 0);
   saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
 }
 
@@ -2452,6 +2477,14 @@ function taskDisplayName(task: Task) {
                     <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                     <strong>{{ item.title }}</strong>
                     <b>{{ item.familiarity }}</b>
+                    <label v-if="task.reviewEnabled" class="done-review-picker">
+                      <input
+                        type="checkbox"
+                        :checked="isReviewSubItemSelected(task.id, item.id)"
+                        @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
+                      >
+                      选中
+                    </label>
                   </article>
                 </div>
                 <p v-else class="muted">今天还没有选择完成篇目。</p>
@@ -2467,10 +2500,24 @@ function taskDisplayName(task: Task) {
                         <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                         <strong>{{ item.title }}</strong>
                         <b>{{ item.familiarity }}</b>
+                        <label v-if="task.reviewEnabled" class="done-review-picker">
+                          <input
+                            type="checkbox"
+                            :checked="isReviewSubItemSelected(task.id, item.id)"
+                            @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
+                          >
+                          选中
+                        </label>
                       </article>
                     </div>
                   </div>
                 </details>
+                <div v-if="task.reviewEnabled && completedSubItems(task).length" class="itemized-review-actions review-register-actions">
+                  <span>已选 {{ selectedReviewItemIds(task.id).length }} 篇</span>
+                  <button class="review-register-cancel" type="button" @click="clearReviewSubItemSelection(task.id)">清空</button>
+                  <button class="review-register-cancel" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="addSelectedSubItemsToTodayReview(task)">加入今日复习</button>
+                  <button class="review-register-save" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="addSelectedSubItemsToTomorrowReview(task)">加入明日复习</button>
+                </div>
               </section>
               <section>
                 <h3>快速选择（可多选）</h3>
@@ -2592,7 +2639,10 @@ function taskDisplayName(task: Task) {
         </div>
         <div class="review-columns">
           <div class="review-add-panel">
-            <strong>新增复习计划</strong>
+            <div class="review-add-copy">
+              <strong>新增复习计划</strong>
+              <span>背诵型复习请到对应题型详情里勾选已完成篇目。</span>
+            </div>
             <div class="review-add-form">
               <label class="select-control">
                 <select v-model="reviewAddDate">
@@ -2604,7 +2654,7 @@ function taskDisplayName(task: Task) {
               <label class="select-control">
                 <select v-model="reviewAddTaskId">
                   <option value="">选择任务</option>
-                  <option v-for="task in reviewEnabledTasks" :key="task.id" :value="task.id">{{ taskDisplayName(task) }}</option>
+                  <option v-for="task in countReviewEnabledTasks" :key="task.id" :value="task.id">{{ taskDisplayName(task) }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
               </label>
@@ -2617,7 +2667,7 @@ function taskDisplayName(task: Task) {
               <h3>今日待复习</h3>
             </div>
             <div v-if="todayReviewPlans.length" class="review-list">
-              <article v-for="plan in todayReviewPlans" :key="plan.id" class="review-task-card">
+              <article v-for="plan in todayReviewPlans" :key="plan.id" class="review-task-card" :class="{ 'itemized-review-card': isItemizedReviewPlan(plan) }">
                 <div class="review-card-head">
                   <div class="review-card-info">
                     <div class="review-card-titleline">
@@ -2631,7 +2681,31 @@ function taskDisplayName(task: Task) {
                     <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
                   </div>
                 </div>
-                <div class="review-card-body">
+                <div v-if="isItemizedReviewPlan(plan)" class="review-card-body itemized-review-card-body">
+                  <span class="today-progress-cell review-progress-cell">
+                    <span class="progress-meta"><strong>{{ plan.completed }} / {{ plan.target }} 篇</strong><b>{{ pct(plan.completed, plan.target) }}%</b></span>
+                    <span class="progress-track"><i :style="{ width: `${pct(plan.completed, plan.target)}%`, background: '#7a3ed2' }" /></span>
+                  </span>
+                  <div class="review-subitem-list">
+                    <div v-for="item in reviewPlanSubItems(plan)" :key="item.id" class="review-subitem-row">
+                      <input
+                        type="checkbox"
+                        :checked="isReviewPlanSubItemDone(plan, item.id)"
+                        @change="toggleReviewPlanSubItem(todayIso(), plan, item.id, ($event.target as HTMLInputElement).checked)"
+                      >
+                      <span>{{ item.title }}</span>
+                      <select
+                        class="review-familiarity-select"
+                        :value="item.familiarity"
+                        @change="updateReviewSubItemFamiliarity(plan.taskId, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
+                      >
+                        <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
+                      </select>
+                    </div>
+                  </div>
+                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
+                </div>
+                <div v-else class="review-card-body">
                   <label class="review-target-input">计划
                     <input type="number" min="0" :value="plan.target" @input="setReviewTarget(todayIso(), plan, ($event.target as HTMLInputElement).value)">
                   </label>
@@ -2657,14 +2731,18 @@ function taskDisplayName(task: Task) {
           <section>
             <h3>明日复习计划</h3>
             <div v-if="tomorrowReviewPlans.length" class="review-list compact">
-              <article v-for="plan in tomorrowReviewPlans" :key="plan.id">
+              <article v-for="plan in tomorrowReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
                 <div>
                   <strong>{{ reviewPlanTaskName(plan) }}</strong>
                   <small>{{ plan.sourceDate === todayIso() ? '今日登记给明天' : `${plan.sourceDate} 登记` }}</small>
                 </div>
-                <label class="review-target-input">计划
+                <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
+                  <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
+                </div>
+                <label v-if="!isItemizedReviewPlan(plan)" class="review-target-input">计划
                   <input type="number" min="0" :value="plan.target" @input="setReviewTarget(addDays(todayIso(), 1), plan, ($event.target as HTMLInputElement).value)">
                 </label>
+                <span v-else class="review-itemized-count">{{ plan.target }} 篇</span>
                 <button class="icon-button" type="button" @click="deleteReviewPlan(addDays(todayIso(), 1), plan.id)">删除</button>
               </article>
             </div>
@@ -2748,16 +2826,41 @@ function taskDisplayName(task: Task) {
               <article><small>总任务数</small><strong>{{ overallTarget }}</strong></article>
             </div>
           </div>
-          <div class="trend-card warm-trend">
-            <div class="chart-head">
-              <h3>近期完成趋势</h3>
-              <div class="segmented compact">
-                <button type="button" :class="{ active: progressTrendRange === '7' }" @click="progressTrendRange = '7'">近 7 天</button>
-                <button type="button" :class="{ active: progressTrendRange === '30' }" @click="progressTrendRange = '30'">近 30 天</button>
-                <button type="button" :class="{ active: progressTrendRange === 'all' }" @click="progressTrendRange = 'all'">全部</button>
-              </div>
+          <div class="study-investment-card">
+            <div class="study-investment-head">
+              <span>学习投入总览</span>
+              <strong>{{ formatDurationCompact(totalTrackedStudySeconds) }}</strong>
+              <small>累计学习</small>
             </div>
-            <div ref="progressTrendChartEl" class="progress-trend-echarts" role="img" aria-label="近期完成趋势图" />
+            <div class="study-investment-splits">
+              <article>
+                <div>
+                  <span>主任务</span>
+                  <strong>{{ formatDurationCompact(totalMainStudySeconds) }}</strong>
+                  <b>{{ pct(totalMainStudySeconds, totalTrackedStudySeconds) }}%</b>
+                </div>
+                <i><span :style="{ width: `${pct(totalMainStudySeconds, totalTrackedStudySeconds)}%` }" /></i>
+              </article>
+              <article class="review">
+                <div>
+                  <span>复习</span>
+                  <strong>{{ formatDurationCompact(totalReviewStudySeconds) }}</strong>
+                  <b>{{ pct(totalReviewStudySeconds, totalTrackedStudySeconds) }}%</b>
+                </div>
+                <i><span :style="{ width: `${pct(totalReviewStudySeconds, totalTrackedStudySeconds)}%` }" /></i>
+              </article>
+            </div>
+            <div class="study-type-time-block">
+              <span>已学习的题型总计时</span>
+              <div v-if="trackedStudyTypeRows.length" class="study-type-time-list">
+                <b v-for="row in trackedStudyTypeRows" :key="row.type" :style="{ color: row.color, background: row.softColor }">{{ row.type }} {{ formatDurationCompact(row.seconds) }}</b>
+              </div>
+              <small v-else>暂无计时记录</small>
+            </div>
+            <div class="peak-study-day">
+              <span>最高学习日</span>
+              <strong>{{ peakStudyDay.date || '--' }} <small v-if="peakStudyDay.seconds > 0">· {{ formatDurationCompact(peakStudyDay.seconds) }}</small></strong>
+            </div>
           </div>
         </section>
 

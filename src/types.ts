@@ -45,7 +45,16 @@ export interface Task {
 export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; }
 export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyNotes { [date: string]: string; }
-export interface ReviewPlan { id: string; taskId: string; taskName: string; sourceDate: string; target: number; completed: number; }
+export interface ReviewPlan {
+  id: string;
+  taskId: string;
+  taskName: string;
+  sourceDate: string;
+  target: number;
+  completed: number;
+  subItemIds?: string[];
+  completedSubItemIds?: string[];
+}
 export interface ReviewPlans { [date: string]: ReviewPlan[]; }
 export interface SkippedReviewRegistrations { [date: string]: string[]; }
 export type TimeLogType = 'task' | 'review';
