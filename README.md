@@ -1,13 +1,13 @@
 # PTE 备考进度调度器
 
-一个只负责记录 PTE 备考进度、计算每日任务的前端应用。它不是刷题平台，不上传题库，不需要后端、云服务器或数据库。
+一个只负责记录 PTE 备考进度、计算每日任务的前端应用。它不是刷题平台，不上传题库；本地优先保存，Cloudflare KV 只用于跨设备备份。
 
 ## 功能
 
 - Vue 3 + TypeScript + Vite 单页应用
-- localStorage 保存本地计划和进度
-- 通过 GitHub REST Contents API 读写另一个私有仓库中的 `data.json`
-- Token 每次同步手动输入，输入后仅临时使用，不写入代码、`.env`、localStorage、sessionStorage 或 data.json
+- localStorage 保存本地计划和进度，key 为 `pte_progress_backup`
+- Cloudflare Pages Functions + Cloudflare KV 自动同步完整进度
+- 访问密码由 Cloudflare Pages Secret `APP_PASSWORD` 提供，前端不写死密码
 - 支持 phased_pool、fixed_pool、daily_fixed、memorization 策略
 - 支持 adaptive_average、none、next_day carryoverMode
 - 自动计算阶段日期、当前阶段、今日建议任务量和整体进度
@@ -25,24 +25,14 @@ npm run dev
 npm run build
 ```
 
-## GitHub Pages 部署步骤
+## Cloudflare Pages 部署
 
-1. 将本仓库推送到 GitHub，例如仓库名为 `pte-study-planner`。
-2. 安装依赖并构建：
-   ```bash
-   npm install
-   npm run build
-   ```
-3. 部署到 `gh-pages` 分支：
-   ```bash
-   npm run deploy
-   ```
-4. 打开 GitHub 仓库 Settings → Pages。
-5. Source 选择 `Deploy from a branch`，Branch 选择 `gh-pages` 和 `/root`。
-6. 保存后访问 GitHub Pages 地址：`https://<owner>.github.io/pte-study-planner/`。
+Cloudflare Pages 连接 GitHub `main` 分支后自动部署。项目使用根路径部署，`vite.config.ts` 中保持 `base: '/'` 或不设置 `base`。
 
-如果仓库名不是 `pte-study-planner`，请修改 `vite.config.ts` 中的 `base`。
+Cloudflare Pages 项目需要配置：
 
-## 数据仓库建议
+- KV namespace：`PTE_PROGRESS`
+- KV binding name：`PROGRESS_KV`
+- Secret：`APP_PASSWORD`
 
-创建一个私有仓库，默认名为 `pte-study-data`，在 `main` 分支放置 `data.json`。fine-grained personal access token 仅需授权该私有数据仓库 Contents 读写权限。
+Pages Functions 接口位于 `functions/api/progress.js`，前端只通过 `/api/progress` 读写进度。

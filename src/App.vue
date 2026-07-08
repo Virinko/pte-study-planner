@@ -11,9 +11,15 @@ import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
-const KEY = 'pte-study-planner-data';
+const KEY = 'pte_progress_backup';
+const LEGACY_KEY = 'pte-study-planner-data';
 const GITHUB_KEY = 'pte-study-planner-github-config';
 const TIMER_KEY = 'pte-study-planner-running-timer';
+const APP_PASSWORD_KEY = 'pte_app_password';
+const DIRTY_KEY = 'pte_progress_dirty';
+const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
+const CLOUD_SAVE_DEBOUNCE_MS = 7000;
+const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '错题复习'];
 const taskScoreRows = [
@@ -306,9 +312,33 @@ function inferTrackingMode(name: string): TrackingMode {
   return prefix === 'WE' || prefix === 'SWT' || prefix === 'SST' || prefix === 'RL' ? 'itemized' : 'count_only';
 }
 
+function readStoredPassword() {
+  try {
+    return localStorage.getItem(APP_PASSWORD_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function readStoredDirty() {
+  try {
+    return localStorage.getItem(DIRTY_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function readStoredLastSyncedAt() {
+  try {
+    return localStorage.getItem(LAST_SYNCED_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 function load(): StudyData {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
     const cfg = localStorage.getItem(GITHUB_KEY);
     const data = normalizeData(raw ? JSON.parse(raw) as Partial<StudyData> : undefined);
     return {
@@ -378,6 +408,16 @@ const correctionAmountInput = ref('');
 const correctionError = ref('');
 const correctionField = ref<HTMLInputElement | null>(null);
 const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
+const appPassword = ref(readStoredPassword());
+const passwordInput = ref('');
+const passwordError = ref('');
+const isDirty = ref(readStoredDirty());
+const isCloudSaving = ref(false);
+const cloudSaveError = ref(false);
+const cloudLoadError = ref(false);
+const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
+let cloudSaveTimer: number | undefined;
+let lastCloudSaveAttemptAt = 0;
 const showTimerModal = ref(Boolean(runningTimer.value));
 const timerEditHours = ref('');
 const timerEditMinutes = ref('');
@@ -469,7 +509,21 @@ const planRemainingDays = computed(() => {
 const planElapsedDays = computed(() => Math.max(0, planTotalDays.value - planRemainingDays.value));
 const planTimePercent = computed(() => pct(planElapsedDays.value, planTotalDays.value));
 const estimatedHours = computed(() => Math.max(0.5, Math.round(todayTarget.value * 3.5) / 10));
-const lastSyncedAt = computed(() => data.value.updatedAt ? new Date(data.value.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
+const lastSyncedAt = computed(() => lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
+const saveStatusText = computed(() => {
+  if (!appPassword.value) return '请输入访问密码';
+  if (passwordError.value) return passwordError.value;
+  if (isCloudSaving.value) return '保存中...';
+  if (cloudSaveError.value || cloudLoadError.value) return '网络异常，已暂存在本地';
+  if (isDirty.value) return '有未同步改动';
+  return lastCloudSyncedAt.value ? '已自动保存' : '本地已保存';
+});
+const saveStatusClass = computed(() => ({
+  saving: isCloudSaving.value,
+  pending: isDirty.value && !isCloudSaving.value,
+  error: Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value,
+  saved: !isDirty.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value,
+}));
 const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
   .filter(([, note]) => note.trim())
   .sort(([a], [b]) => b.localeCompare(a))
@@ -990,12 +1044,21 @@ onMounted(() => {
     nowMs.value = Date.now();
   }, 1000);
   window.addEventListener('resize', resizeProgressCharts);
+  window.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('pagehide', handlePageHide);
+  window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
+  void loadCloudProgress();
+  if (isDirty.value) scheduleCloudSave(1200);
 });
 
 onBeforeUnmount(() => {
   if (timerInterval) window.clearInterval(timerInterval);
   window.removeEventListener('resize', resizeProgressCharts);
+  window.removeEventListener('visibilitychange', handleVisibilityChange);
+  window.removeEventListener('pagehide', handlePageHide);
+  window.removeEventListener('beforeunload', handleBeforeUnload);
+  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   disposeProgressCharts();
 });
 
@@ -1016,12 +1079,176 @@ watch([phaseProgress, phase], () => {
   if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
 }, { immediate: true });
 
-function saveLocal(next: StudyData) {
+function persistProgressBackup(next: StudyData) {
+  localStorage.setItem(KEY, JSON.stringify(next));
+  localStorage.setItem(LEGACY_KEY, JSON.stringify(next));
+  const { githubOwner, githubRepo, githubBranch, githubPath } = next.settings;
+  localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
+}
+
+function persistDirty(value: boolean) {
+  isDirty.value = value;
+  localStorage.setItem(DIRTY_KEY, value ? 'true' : 'false');
+}
+
+function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+  const { markDirty = true, scheduleSync = true } = options;
   const stamped = { ...normalizeData(next), updatedAt: new Date().toISOString() };
   data.value = stamped;
-  localStorage.setItem(KEY, JSON.stringify(stamped));
-  const { githubOwner, githubRepo, githubBranch, githubPath } = stamped.settings;
-  localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
+  persistProgressBackup(stamped);
+  cloudLoadError.value = false;
+  if (markDirty) {
+    persistDirty(true);
+    cloudSaveError.value = false;
+    if (scheduleSync) scheduleCloudSave();
+  }
+}
+
+function applyRemoteProgress(remote: StudyData) {
+  const normalized = normalizeData(remote);
+  data.value = normalized;
+  persistProgressBackup(normalized);
+  persistDirty(false);
+  cloudLoadError.value = false;
+  cloudSaveError.value = false;
+  lastCloudSyncedAt.value = normalized.updatedAt || new Date().toISOString();
+  localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
+  selectedNoteDate.value = todayIso();
+  noteDraft.value = normalized.dailyNotes?.[todayIso()] || '';
+  if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
+}
+
+function clearAppPassword() {
+  appPassword.value = '';
+  passwordInput.value = '';
+  localStorage.removeItem(APP_PASSWORD_KEY);
+}
+
+function handleUnauthorized() {
+  clearAppPassword();
+  passwordError.value = '访问密码错误，请重新输入';
+  cloudSaveError.value = false;
+  cloudLoadError.value = false;
+}
+
+function submitPassword() {
+  const nextPassword = passwordInput.value.trim();
+  if (!nextPassword) {
+    passwordError.value = '访问密码错误，请重新输入';
+    return;
+  }
+  appPassword.value = nextPassword;
+  localStorage.setItem(APP_PASSWORD_KEY, nextPassword);
+  passwordInput.value = '';
+  passwordError.value = '';
+  void loadCloudProgress(true);
+  if (isDirty.value) scheduleCloudSave(1200);
+}
+
+async function fetchCloudProgress() {
+  const res = await fetch('/api/progress', {
+    headers: { 'x-app-password': appPassword.value },
+    cache: 'no-store',
+  });
+  if (res.status === 401) {
+    handleUnauthorized();
+    return null;
+  }
+  if (!res.ok) throw new Error(`Cloudflare 读取失败：HTTP ${res.status}`);
+  return normalizeData(await res.json() as Partial<StudyData>);
+}
+
+async function loadCloudProgress(force = false) {
+  if (!appPassword.value) return;
+  try {
+    const remote = await fetchCloudProgress();
+    if (!remote) return;
+    const remoteNewer = remote.updatedAt && (!data.value.updatedAt || remote.updatedAt > data.value.updatedAt);
+    if (remoteNewer) applyRemoteProgress(remote);
+    else {
+      cloudLoadError.value = false;
+      if (!isDirty.value && remote.updatedAt) {
+        lastCloudSyncedAt.value = remote.updatedAt;
+        localStorage.setItem(LAST_SYNCED_KEY, remote.updatedAt);
+      }
+    }
+    if (!force && isDirty.value) scheduleCloudSave(1200);
+  } catch {
+    cloudLoadError.value = true;
+    if (isDirty.value) scheduleCloudSave(1200);
+  }
+}
+
+function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
+  if (!isDirty.value || !appPassword.value) return;
+  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
+  const elapsed = Date.now() - lastCloudSaveAttemptAt;
+  const waitForMinInterval = Math.max(0, CLOUD_SAVE_MIN_INTERVAL_MS - elapsed);
+  cloudSaveTimer = window.setTimeout(() => {
+    cloudSaveTimer = undefined;
+    void syncCloudProgress();
+  }, Math.max(delay, waitForMinInterval));
+}
+
+async function syncCloudProgress() {
+  if (!isDirty.value || !appPassword.value || isCloudSaving.value) return false;
+  lastCloudSaveAttemptAt = Date.now();
+  isCloudSaving.value = true;
+  cloudSaveError.value = false;
+  try {
+    const payload = normalizeData(data.value);
+    const res = await fetch('/api/progress', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-app-password': appPassword.value,
+      },
+      body: JSON.stringify(payload),
+      keepalive: JSON.stringify(payload).length < 60000,
+    });
+    if (res.status === 401) {
+      handleUnauthorized();
+      return false;
+    }
+    if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
+    const result = await res.json() as { updatedAt?: string; progress?: Partial<StudyData> };
+    const saved = normalizeData(result.progress || { ...payload, updatedAt: result.updatedAt || new Date().toISOString() });
+    data.value = saved;
+    persistProgressBackup(saved);
+    persistDirty(false);
+    cloudSaveError.value = false;
+    cloudLoadError.value = false;
+    lastCloudSyncedAt.value = saved.updatedAt;
+    localStorage.setItem(LAST_SYNCED_KEY, saved.updatedAt);
+    return true;
+  } catch {
+    persistDirty(true);
+    cloudSaveError.value = true;
+    return false;
+  } finally {
+    isCloudSaving.value = false;
+  }
+}
+
+function tryImmediateCloudSave() {
+  if (!isDirty.value || !appPassword.value) return;
+  if (cloudSaveTimer) {
+    window.clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = undefined;
+  }
+  void syncCloudProgress();
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden') tryImmediateCloudSave();
+}
+
+function handlePageHide() {
+  tryImmediateCloudSave();
+}
+
+function handleBeforeUnload() {
+  tryImmediateCloudSave();
 }
 
 function restartStudyPlan() {
@@ -2337,6 +2564,13 @@ function taskDisplayName(task: Task) {
           <span>{{ item.label }}</span>
         </button>
       </nav>
+      <div class="cloud-save-status" :class="saveStatusClass">
+        <span class="cloud-save-dot" aria-hidden="true"></span>
+        <div>
+          <strong>{{ saveStatusText }}</strong>
+          <p>{{ lastSyncedAt }}</p>
+        </div>
+      </div>
       <div class="sidebar-note">
         <strong>今日格言</strong>
         <p>每天进步一点点，考试成功一大步！</p>
@@ -3330,9 +3564,16 @@ function taskDisplayName(task: Task) {
           <button class="text-button" type="button">查看全部记录</button>
         </div>
         <article>
+          <span class="status-dot" :class="{ warn: isDirty || cloudSaveError || cloudLoadError }">{{ isDirty || cloudSaveError || cloudLoadError ? '!' : 'OK' }}</span>
+          <div>
+            <strong>Cloudflare KV 自动保存</strong>
+            <p>{{ saveStatusText }}</p>
+          </div>
+        </article>
+        <article>
           <span class="status-dot">OK</span>
           <div>
-            <strong>最近本地保存</strong>
+            <strong>最近云端保存</strong>
             <p>{{ lastSyncedAt }}</p>
           </div>
         </article>
@@ -3433,6 +3674,18 @@ function taskDisplayName(task: Task) {
         <div class="timer-modal-actions correction-actions">
           <button class="ghost" type="button" @click="closeCorrectionModal">取消</button>
           <button class="primary" type="submit">保存修正</button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="!appPassword" class="modal password-modal">
+      <form class="modal-box password-modal-box" @submit.prevent="submitPassword">
+        <h3>输入访问密码</h3>
+        <p>密码会保存在本机浏览器，用于读取和保存 Cloudflare KV 中的学习进度。</p>
+        <input v-model="passwordInput" name="app-password" type="password" autocomplete="current-password" placeholder="访问密码">
+        <p v-if="passwordError" class="password-error">{{ passwordError }}</p>
+        <div class="actions">
+          <button type="submit">进入</button>
         </div>
       </form>
     </div>
