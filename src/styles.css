@@ -4384,7 +4384,6 @@ nav button.active::after {
 
 .study-type-time-list b {
   max-width: 210px;
-  min-height: 38px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
