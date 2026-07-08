@@ -4388,7 +4388,7 @@ nav button.active::after {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 14px;
+  padding: 4px 10px;
   overflow: hidden;
   border-radius: 999px;
   font-size: 14px;
@@ -4398,11 +4398,13 @@ nav button.active::after {
 }
 
 .study-type-time-list b span {
-  font-weight: 900;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .study-type-time-list b strong {
   color: var(--text-main);
+  font-size: 13px;
   font-weight: 400;
 }
 
