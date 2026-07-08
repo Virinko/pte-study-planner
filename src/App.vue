@@ -567,7 +567,7 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     sourceIndex: index,
   };
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
-const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget));
+const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget && task.todayCompleted > 0));
 const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !(task.totalTarget > 0 && task.completed >= task.totalTarget)));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
 const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
