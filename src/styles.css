@@ -3437,7 +3437,7 @@ nav button.active::after {
 .review-card-meta > small {
   color: #667389;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -3472,7 +3472,7 @@ nav button.active::after {
   border: 1px solid #eadcff;
   border-radius: 7px;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 500;
   line-height: 1.15;
 }
 
