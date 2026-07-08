@@ -540,8 +540,7 @@ const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
 
 const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const todayCompleted = todayLogByTask.value[task.id] || 0;
-  const baselineTask = { ...task, completed: Math.max(0, task.completed - todayCompleted) };
-  const dailyTarget = taskSuggestion(baselineTask, phase.value);
+  const dailyTarget = taskSuggestion(task, phase.value);
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
   const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task);
   const todayPercent = pct(todayCompleted, dailyTarget);
