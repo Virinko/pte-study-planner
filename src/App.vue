@@ -336,6 +336,14 @@ function readStoredLastSyncedAt() {
   }
 }
 
+function hasStoredProgressBackup() {
+  try {
+    return Boolean(localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY));
+  } catch {
+    return false;
+  }
+}
+
 function load(): StudyData {
   try {
     const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
@@ -416,6 +424,7 @@ const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
+const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
 const showTimerModal = ref(Boolean(runningTimer.value));
@@ -1082,6 +1091,7 @@ watch([phaseProgress, phase], () => {
 function persistProgressBackup(next: StudyData) {
   localStorage.setItem(KEY, JSON.stringify(next));
   localStorage.setItem(LEGACY_KEY, JSON.stringify(next));
+  hasLocalProgressBackup.value = true;
   const { githubOwner, githubRepo, githubBranch, githubPath } = next.settings;
   localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
 }
@@ -1163,8 +1173,12 @@ async function loadCloudProgress(force = false) {
   try {
     const remote = await fetchCloudProgress();
     if (!remote) return;
-    const remoteNewer = remote.updatedAt && (!data.value.updatedAt || remote.updatedAt > data.value.updatedAt);
-    if (remoteNewer) applyRemoteProgress(remote);
+    const shouldUseRemote = Boolean(remote.updatedAt) && (
+      !hasLocalProgressBackup.value
+      || !data.value.updatedAt
+      || remote.updatedAt > data.value.updatedAt
+    );
+    if (shouldUseRemote) applyRemoteProgress(remote);
     else {
       cloudLoadError.value = false;
       if (!isDirty.value && remote.updatedAt) {
