@@ -552,6 +552,7 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     initials: taskInitials(task.name),
     softColor: taskSoftColor(task.name, index),
     totalTarget: taskTotalTarget(task),
+    completedDate: taskCompletionDate(task),
     percent: pct(task.completed, taskTotalTarget(task)),
     remaining: taskRemaining(task),
     currentRound: taskCurrentRound(task),
@@ -567,13 +568,38 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     sourceIndex: index,
   };
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
-const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget && task.todayCompleted > 0));
+const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget));
 const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !(task.totalTarget > 0 && task.completed >= task.totalTarget)));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
 const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(activeTodayLogTotal.value, todayTarget.value));
 const todayTaskRemaining = computed(() => Math.max(0, todayTarget.value - activeTodayLogTotal.value));
 const completedTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => task.doneToday));
+
+function taskCompletionDate(task: Task) {
+  const totalTarget = taskTotalTarget(task);
+  if (totalTarget <= 0 || task.completed < totalTarget) return '';
+  if (task.trackingMode === 'itemized') {
+    const completedDates = task.subItems
+      .filter((item) => item.status === 'done' && item.completedDate)
+      .map((item) => item.completedDate || '')
+      .sort((a, b) => a.localeCompare(b));
+    return completedDates[completedDates.length - 1] || '';
+  }
+
+  let cumulative = 0;
+  let latestProgressDate = '';
+  for (const [date, logs] of Object.entries(data.value.dailyLogs).sort(([a], [b]) => a.localeCompare(b))) {
+    const count = (logs || [])
+      .filter((log) => log.taskId === task.id)
+      .reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
+    if (count <= 0) continue;
+    cumulative += count;
+    latestProgressDate = date;
+    if (cumulative >= totalTarget) return date;
+  }
+  return latestProgressDate;
+}
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
@@ -2851,9 +2877,13 @@ function taskDisplayName(task: Task) {
                       <b>{{ task.percent }}%</b>
                     </span>
                     <span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span>
-                    <span class="completed-task-today">
+                    <span v-if="task.todayCompleted > 0" class="completed-task-today">
                       <small>今日完成</small>
                       <strong>{{ task.todayCompleted }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                    </span>
+                    <span v-else-if="task.completedDate" class="completed-task-today">
+                      <small>完成于</small>
+                      <strong>{{ task.completedDate }}</strong>
                     </span>
                   </span>
                   <span class="completed-task-state">
