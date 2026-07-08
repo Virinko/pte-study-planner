@@ -2620,13 +2620,15 @@ nav button.active::after {
   gap: 12px;
   color: #172033;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 500;
   line-height: 1.1;
   white-space: nowrap;
 }
 
+.progress-meta strong,
 .progress-meta b {
   font-size: 13px;
+  font-weight: 500;
 }
 
 .status-ok {
@@ -2792,6 +2794,7 @@ nav button.active::after {
   background: #f1e8ff;
   border-radius: 999px;
   font-size: 12px;
+  font-weight: 500;
 }
 
 .task-name-cell .round-chip {
@@ -2805,7 +2808,7 @@ nav button.active::after {
 .daily-target-cell {
   color: #172033;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .itemized-task-row {
