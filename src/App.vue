@@ -1992,8 +1992,16 @@ function setTomorrowReview(task: Task) {
   saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
 }
 
-function isTomorrowReviewRegistrationSkipped(taskId: string) {
-  return (data.value.skippedReviewRegistrations[todayIso()] || []).includes(taskId);
+function isTaskCompletedOverall(task: Task) {
+  const totalTarget = taskTotalTarget(task);
+  return totalTarget > 0 && task.completed >= totalTarget;
+}
+
+function isTomorrowReviewRegistrationSkipped(task: Task) {
+  if (isTaskCompletedOverall(task)) {
+    return Object.values(data.value.skippedReviewRegistrations).some((taskIds) => (taskIds || []).includes(task.id));
+  }
+  return (data.value.skippedReviewRegistrations[todayIso()] || []).includes(task.id);
 }
 
 function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean }) {
@@ -2001,7 +2009,7 @@ function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean }) {
     && task.doneToday
     && task.trackingMode !== 'itemized'
     && tomorrowReviewTargetForTask(task.id) === 0
-    && !isTomorrowReviewRegistrationSkipped(task.id);
+    && !isTomorrowReviewRegistrationSkipped(task);
 }
 
 function reviewSelectionKey(taskId: string) {
