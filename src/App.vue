@@ -2827,39 +2827,27 @@ function taskDisplayName(task: Task) {
             </div>
           </div>
           <div class="study-investment-card">
-            <div class="study-investment-head">
-              <span>学习投入总览</span>
-              <strong>{{ formatDurationCompact(totalTrackedStudySeconds) }}</strong>
-              <small>累计学习</small>
-            </div>
-            <div class="study-investment-splits">
-              <article>
-                <div>
-                  <span>主任务</span>
-                  <strong>{{ formatDurationCompact(totalMainStudySeconds) }}</strong>
-                  <b>{{ pct(totalMainStudySeconds, totalTrackedStudySeconds) }}%</b>
-                </div>
-                <i><span :style="{ width: `${pct(totalMainStudySeconds, totalTrackedStudySeconds)}%` }" /></i>
-              </article>
-              <article class="review">
-                <div>
-                  <span>复习</span>
-                  <strong>{{ formatDurationCompact(totalReviewStudySeconds) }}</strong>
-                  <b>{{ pct(totalReviewStudySeconds, totalTrackedStudySeconds) }}%</b>
-                </div>
-                <i><span :style="{ width: `${pct(totalReviewStudySeconds, totalTrackedStudySeconds)}%` }" /></i>
-              </article>
+            <div class="study-investment-summary">
+              <div class="study-investment-head">
+                <span>学习投入总览</span>
+                <strong>{{ formatDurationCompact(totalTrackedStudySeconds) }}</strong>
+                <small>累计学习</small>
+              </div>
+              <div class="peak-study-day">
+                <span>最高学习日</span>
+                <strong>{{ peakStudyDay.date || '--' }}</strong>
+                <b>{{ peakStudyDay.seconds > 0 ? formatDurationCompact(peakStudyDay.seconds) : '暂无计时' }}</b>
+              </div>
             </div>
             <div class="study-type-time-block">
               <span>已学习的题型总计时</span>
               <div v-if="trackedStudyTypeRows.length" class="study-type-time-list">
-                <b v-for="row in trackedStudyTypeRows" :key="row.type" :style="{ color: row.color, background: row.softColor }">{{ row.type }} {{ formatDurationCompact(row.seconds) }}</b>
+                <b v-for="row in trackedStudyTypeRows" :key="row.type" :style="{ background: row.softColor }">
+                  <span :style="{ color: row.color }">{{ row.type }}</span>
+                  <strong>{{ formatDurationCompact(row.seconds) }}</strong>
+                </b>
               </div>
               <small v-else>暂无计时记录</small>
-            </div>
-            <div class="peak-study-day">
-              <span>最高学习日</span>
-              <strong>{{ peakStudyDay.date || '--' }} <small v-if="peakStudyDay.seconds > 0">· {{ formatDurationCompact(peakStudyDay.seconds) }}</small></strong>
             </div>
           </div>
         </section>

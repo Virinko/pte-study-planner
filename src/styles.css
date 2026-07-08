@@ -4273,17 +4273,24 @@ nav button.active::after {
 .study-investment-card {
   min-width: 0;
   display: grid;
-  gap: 14px;
-  padding: 16px 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .92), rgba(250, 248, 255, .78));
+  gap: 12px;
+  padding: 15px 15px;
+  background: rgba(255, 255, 255, .88);
   border: 1px solid rgba(226, 232, 240, .95);
-  border-radius: 18px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .62);
+  border-radius: 20px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, .05), inset 0 0 0 1px rgba(255, 255, 255, .72);
+}
+
+.study-investment-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, .72fr);
+  align-items: center;
+  gap: 28px;
 }
 
 .study-investment-head {
   display: grid;
-  gap: 4px;
+  gap: 10px;
 }
 
 .study-investment-head span,
@@ -4297,13 +4304,14 @@ nav button.active::after {
 
 .study-investment-head strong {
   color: var(--text-main);
-  font-size: 34px;
+  font-size: 30px;
   line-height: 1;
+  letter-spacing: 0;
 }
 
 .study-investment-head small {
   color: #6366f1;
-  font-size: 13px;
+  font-size: 18px;
   font-weight: 900;
 }
 
@@ -4361,24 +4369,41 @@ nav button.active::after {
 
 .study-type-time-block {
   display: grid;
-  gap: 8px;
+  gap: 5px;
+  padding: 10px 10px;
+  border: 1px solid #ded8ff;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .78), rgba(248, 246, 255, .72));
 }
 
 .study-type-time-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 12px;
 }
 
 .study-type-time-list b {
-  max-width: 190px;
-  padding: 5px 9px;
+  max-width: 210px;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
   overflow: hidden;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.study-type-time-list b span {
+  font-weight: 900;
+}
+
+.study-type-time-list b strong {
+  color: var(--text-main);
+  font-weight: 400;
 }
 
 .study-type-time-block small {
@@ -4388,20 +4413,24 @@ nav button.active::after {
 }
 
 .peak-study-day {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 42px;
-  padding: 10px 12px;
-  background: #fff7ef;
-  border: 1px solid #ffe2c8;
-  border-radius: 12px;
+  display: grid;
+  gap: 0;
+  padding: 10px 10px;
+  background: linear-gradient(135deg, #fff9ef, #fffdf8);
+  border: 1px solid #ffd9ae;
+  border-radius: 16px;
 }
 
-.peak-study-day strong small {
+.peak-study-day strong {
+  color: var(--text-main);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.peak-study-day b {
   color: #ff6a2a;
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 900;
 }
 
 .soft-bars {
@@ -5630,6 +5659,7 @@ nav button.active::after {
   }
 
   .progress-page .hero-progress,
+  .study-investment-summary,
   .overview-numbers > div,
   .soft-stats,
   .time-stats {
