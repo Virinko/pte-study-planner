@@ -3,23 +3,22 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Minus, PencilLine, Plus, RotateCcw, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Italic, List, Minus, PencilLine, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import { fetchGitHubData, saveGitHubData } from './github';
-import type { Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 const KEY = 'pte_progress_backup';
 const LEGACY_KEY = 'pte-study-planner-data';
-const GITHUB_KEY = 'pte-study-planner-github-config';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const APP_PASSWORD_KEY = 'pte_app_password';
 const DIRTY_KEY = 'pte_progress_dirty';
 const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
 const CLOUD_SAVE_DEBOUNCE_MS = 7000;
 const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
+const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '错题复习'];
 const taskScoreRows = [
@@ -57,6 +56,7 @@ const taskPriorityOptions = Object.values(taskScoreRows.reduce<Record<string, { 
 const taskPriorityByName = new Map(taskPriorityOptions.map((item) => [item.name, item]));
 const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => [item.name, index]));
 const examTypeOptions = taskPriorityOptions.map((item) => item.name);
+const noteExamTypeOptions = ['综合', ...examTypeOptions];
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },
@@ -72,16 +72,15 @@ const tabs = [
   ['progress', '整体进度'],
   ['settings', '计划设置'],
   ['notes', '每日备注'],
-  ['sync', 'GitHub 同步'],
 ] as const;
 const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string }[] = [
   { key: 'today', label: '今日任务', icon: '📌' },
   { key: 'settings', label: '阶段计划', icon: '🗓️' },
   { key: 'progress', label: '进度统计', icon: '📊' },
   { key: 'notes', label: '每日备注', icon: '📝' },
-  { key: 'sync', label: '进度同步', icon: '🔄' },
 ];
 type TrendRange = '7' | '30' | 'all';
+type TodayTargetDiffRow = { task: Task; current: number; latest: number };
 
 interface RunningTimer {
   type: TimeLogType;
@@ -94,6 +93,8 @@ interface RunningTimer {
   accumulatedSeconds: number;
   paused: boolean;
 }
+
+type ReviewPlanRow = ReviewPlan & { dueDate: string; overdue: boolean };
 
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
@@ -113,7 +114,8 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     phases,
     tasks,
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
-    dailyNotes: source?.dailyNotes ?? base.dailyNotes,
+    dailyTargets: source?.dailyTargets ?? base.dailyTargets,
+    dailyNotes: normalizeDailyNotes(source?.dailyNotes),
     reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
     timeLogs: entriesToTimeLogs(studyTimeEntries),
@@ -124,11 +126,42 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
 function normalizeSettings(settings: StudyData['settings']): StudyData['settings'] {
   const fallback = defaultData().settings;
   return {
-    ...settings,
-    githubOwner: settings.githubOwner?.trim() || fallback.githubOwner,
-    githubRepo: settings.githubRepo?.trim() || fallback.githubRepo,
-    githubBranch: settings.githubBranch?.trim() || fallback.githubBranch,
-    githubPath: settings.githubPath?.trim() || fallback.githubPath,
+    startDate: settings.startDate || fallback.startDate,
+    deadline: settings.deadline || fallback.deadline,
+    bufferDays: Number.isFinite(Number(settings.bufferDays)) ? Number(settings.bufferDays) : fallback.bufferDays,
+  };
+}
+
+function normalizeDailyNotes(source: unknown): StudyData['dailyNotes'] {
+  return Object.entries((source || {}) as Record<string, unknown>).reduce<StudyData['dailyNotes']>((acc, [date, value]) => {
+    const entries = Array.isArray(value)
+      ? value.map((entry) => normalizeDailyNoteEntry(entry, date))
+      : typeof value === 'string' && value.trim()
+        ? [normalizeDailyNoteEntry({ content: value, date }, date)]
+        : [];
+    const validEntries = entries.filter((entry) => entry.content.trim());
+    if (validEntries.length) {
+      acc[date] = validEntries.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
+    return acc;
+  }, {});
+}
+
+function normalizeDailyNoteEntry(source: unknown, fallbackDate: string): DailyNoteEntry {
+  const note = (source || {}) as Partial<DailyNoteEntry>;
+  const date = note.date || fallbackDate || todayIso();
+  const createdAt = note.createdAt || `${date}T${note.time || '09:00'}:00`;
+  const time = note.time || formatTime(createdAt);
+  const examTypes = normalizeNoteExamTypes(note.examTypes || (note.examType ? [note.examType] : []), Boolean(note.examType));
+  return {
+    id: note.id || crypto.randomUUID(),
+    date,
+    time,
+    examType: examTypes[0] || '综合',
+    examTypes,
+    content: note.content || '',
+    createdAt,
+    updatedAt: note.updatedAt,
   };
 }
 
@@ -347,15 +380,7 @@ function hasStoredProgressBackup() {
 function load(): StudyData {
   try {
     const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
-    const cfg = localStorage.getItem(GITHUB_KEY);
-    const data = normalizeData(raw ? JSON.parse(raw) as Partial<StudyData> : undefined);
-    return {
-      ...data,
-      settings: normalizeSettings({
-        ...data.settings,
-        ...(cfg ? JSON.parse(cfg) as Partial<StudyData['settings']> : {}),
-      }),
-    };
+    return normalizeData(raw ? JSON.parse(raw) as Partial<StudyData> : undefined);
   } catch {
     return defaultData();
   }
@@ -389,9 +414,6 @@ function loadRunningTimer(): RunningTimer | null {
 
 const data = ref<StudyData>(load());
 const tab = ref<(typeof tabs)[number][0]>('today');
-const showTokenModal = ref(false);
-const tokenInput = ref('');
-const tokenField = ref<HTMLInputElement | null>(null);
 const manualAmounts = ref<Record<string, number>>({});
 const reviewAmounts = ref<Record<string, number>>({});
 const selectedReviewSubItems = ref<Record<string, string[]>>({});
@@ -408,7 +430,10 @@ const selectedTimePointDate = ref('');
 const showAllTaskProgress = ref(false);
 const showAllTimeEntries = ref(false);
 const selectedNoteDate = ref(todayIso());
-const noteDraft = ref(data.value.dailyNotes?.[todayIso()] || '');
+const noteDraft = ref('');
+const selectedNoteExamTypes = ref<string[]>([]);
+const editingNoteId = ref('');
+const noteEditorRef = ref<HTMLDivElement | null>(null);
 const importTaskId = ref('');
 const importText = ref('');
 const correctionTaskId = ref('');
@@ -441,7 +466,6 @@ const manualStudyNote = ref('');
 const nowMs = ref(Date.now());
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
-let tokenResolver: ((token: string) => void) | null = null;
 let timerInterval: number | undefined;
 let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
@@ -456,12 +480,6 @@ const todayTasks = computed(() => {
     return todayIso() >= (task.startDate || active.startDate);
   });
 });
-const ghConfig = computed(() => ({
-  owner: data.value.settings.githubOwner.trim(),
-  repo: data.value.settings.githubRepo.trim(),
-  branch: data.value.settings.githubBranch.trim(),
-  path: data.value.settings.githubPath.trim(),
-}));
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
 const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
 const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
@@ -496,7 +514,15 @@ const todayLogByTask = computed(() => {
   return result;
 });
 const todayLogTotal = computed(() => Object.values(todayLogByTask.value).reduce((sum, amount) => sum + Math.max(0, amount), 0));
-const todayReviewPlans = computed(() => data.value.reviewPlans[todayIso()] || []);
+const todayReviewPlans = computed<ReviewPlanRow[]>(() => {
+  const today = todayIso();
+  return Object.entries(data.value.reviewPlans || {})
+    .filter(([date]) => date <= today)
+    .flatMap(([date, plans]) => (plans || [])
+      .filter((plan) => date === today || plan.completed < plan.target)
+      .map((plan) => ({ ...plan, dueDate: date, overdue: date < today })))
+    .sort((a, b) => Number(a.overdue) - Number(b.overdue) || a.dueDate.localeCompare(b.dueDate) || a.taskName.localeCompare(b.taskName));
+});
 const tomorrowReviewPlans = computed(() => data.value.reviewPlans[addDays(todayIso(), 1)] || []);
 const reviewEnabledTasks = computed(() => data.value.tasks.filter((task) => task.reviewEnabled));
 const countReviewEnabledTasks = computed(() => reviewEnabledTasks.value.filter((task) => task.trackingMode !== 'itemized'));
@@ -520,6 +546,7 @@ const planTimePercent = computed(() => pct(planElapsedDays.value, planTotalDays.
 const estimatedHours = computed(() => Math.max(0.5, Math.round(todayTarget.value * 3.5) / 10));
 const lastSyncedAt = computed(() => lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
 const saveStatusText = computed(() => {
+  if (IS_LOCAL_DEV) return '本地测试模式';
   if (!appPassword.value) return '请输入访问密码';
   if (passwordError.value) return passwordError.value;
   if (isCloudSaving.value) return '保存中...';
@@ -528,19 +555,53 @@ const saveStatusText = computed(() => {
   return lastCloudSyncedAt.value ? '已自动保存' : '本地已保存';
 });
 const saveStatusClass = computed(() => ({
-  saving: isCloudSaving.value,
-  pending: isDirty.value && !isCloudSaving.value,
-  error: Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value,
-  saved: !isDirty.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value,
+  saving: !IS_LOCAL_DEV && isCloudSaving.value,
+  pending: !IS_LOCAL_DEV && isDirty.value && !isCloudSaving.value,
+  error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value),
+  saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value),
 }));
+const syncStatusDetail = computed(() => IS_LOCAL_DEV ? '仅保存到本机浏览器，不读写 Cloudflare KV' : lastSyncedAt.value);
 const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
-  .filter(([, note]) => note.trim())
-  .sort(([a], [b]) => b.localeCompare(a))
-  .map(([date, note]) => ({ date, note })));
+  .flatMap(([date, notes]) => (notes || []).map((note) => ({ ...note, date: note.date || date })))
+  .filter((note) => !isNoteContentEmpty(note.content))
+  .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
+const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
+const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
+const todayTargetDiffRows = computed<TodayTargetDiffRow[]>(() => todayTasks.value
+  .map((task) => ({
+    task,
+    current: todayFrozenTargetByTask.value[task.id] ?? 0,
+    latest: todayDynamicTargetByTask.value[task.id] ?? 0,
+  }))
+  .filter((row) => row.current !== row.latest));
+const todayTargetDiffRowsByPhase = computed(() => todayTargetDiffRows.value.reduce<Record<string, TodayTargetDiffRow[]>>((acc, row) => {
+  const rows = acc[row.task.phaseId] || [];
+  rows.push(row);
+  acc[row.task.phaseId] = rows;
+  return acc;
+}, {}));
+const hasTodayTargetSnapshot = computed(() => Boolean(data.value.dailyTargets?.[todayIso()]));
+const shouldShowTodayTargetRefresh = computed(() => hasTodayTargetSnapshot.value && todayTargetDiffRows.value.length > 0);
+
+function formatTodayTargetRefreshSummary(rows: TodayTargetDiffRow[]) {
+  const changed = rows.length;
+  const currentTotal = rows.reduce((sum, row) => sum + row.current, 0);
+  const latestTotal = rows.reduce((sum, row) => sum + row.latest, 0);
+  return `${changed} 个任务的最新建议已变化：当前合计 ${currentTotal}，最新建议 ${latestTotal}`;
+}
+
+function shouldShowTodayTargetRefreshForPhase(phaseId: string) {
+  return shouldShowTodayTargetRefresh.value && Boolean(todayTargetDiffRowsByPhase.value[phaseId]?.length);
+}
+
+function todayTargetRefreshSummaryForPhase(phaseId: string) {
+  return formatTodayTargetRefreshSummary(todayTargetDiffRowsByPhase.value[phaseId] || []);
+}
 
 const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const todayCompleted = todayLogByTask.value[task.id] || 0;
-  const dailyTarget = taskSuggestion(task, phase.value);
+  const dailyTarget = todayFrozenTargetByTask.value[task.id] ?? todayDynamicTargetByTask.value[task.id] ?? 0;
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
   const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task);
   const todayPercent = pct(todayCompleted, dailyTarget);
@@ -607,7 +668,12 @@ const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const today = todayIso();
   const status = target > 0 && done >= target ? '已完成' : today < item.startDate ? '未开始' : today > item.endDate ? '已结束' : '进行中';
   const remainingDays = today < item.startDate ? item.days : today > item.endDate ? 0 : daysBetweenInclusive(today, item.endDate);
-  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status, remainingDays };
+  const timingSummary = today < item.startDate
+    ? `共 ${item.days} 天，剩余 ${remainingDays} 天（未开始）`
+    : today > item.endDate
+      ? `共 ${item.days} 天，已结束`
+      : `共 ${item.days} 天，剩余 ${remainingDays} 天（含今天）`;
+  return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status, remainingDays, timingSummary };
 }));
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
@@ -1082,8 +1148,10 @@ onMounted(() => {
   window.addEventListener('pagehide', handlePageHide);
   window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
-  void loadCloudProgress();
-  if (isDirty.value) scheduleCloudSave(1200);
+  if (!IS_LOCAL_DEV) {
+    void loadCloudProgress();
+    if (isDirty.value) scheduleCloudSave(1200);
+  }
 });
 
 onBeforeUnmount(() => {
@@ -1113,12 +1181,15 @@ watch([phaseProgress, phase], () => {
   if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
 }, { immediate: true });
 
+watch([todayDynamicTargetSignature, hasTodayTargetSnapshot], () => {
+  if (hasTodayTargetSnapshot.value) return;
+  refreshTodayTargets();
+}, { immediate: true });
+
 function persistProgressBackup(next: StudyData) {
   localStorage.setItem(KEY, JSON.stringify(next));
   localStorage.setItem(LEGACY_KEY, JSON.stringify(next));
   hasLocalProgressBackup.value = true;
-  const { githubOwner, githubRepo, githubBranch, githubPath } = next.settings;
-  localStorage.setItem(GITHUB_KEY, JSON.stringify({ githubOwner, githubRepo, githubBranch, githubPath }));
 }
 
 function persistDirty(value: boolean) {
@@ -1149,7 +1220,7 @@ function applyRemoteProgress(remote: StudyData) {
   lastCloudSyncedAt.value = normalized.updatedAt || new Date().toISOString();
   localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
   selectedNoteDate.value = todayIso();
-  noteDraft.value = normalized.dailyNotes?.[todayIso()] || '';
+  resetNoteDraft();
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
 }
 
@@ -1167,6 +1238,7 @@ function handleUnauthorized() {
 }
 
 function submitPassword() {
+  if (IS_LOCAL_DEV) return;
   const nextPassword = passwordInput.value.trim();
   if (!nextPassword) {
     passwordError.value = '访问密码错误，请重新输入';
@@ -1181,6 +1253,7 @@ function submitPassword() {
 }
 
 async function fetchCloudProgress() {
+  if (IS_LOCAL_DEV) return null;
   const res = await fetch('/api/progress', {
     headers: { 'x-app-password': appPassword.value },
     cache: 'no-store',
@@ -1194,7 +1267,7 @@ async function fetchCloudProgress() {
 }
 
 async function loadCloudProgress(force = false) {
-  if (!appPassword.value) return;
+  if (IS_LOCAL_DEV || !appPassword.value) return;
   try {
     const remote = await fetchCloudProgress();
     if (!remote) return;
@@ -1219,7 +1292,7 @@ async function loadCloudProgress(force = false) {
 }
 
 function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
-  if (!isDirty.value || !appPassword.value) return;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value) return;
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   const elapsed = Date.now() - lastCloudSaveAttemptAt;
   const waitForMinInterval = Math.max(0, CLOUD_SAVE_MIN_INTERVAL_MS - elapsed);
@@ -1230,7 +1303,7 @@ function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
 }
 
 async function syncCloudProgress() {
-  if (!isDirty.value || !appPassword.value || isCloudSaving.value) return false;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value) return false;
   lastCloudSaveAttemptAt = Date.now();
   isCloudSaving.value = true;
   cloudSaveError.value = false;
@@ -1270,7 +1343,7 @@ async function syncCloudProgress() {
 }
 
 function tryImmediateCloudSave() {
-  if (!isDirty.value || !appPassword.value) return;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value) return;
   if (cloudSaveTimer) {
     window.clearTimeout(cloudSaveTimer);
     cloudSaveTimer = undefined;
@@ -1291,12 +1364,10 @@ function handleBeforeUnload() {
 }
 
 function restartStudyPlan() {
-  const confirmed = window.confirm('确定清除本地所有阶段、任务、进度、复习、计时和备注数据，并重新开始吗？GitHub 配置会保留，远端数据不会自动删除。');
+  const confirmed = window.confirm('确定清除本地所有阶段、任务、进度、复习、计时和备注数据，并重新开始吗？云端数据会在下次自动保存时更新。');
   if (!confirmed) return;
   const fresh = defaultData();
-  const { githubOwner, githubRepo, githubBranch, githubPath } = data.value.settings;
-  const settings = { ...fresh.settings, githubOwner, githubRepo, githubBranch, githubPath };
-  const phases = syncPhaseBoundaries(fresh.phases, settings);
+  const phases = syncPhaseBoundaries(fresh.phases, fresh.settings);
   runningTimer.value = null;
   showTimerModal.value = false;
   clearTimerEditDraft();
@@ -1308,7 +1379,7 @@ function restartStudyPlan() {
   reviewAddTaskId.value = '';
   manualAmounts.value = {};
   reviewAmounts.value = {};
-  saveLocal({ ...fresh, settings, phases });
+  saveLocal({ ...fresh, phases });
 }
 
 function timerIdentity(type: TimeLogType, id: string) {
@@ -2154,6 +2225,10 @@ function reviewPlanForId(planId: string) {
   return Object.values(data.value.reviewPlans).flat().find((plan) => plan.id === planId);
 }
 
+function reviewPlanDate(plan: ReviewPlan & { dueDate?: string }) {
+  return plan.dueDate || todayIso();
+}
+
 function reviewPlanTaskName(plan: ReviewPlan) {
   const task = data.value.tasks.find((item) => item.id === plan.taskId);
   return task ? taskDisplayName(task) : plan.taskName;
@@ -2314,17 +2389,272 @@ function historicalDoneGroups(task: Task) {
     .map(([date, items]) => ({ date, items }));
 }
 
+function formatTime(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '09:00';
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function normalizeNoteExamTypes(types: unknown, fallbackToGeneral = false) {
+  const source = Array.isArray(types) ? types : [];
+  const allowed = new Set(noteExamTypeOptions);
+  const normalized = [...new Set(source.map((type) => String(type || '').trim()).filter(Boolean))]
+    .filter((type) => allowed.has(type));
+  return normalized.length ? normalized : fallbackToGeneral ? ['综合'] : [];
+}
+
+function noteExamTypes(note: DailyNoteEntry) {
+  return normalizeNoteExamTypes(note.examTypes || [note.examType], Boolean(note.examType));
+}
+
+function toggleNoteExamType(type: string) {
+  const current = new Set(selectedNoteExamTypes.value);
+  if (current.has(type)) current.delete(type);
+  else current.add(type);
+  selectedNoteExamTypes.value = normalizeNoteExamTypes([...current]);
+}
+
+function noteTypeStyle(type: string) {
+  const index = Math.max(0, noteExamTypeOptions.indexOf(type));
+  const background = type === '综合' ? '#8b6df6' : taskTypeColor(type, index);
+  return { color: '#fff', background, borderColor: background };
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderInlineMarkdown(value: string) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>');
+}
+
+function renderNoteMarkdown(value: string) {
+  const lines = value.split(/\r?\n/);
+  const html: string[] = [];
+  let inList = false;
+  for (const line of lines) {
+    const listMatch = line.match(/^\s*[-*]\s+(.+)$/);
+    if (listMatch) {
+      if (!inList) {
+        html.push('<ul>');
+        inList = true;
+      }
+      html.push(`<li>${renderInlineMarkdown(listMatch[1])}</li>`);
+      continue;
+    }
+    if (inList) {
+      html.push('</ul>');
+      inList = false;
+    }
+    html.push(line.trim() ? `<p>${renderInlineMarkdown(line)}</p>` : '<br>');
+  }
+  if (inList) html.push('</ul>');
+  return html.join('');
+}
+
+function isHtmlNote(value: string) {
+  return /<\/?[a-z][\s\S]*>/i.test(value);
+}
+
+function sanitizeNoteHtml(value: string) {
+  if (typeof document === 'undefined') return escapeHtml(value);
+  const template = document.createElement('template');
+  template.innerHTML = value;
+  const allowedTags = new Set(['B', 'STRONG', 'I', 'EM', 'UL', 'OL', 'LI', 'P', 'DIV', 'BR', 'CODE']);
+  const cleanNode = (node: Node) => {
+    [...node.childNodes].forEach((child) => {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        const element = child as HTMLElement;
+        if (!allowedTags.has(element.tagName)) {
+          element.replaceWith(document.createTextNode(element.textContent || ''));
+          return;
+        }
+        [...element.attributes].forEach((attr) => element.removeAttribute(attr.name));
+        cleanNode(element);
+      } else if (child.nodeType !== Node.TEXT_NODE) {
+        child.remove();
+      }
+    });
+  };
+  cleanNode(template.content);
+  return template.innerHTML;
+}
+
+function renderNoteContent(value: string) {
+  return isHtmlNote(value) ? sanitizeNoteHtml(value) : renderNoteMarkdown(value);
+}
+
+function noteTextContent(value: string) {
+  if (typeof document === 'undefined') return value.replace(/<[^>]+>/g, '').trim();
+  const container = document.createElement('div');
+  container.innerHTML = renderNoteContent(value);
+  return (container.textContent || '').replace(/\u00a0/g, ' ').trim();
+}
+
+function isNoteContentEmpty(value: string) {
+  return !noteTextContent(value);
+}
+
+function setNoteEditorHtml(value: string) {
+  const editor = noteEditorRef.value;
+  if (!editor) return;
+  editor.innerHTML = value ? renderNoteContent(value) : '';
+  noteDraft.value = sanitizeNoteHtml(editor.innerHTML).trim();
+}
+
+function syncNoteDraftFromEditor() {
+  const editor = noteEditorRef.value;
+  if (!editor) return;
+  noteDraft.value = sanitizeNoteHtml(editor.innerHTML).trim();
+}
+
+function ensureEditorFocus() {
+  noteEditorRef.value?.focus();
+}
+
+function editorSelectionRange() {
+  const editor = noteEditorRef.value;
+  const selection = window.getSelection();
+  if (!editor || !selection || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  return editor.contains(range.commonAncestorContainer) ? range : null;
+}
+
+function formatNote(command: 'bold' | 'italic' | 'insertUnorderedList') {
+  ensureEditorFocus();
+  document.execCommand(command, false);
+  syncNoteDraftFromEditor();
+}
+
+function formatInlineCode() {
+  const editor = noteEditorRef.value;
+  if (!editor) return;
+  ensureEditorFocus();
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) return;
+  const selectedText = selection.toString() || '文本';
+  const codeHtml = `<code>${escapeHtml(selectedText)}</code>`;
+  document.execCommand('insertHTML', false, codeHtml);
+  syncNoteDraftFromEditor();
+}
+
+function closestNoteElement(node: Node | null, tagName: string) {
+  const editor = noteEditorRef.value;
+  let current = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node as Element | null;
+  while (current && current !== editor) {
+    if (current.tagName === tagName) return current;
+    current = current.parentElement;
+  }
+  return null;
+}
+
+function placeCursorAfterElement(element: Element) {
+  const range = document.createRange();
+  const selection = window.getSelection();
+  range.setStartAfter(element);
+  range.collapse(true);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function clearInlineFormattingAfterBreak() {
+  const range = editorSelectionRange();
+  if (!range) return;
+  if (document.queryCommandState('bold')) document.execCommand('bold', false);
+  if (document.queryCommandState('italic')) document.execCommand('italic', false);
+  const code = closestNoteElement(range.startContainer, 'CODE');
+  if (code) placeCursorAfterElement(code);
+  syncNoteDraftFromEditor();
+}
+
+function handleNoteKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return;
+  window.setTimeout(clearInlineFormattingAfterBreak, 0);
+}
+
+function handleNotePaste(event: ClipboardEvent) {
+  event.preventDefault();
+  const text = event.clipboardData?.getData('text/plain') || '';
+  document.execCommand('insertText', false, text);
+  syncNoteDraftFromEditor();
+}
+
 function selectNoteDate(date: string) {
   selectedNoteDate.value = date;
-  noteDraft.value = data.value.dailyNotes?.[date] || '';
+  editingNoteId.value = '';
 }
 
 function saveDailyNote() {
-  const note = noteDraft.value.trim();
+  syncNoteDraftFromEditor();
+  const content = sanitizeNoteHtml(noteDraft.value).trim();
+  if (isNoteContentEmpty(content)) return;
   const dailyNotes = { ...(data.value.dailyNotes || {}) };
-  if (note) dailyNotes[selectedNoteDate.value] = note;
-  else delete dailyNotes[selectedNoteDate.value];
+  const existingNotes = dailyNotes[selectedNoteDate.value] || [];
+  const now = new Date();
+  if (editingNoteId.value) {
+    let updatedNote: DailyNoteEntry | undefined;
+    for (const [date, notes] of Object.entries(dailyNotes)) {
+      const match = notes.find((note) => note.id === editingNoteId.value);
+      if (!match) continue;
+      updatedNote = {
+        ...match,
+        date: selectedNoteDate.value,
+        examType: selectedNoteExamTypes.value[0] || '综合',
+        examTypes: normalizeNoteExamTypes(selectedNoteExamTypes.value),
+        content,
+        updatedAt: now.toISOString(),
+      };
+      dailyNotes[date] = notes.filter((note) => note.id !== editingNoteId.value);
+      if (!dailyNotes[date].length) delete dailyNotes[date];
+      break;
+    }
+    if (updatedNote) {
+      dailyNotes[selectedNoteDate.value] = [updatedNote, ...(dailyNotes[selectedNoteDate.value] || [])];
+    }
+  } else {
+    const entry: DailyNoteEntry = {
+      id: crypto.randomUUID(),
+      date: selectedNoteDate.value,
+      time: formatTime(now.toISOString()),
+      examType: selectedNoteExamTypes.value[0] || '综合',
+      examTypes: normalizeNoteExamTypes(selectedNoteExamTypes.value),
+      content,
+      createdAt: now.toISOString(),
+    };
+    dailyNotes[selectedNoteDate.value] = [entry, ...existingNotes];
+  }
+  dailyNotes[selectedNoteDate.value] = (dailyNotes[selectedNoteDate.value] || []).filter((note) => !isNoteContentEmpty(note.content));
+  if (!dailyNotes[selectedNoteDate.value].length) delete dailyNotes[selectedNoteDate.value];
   saveLocal({ ...data.value, dailyNotes });
+  resetNoteDraft();
+}
+
+function editDailyNote(note: DailyNoteEntry) {
+  selectedNoteDate.value = note.date;
+  selectedNoteExamTypes.value = noteExamTypes(note);
+  noteDraft.value = note.content;
+  editingNoteId.value = note.id;
+  nextTick(() => {
+    setNoteEditorHtml(note.content);
+    noteEditorRef.value?.focus();
+  });
+}
+
+function resetNoteDraft() {
+  noteDraft.value = '';
+  selectedNoteExamTypes.value = [];
+  editingNoteId.value = '';
+  nextTick(() => setNoteEditorHtml(''));
 }
 
 function openImportModal(taskId: string) {
@@ -2379,74 +2709,45 @@ function deleteAllSubItems(task: Task) {
   updateTaskSubItems(task.id, () => []);
 }
 
-function deleteDailyNote(date: string) {
+function deleteDailyNote(date: string, noteId: string) {
   const dailyNotes = { ...(data.value.dailyNotes || {}) };
-  delete dailyNotes[date];
+  dailyNotes[date] = (dailyNotes[date] || []).filter((note) => note.id !== noteId);
+  if (!dailyNotes[date]?.length) delete dailyNotes[date];
   saveLocal({ ...data.value, dailyNotes });
-  if (selectedNoteDate.value === date) noteDraft.value = '';
+  if (editingNoteId.value === noteId) resetNoteDraft();
 }
 
-function plannedDailyTarget(task: Task, targetPhase: PhaseSchedule) {
+function buildTodayTargetSnapshot() {
+  return todayTasks.value.reduce<Record<string, number>>((acc, task) => {
+    acc[task.id] = plannedDailyTarget(task, phase.value);
+    return acc;
+  }, {});
+}
+
+function sameTargetSnapshot(a: Record<string, number> = {}, b: Record<string, number> = {}) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  return [...keys].every((key) => Number(a[key] || 0) === Number(b[key] || 0));
+}
+
+function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+  const date = todayIso();
+  const nextTargets = buildTodayTargetSnapshot();
+  const currentTargets = data.value.dailyTargets?.[date] || {};
+  if (sameTargetSnapshot(currentTargets, nextTargets)) return;
+  saveLocal({
+    ...data.value,
+    dailyTargets: {
+      ...(data.value.dailyTargets || {}),
+      [date]: nextTargets,
+    },
+  }, options);
+}
+
+function plannedDailyTarget(task: Task, targetPhase?: PhaseSchedule) {
+  if (!targetPhase) return 0;
   const taskStart = task.startDate || targetPhase.startDate;
   const startDate = todayIso() > taskStart ? todayIso() : taskStart;
   return taskSuggestion(task, targetPhase, startDate);
-}
-
-function askToken() {
-  showTokenModal.value = true;
-  tokenInput.value = '';
-  void nextTick(() => tokenField.value?.focus());
-  return new Promise<string>((resolve) => {
-    tokenResolver = resolve;
-  });
-}
-
-function resolveToken(token: string) {
-  const resolve = tokenResolver;
-  tokenResolver = null;
-  tokenInput.value = '';
-  showTokenModal.value = false;
-  resolve?.(token);
-}
-
-async function pull() {
-  let token = await askToken();
-  if (!token) return;
-  try {
-    const remote = normalizeData((await fetchGitHubData(ghConfig.value, token)).data);
-    const localNewer = data.value.updatedAt && remote.updatedAt && data.value.updatedAt > remote.updatedAt;
-    if (localNewer && !confirm('本地数据比 GitHub 更新。确定使用 GitHub 数据覆盖本地？取消则停止同步。')) return;
-    saveLocal(remote);
-    alert('已从 GitHub 拉取数据');
-  } catch (error) {
-    alert(error instanceof Error ? error.message : '同步失败');
-  } finally {
-    token = '';
-  }
-}
-
-async function push() {
-  let token = await askToken();
-  if (!token) return;
-  try {
-    const remote = normalizeData((await fetchGitHubData(ghConfig.value, token)).data);
-    if (remote.updatedAt > data.value.updatedAt) {
-      const choice = prompt('检测到 GitHub 数据更新。输入 1 使用 GitHub 覆盖本地；输入 2 使用本地覆盖 GitHub；其他取消');
-      if (choice === '1') {
-        saveLocal(remote);
-        return;
-      }
-      if (choice !== '2') return;
-    }
-    const stamped = { ...data.value, updatedAt: new Date().toISOString() };
-    await saveGitHubData(ghConfig.value, token, stamped);
-    saveLocal(stamped);
-    alert('已保存到 GitHub');
-  } catch (error) {
-    alert(error instanceof Error ? error.message : '同步失败');
-  } finally {
-    token = '';
-  }
 }
 
 function addDays(iso: string, days: number) {
@@ -2615,7 +2916,7 @@ function taskDisplayName(task: Task) {
         <span class="cloud-save-dot" aria-hidden="true"></span>
         <div>
           <strong>{{ saveStatusText }}</strong>
-          <p>{{ lastSyncedAt }}</p>
+          <p>{{ syncStatusDetail }}</p>
         </div>
       </div>
       <div class="sidebar-note">
@@ -2702,7 +3003,7 @@ function taskDisplayName(task: Task) {
 
         <div class="dashboard-table today-table">
           <div class="dashboard-table-head">
-            <span>任务</span><span>计时</span><span>今日建议</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
+            <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
           </div>
           <template v-for="task in activeTodayTaskRows" :key="task.id">
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
@@ -2714,7 +3015,9 @@ function taskDisplayName(task: Task) {
                 <button class="timer-entry-button" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
                 <small v-if="savedTimeSeconds('task', task.id) > 0">今日已学 {{ formatDurationText(savedTimeSeconds('task', task.id)) }}</small>
               </span>
-              <span class="daily-target-cell">{{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</span>
+              <span class="daily-target-cell">
+                {{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}
+              </span>
               <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
                 <span class="progress-meta">
                   <strong v-if="task.trackingMode === 'itemized'">今日已完成 {{ task.todayCompleted }} / {{ task.dailyTarget }} 篇</strong>
@@ -2963,7 +3266,7 @@ function taskDisplayName(task: Task) {
                   </div>
                   <div class="review-card-meta">
                     <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
-                    <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
+                    <span class="review-status" :class="plan.overdue ? 'status-overdue' : plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.overdue ? '已逾期' : plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
                   </div>
                 </div>
                 <div v-if="isItemizedReviewPlan(plan)" class="review-card-body itemized-review-card-body">
@@ -2976,7 +3279,7 @@ function taskDisplayName(task: Task) {
                       <input
                         type="checkbox"
                         :checked="isReviewPlanSubItemDone(plan, item.id)"
-                        @change="toggleReviewPlanSubItem(todayIso(), plan, item.id, ($event.target as HTMLInputElement).checked)"
+                        @change="toggleReviewPlanSubItem(reviewPlanDate(plan), plan, item.id, ($event.target as HTMLInputElement).checked)"
                       >
                       <span>{{ item.title }}</span>
                       <select
@@ -2988,26 +3291,26 @@ function taskDisplayName(task: Task) {
                       </select>
                     </div>
                   </div>
-                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
+                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(reviewPlanDate(plan), plan.id)">删除</button>
                 </div>
                 <div v-else class="review-card-body">
                   <label class="review-target-input">计划
-                    <input type="number" min="0" :value="plan.target" @input="setReviewTarget(todayIso(), plan, ($event.target as HTMLInputElement).value)">
+                    <input type="number" min="0" :value="plan.target" @input="setReviewTarget(reviewPlanDate(plan), plan, ($event.target as HTMLInputElement).value)">
                   </label>
                   <span class="today-progress-cell review-progress-cell">
                     <span class="progress-meta"><strong>{{ plan.completed }} / {{ plan.target }} 题</strong><b>{{ pct(plan.completed, plan.target) }}%</b></span>
                     <span class="progress-track"><i :style="{ width: `${pct(plan.completed, plan.target)}%`, background: '#7a3ed2' }" /></span>
                   </span>
                   <div class="row-actions review-actions">
-                    <button type="button" @click="addReviewProgress(todayIso(), plan, -1)">
+                    <button type="button" @click="addReviewProgress(reviewPlanDate(plan), plan, -reviewAmount(plan.id))">
                       <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
                     </button>
                     <input class="manual-input" type="number" min="0" :value="reviewAmount(plan.id)" @input="setReviewAmount(plan.id, ($event.target as HTMLInputElement).value)">
-                    <button type="button" @click="addReviewProgress(todayIso(), plan, reviewAmount(plan.id))">
+                    <button type="button" @click="addReviewProgress(reviewPlanDate(plan), plan, reviewAmount(plan.id))">
                       <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
                     </button>
                   </div>
-                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(todayIso(), plan.id)">删除</button>
+                  <button class="text-danger-button" type="button" @click="deleteReviewPlan(reviewPlanDate(plan), plan.id)">删除</button>
                 </div>
               </article>
             </div>
@@ -3451,12 +3754,19 @@ function taskDisplayName(task: Task) {
           <div class="section-heading phase-task-heading">
             <div>
               <h3>{{ group.phase.name }}</h3>
-              <p>{{ group.phase.startDate }} ~ {{ group.phase.endDate }}，{{ group.phase.days }} 天</p>
+              <p>{{ group.phase.startDate }} ~ {{ group.phase.endDate }}，{{ group.phase.timingSummary }}</p>
             </div>
             <div class="phase-task-actions">
               <button class="ghost strong weight-sort-button" type="button" :disabled="group.tasks.length < 2" @click="sortPhaseTasksByPriority(group.phase.id)">按权重排序</button>
               <button class="ghost strong purple-soft-button" type="button" @click="addTask(group.phase.id)">+ 新增本阶段任务</button>
             </div>
+          </div>
+          <div v-if="shouldShowTodayTargetRefreshForPhase(group.phase.id)" class="today-target-refresh settings-target-refresh">
+            <div>
+              <strong>今日目标可能已过期</strong>
+              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。今日任务页不会自动变化，可在这里按最新计划手动刷新。</p>
+            </div>
+            <button type="button" @click="refreshTodayTargets()">刷新今日目标</button>
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
@@ -3551,83 +3861,123 @@ function taskDisplayName(task: Task) {
       <section class="panel restart-panel">
         <div>
           <h2>重新开始</h2>
-          <p>清空本地阶段、任务、每日进度、复习计划、学习时长和备注，重新生成一个新的默认计划。GitHub 配置会保留，远端数据不会自动删除。</p>
+          <p>清空本地阶段、任务、每日进度、复习计划、学习时长和备注，重新生成一个新的默认计划。云端数据会在下次自动保存时更新。</p>
         </div>
         <button class="danger-restart-button" type="button" @click="restartStudyPlan">清除所有数据并重新开始</button>
       </section>
     </section>
 
-    <section v-else-if="tab === 'notes'" class="page">
-      <section class="panel notes-panel">
-        <div class="dashboard-title">
-          <div>
-            <h2>每日备注</h2>
-            <p>按日期保存复盘、提醒和当天感受。</p>
+    <section v-else-if="tab === 'notes'" class="page notes-page">
+      <section class="panel notes-panel note-compose-panel">
+        <div class="notes-panel-head">
+          <div class="notes-title">
+            <span class="notes-title-icon"><PencilLine :size="30" /></span>
+            <div>
+              <h2>{{ editingNoteId ? '编辑备注' : '每日备注' }}</h2>
+              <p>按日期、题型保存复盘和提醒，支持 Markdown 文本。</p>
+            </div>
           </div>
-          <label class="phase-filter">日期
-            <input type="date" :value="selectedNoteDate" @input="selectNoteDate(($event.target as HTMLInputElement).value)">
-          </label>
+          <div class="note-meta-controls">
+            <label class="note-meta-field">
+              <span>日期</span>
+              <div>
+                <CalendarDays :size="20" />
+                <input type="date" :value="selectedNoteDate" @input="selectNoteDate(($event.target as HTMLInputElement).value)">
+              </div>
+            </label>
+          </div>
         </div>
-        <textarea v-model="noteDraft" class="daily-note-editor" placeholder="写下今天的复盘、注意事项或明天提醒。"></textarea>
-        <div class="panel-actions">
-          <button class="ghost" type="button" @click="noteDraft = data.dailyNotes?.[selectedNoteDate] || ''">取消</button>
-          <button type="button" @click="saveDailyNote">保存备注</button>
+
+        <div class="note-toolbar" aria-label="Markdown 工具栏">
+          <div class="note-toolbar-left">
+            <button type="button" title="加粗" @click="formatNote('bold')"><Bold :size="17" /></button>
+            <button type="button" title="斜体" @click="formatNote('italic')"><Italic :size="17" /></button>
+            <button type="button" title="项目符号" @click="formatNote('insertUnorderedList')"><List :size="18" /></button>
+            <button type="button" title="行内代码" @click="formatInlineCode">`</button>
+          </div>
+          <details class="note-type-picker">
+            <summary>
+              <BookOpen :size="16" />
+              <span>题型</span>
+              <strong>{{ selectedNoteExamTypes.length ? selectedNoteExamTypes.length : '选择' }}</strong>
+              <ChevronDown :size="15" />
+            </summary>
+            <div class="note-type-menu">
+              <button
+                v-for="option in noteExamTypeOptions"
+                :key="option"
+                type="button"
+                :class="{ active: selectedNoteExamTypes.includes(option) }"
+                :style="noteTypeStyle(option)"
+                @click="toggleNoteExamType(option)"
+              >
+                {{ option }}
+              </button>
+            </div>
+          </details>
+        </div>
+
+        <div class="daily-note-editor rich-note-shell">
+          <div
+            ref="noteEditorRef"
+            class="rich-note-editor"
+            contenteditable="true"
+            data-placeholder="cause /kɔːz/&#10;course 英 /kɔːs/ 美 /kɔːrs/&#10;worn: wear（过去分词）：穿着"
+            @input="syncNoteDraftFromEditor"
+            @keydown="handleNoteKeydown"
+            @paste="handleNotePaste"
+          ></div>
+          <div v-if="selectedNoteExamTypes.length" class="note-editor-tags">
+            <span
+              v-for="type in selectedNoteExamTypes"
+              :key="type"
+              class="note-type-badge"
+              :style="noteTypeStyle(type)"
+            >
+              {{ type }}
+            </span>
+          </div>
+        </div>
+
+        <div class="note-compose-foot">
+          <p><Sparkles :size="18" /> 小贴士：可记录单词、语音重点、错题回顾或明日提醒等内容。</p>
+          <div class="panel-actions">
+            <button class="ghost" type="button" @click="resetNoteDraft"><X :size="18" />取消</button>
+            <button type="button" @click="saveDailyNote"><Save :size="18" />{{ editingNoteId ? '更新备注' : '保存备注' }}</button>
+          </div>
         </div>
       </section>
 
-      <section class="panel notes-panel">
-        <h2>查看备注</h2>
+      <section class="panel notes-panel note-history-panel">
+        <div class="notes-section-title">
+          <BookOpen :size="22" />
+          <h2>查看备注</h2>
+          <Sparkles :size="18" />
+        </div>
         <div v-if="noteRows.length" class="note-list">
-          <article v-for="row in noteRows" :key="row.date">
+          <article v-for="row in noteRows" :key="row.id">
             <div class="note-list-head">
-              <time @click="selectNoteDate(row.date)">{{ row.date }}</time>
-              <button type="button" @click="deleteDailyNote(row.date)">删除</button>
+              <div class="note-list-meta" @click="editDailyNote(row)">
+                <span class="note-date-badge"><CalendarDays :size="18" />{{ row.date }}</span>
+                <time>{{ row.time }}</time>
+                <span
+                  v-for="type in noteExamTypes(row)"
+                  :key="type"
+                  class="note-type-badge"
+                  :style="noteTypeStyle(type)"
+                >
+                  {{ type }}
+                </span>
+              </div>
+              <div class="note-list-actions">
+                <button type="button" title="编辑" @click="editDailyNote(row)"><PencilLine :size="16" />编辑</button>
+                <button type="button" title="删除" @click="deleteDailyNote(row.date, row.id)"><Trash2 :size="16" />删除</button>
+              </div>
             </div>
-            <p @click="selectNoteDate(row.date)">{{ row.note }}</p>
+            <div class="note-rendered" @click="editDailyNote(row)" v-html="renderNoteContent(row.content)"></div>
           </article>
         </div>
         <p v-else class="muted">还没有每日备注。</p>
-      </section>
-    </section>
-
-    <section v-else-if="tab === 'sync'" class="page">
-      <div class="sync-layout">
-        <section class="panel sync-form">
-          <label>GitHub 用户名 / Owner<input :value="data.settings.githubOwner" @input="updateSettings({ githubOwner: ($event.target as HTMLInputElement).value })"></label>
-          <label>数据仓库名<input :value="data.settings.githubRepo" @input="updateSettings({ githubRepo: ($event.target as HTMLInputElement).value })"></label>
-          <label>分支名<input :value="data.settings.githubBranch" @input="updateSettings({ githubBranch: ($event.target as HTMLInputElement).value })"></label>
-          <label>数据文件路径<input :value="data.settings.githubPath" @input="updateSettings({ githubPath: ($event.target as HTMLInputElement).value })"></label>
-          <p class="warn">Token 每次同步时手动输入，不保存到 localStorage、sessionStorage、data.json 或代码。</p>
-        </section>
-        <aside class="sync-actions">
-          <section class="panel token-card">
-            <h2>本次同步 Token</h2>
-            <div class="fake-token">••••••••••••••</div>
-            <p>点击同步按钮后弹窗输入，同步完成后立即清空。</p>
-          </section>
-          <button class="sync-button pull" type="button" @click="pull">从 GitHub 拉取数据</button>
-          <button class="sync-button push" type="button" @click="push">保存到 GitHub</button>
-        </aside>
-      </div>
-      <section class="panel sync-log">
-        <div class="section-heading">
-          <h2>同步记录</h2>
-          <button class="text-button" type="button">查看全部记录</button>
-        </div>
-        <article>
-          <span class="status-dot" :class="{ warn: isDirty || cloudSaveError || cloudLoadError }">{{ isDirty || cloudSaveError || cloudLoadError ? '!' : 'OK' }}</span>
-          <div>
-            <strong>Cloudflare KV 自动保存</strong>
-            <p>{{ saveStatusText }}</p>
-          </div>
-        </article>
-        <article>
-          <span class="status-dot">OK</span>
-          <div>
-            <strong>最近云端保存</strong>
-            <p>{{ lastSyncedAt }}</p>
-          </div>
-        </article>
       </section>
     </section>
 
@@ -3729,7 +4079,7 @@ function taskDisplayName(task: Task) {
       </form>
     </div>
 
-    <div v-if="!appPassword" class="modal password-modal">
+    <div v-if="!IS_LOCAL_DEV && !appPassword" class="modal password-modal">
       <form class="modal-box password-modal-box" @submit.prevent="submitPassword">
         <h3>输入访问密码</h3>
         <p>密码会保存在本机浏览器，用于读取和保存 Cloudflare KV 中的学习进度。</p>
@@ -3741,16 +4091,5 @@ function taskDisplayName(task: Task) {
       </form>
     </div>
 
-    <div v-if="showTokenModal" class="modal">
-      <form class="modal-box" @submit.prevent="resolveToken(tokenInput)">
-        <h3>输入 GitHub Token</h3>
-        <p>Token 不会被保存，同步结束后会清空。</p>
-        <input ref="tokenField" v-model="tokenInput" name="token" type="password" autocomplete="off" placeholder="fine-grained personal access token">
-        <div class="actions">
-          <button type="submit">确认</button>
-          <button class="ghost" type="button" @click="resolveToken('')">取消</button>
-        </div>
-      </form>
-    </div>
   </main>
 </template>

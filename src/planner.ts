@@ -18,10 +18,11 @@ export function defaultData(): StudyData {
   return {
     version: 1,
     updatedAt: new Date().toISOString(),
-    settings: { startDate: today, deadline, bufferDays: 7, githubOwner: 'Virinko', githubRepo: 'pte-study-data', githubBranch: 'main', githubPath: 'data.json' },
+    settings: { startDate: today, deadline, bufferDays: 7 },
     phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
     tasks: [],
     dailyLogs: {},
+    dailyTargets: {},
     dailyNotes: {},
     reviewPlans: {},
     skippedReviewRegistrations: {},

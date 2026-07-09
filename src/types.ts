@@ -8,10 +8,6 @@ export interface Settings {
   startDate: string;
   deadline: string;
   bufferDays: number;
-  githubOwner: string;
-  githubRepo: string;
-  githubBranch: string;
-  githubPath: string;
 }
 
 export interface Phase { id: string; name: string; order: number; startDate?: string; endDate?: string; }
@@ -44,7 +40,18 @@ export interface Task {
 
 export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; }
 export interface DailyLogs { [date: string]: DailyLogEntry[]; }
-export interface DailyNotes { [date: string]: string; }
+export interface DailyTargets { [date: string]: Record<string, number>; }
+export interface DailyNoteEntry {
+  id: string;
+  date: string;
+  time: string;
+  examType: string;
+  examTypes?: string[];
+  content: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+export interface DailyNotes { [date: string]: DailyNoteEntry[]; }
 export interface ReviewPlan {
   id: string;
   taskId: string;
@@ -88,5 +95,5 @@ export interface StudyTimeEntry {
   endAt?: string;
   createdAt: string;
 }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }
