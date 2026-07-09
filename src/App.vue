@@ -2055,6 +2055,10 @@ function setManualAmount(id: string, value: string) {
   manualAmounts.value[id] = Math.max(0, Math.floor(Number(value) || 0));
 }
 
+function setManualAmountValue(id: string, value: number) {
+  manualAmounts.value[id] = Math.max(0, Math.floor(Number(value) || 0));
+}
+
 function applyManualAmount(task: Task, direction: 1 | -1) {
   addAmount(task, manualAmount(task.id) * direction);
 }
@@ -3038,15 +3042,22 @@ function taskDisplayName(task: Task) {
                 <button v-if="task.trackingMode === 'itemized'" class="itemized-open" type="button" @click="toggleItemizedDetails(task.id)">
                   {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}
                 </button>
-                <template v-else>
-                  <button type="button" @click="applyManualAmount(task, -1)">
-                    <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
-                  </button>
-                  <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
-                  <button type="button" @click="applyManualAmount(task, 1)">
-                    <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
-                  </button>
-                </template>
+                <span v-else class="manual-action-group">
+                  <span class="manual-stepper">
+                    <button type="button" @click="applyManualAmount(task, -1)">
+                      <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
+                    </button>
+                    <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
+                    <button type="button" @click="applyManualAmount(task, 1)">
+                      <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
+                    </button>
+                  </span>
+                  <span class="manual-quick-buttons">
+                    <button type="button" @click="setManualAmountValue(task.id, 1)">1</button>
+                    <button type="button" @click="setManualAmountValue(task.id, 2)">2</button>
+                    <button type="button" @click="setManualAmountValue(task.id, task.dailyTarget)">{{ task.dailyTarget }}</button>
+                  </span>
+                </span>
               </span>
             </div>
             <div v-if="task.trackingMode === 'itemized' && isItemizedExpanded(task.id)" class="today-itemized-panel">
