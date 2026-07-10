@@ -2600,14 +2600,14 @@ nav button.active::after {
 
 .today-table .row-actions {
   flex-wrap: nowrap;
-  min-width: 126px;
+  min-width: 136px;
 }
 
 .manual-action-group {
-  width: 126px;
+  width: 136px;
   display: grid;
   justify-items: stretch;
-  gap: 4px;
+  gap: 8px;
 }
 
 .manual-stepper,
@@ -2617,20 +2617,21 @@ nav button.active::after {
 }
 
 .manual-stepper {
-  grid-template-columns: 32px minmax(0, 52px) 32px;
-  gap: 5px;
+  grid-template-columns: 28px minmax(0, 64px) 28px;
+  gap: 8px;
 }
 
 .manual-quick-buttons {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
+  grid-template-columns: repeat(3, 40px);
+  justify-content: center;
+  gap: 8px;
 }
 
 .today-table .row-actions button:not(.itemized-open) {
-  min-width: 32px;
-  width: 32px;
-  min-height: 32px;
-  height: 32px;
+  min-width: 28px;
+  width: 28px;
+  min-height: 28px;
+  height: 28px;
   padding: 0;
   color: #6f5bd6;
   background: #ffffff;
@@ -2644,16 +2645,16 @@ nav button.active::after {
 }
 
 .today-table .manual-stepper .manual-input {
-  width: 52px;
-  min-height: 32px;
-  height: 32px;
+  width: 64px;
+  min-height: 28px;
+  height: 28px;
   color: #172033;
   background: #ffffff;
   border-color: #d9ddf1;
   border-radius: 9px;
   font-size: 17px;
   font-weight: 400;
-  line-height: 32px;
+  line-height: 28px;
 }
 
 .today-table .manual-quick-buttons {
@@ -2661,8 +2662,8 @@ nav button.active::after {
 }
 
 .today-table .manual-quick-buttons button:not(.itemized-open) {
-  width: 100%;
-  min-width: 0;
+  width: 40px;
+  min-width: 40px;
   min-height: 24px;
   height: 24px;
   color: #6f5bd6;
