@@ -3793,7 +3793,7 @@ function taskDisplayName(task: Task) {
             <div class="task-table-head">
               <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>轮次</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
-            <div v-for="task in group.tasks" :key="task.id" class="task-table-row">
+            <div v-for="task in group.tasks" :key="task.id" class="task-table-row" :class="{ 'is-completed': isTaskCompletedOverall(task) }">
               <label class="select-control table-select task-type-select table-field" data-label="任务">
                 <select :value="task.name" @change="updateTask(task.id, { name: ($event.target as HTMLSelectElement).value })">
                   <option v-if="!examTypeOptions.includes(task.name)" :value="task.name">{{ task.name }}</option>
