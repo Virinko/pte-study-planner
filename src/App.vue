@@ -449,6 +449,7 @@ const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
+const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
@@ -1150,7 +1151,6 @@ onMounted(() => {
   renderProgressCharts();
   if (!IS_LOCAL_DEV) {
     void loadCloudProgress();
-    if (isDirty.value) scheduleCloudSave(1200);
   }
 });
 
@@ -1249,7 +1249,6 @@ function submitPassword() {
   passwordInput.value = '';
   passwordError.value = '';
   void loadCloudProgress(true);
-  if (isDirty.value) scheduleCloudSave(1200);
 }
 
 async function fetchCloudProgress() {
@@ -1271,28 +1270,32 @@ async function loadCloudProgress(force = false) {
   try {
     const remote = await fetchCloudProgress();
     if (!remote) return;
-    const shouldUseRemote = Boolean(remote.updatedAt) && (
+    hasCheckedCloudBaseline.value = true;
+    const remoteUpdatedAt = remote.updatedAt || '';
+    const localBaseUpdatedAt = lastCloudSyncedAt.value || '';
+    const remoteChangedSinceLocalBase = Boolean(remoteUpdatedAt) && (!localBaseUpdatedAt || remoteUpdatedAt > localBaseUpdatedAt);
+    const shouldUseRemote = Boolean(remoteUpdatedAt) && (
       !hasLocalProgressBackup.value
       || !data.value.updatedAt
-      || remote.updatedAt > data.value.updatedAt
+      || remoteUpdatedAt > data.value.updatedAt
+      || (isDirty.value && remoteChangedSinceLocalBase)
     );
     if (shouldUseRemote) applyRemoteProgress(remote);
     else {
       cloudLoadError.value = false;
-      if (!isDirty.value && remote.updatedAt) {
-        lastCloudSyncedAt.value = remote.updatedAt;
-        localStorage.setItem(LAST_SYNCED_KEY, remote.updatedAt);
+      if (!isDirty.value && remoteUpdatedAt) {
+        lastCloudSyncedAt.value = remoteUpdatedAt;
+        localStorage.setItem(LAST_SYNCED_KEY, remoteUpdatedAt);
       }
     }
-    if (!force && isDirty.value) scheduleCloudSave(1200);
+    if (isDirty.value) scheduleCloudSave(1200);
   } catch {
     cloudLoadError.value = true;
-    if (isDirty.value) scheduleCloudSave(1200);
   }
 }
 
 function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value) return;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || !hasCheckedCloudBaseline.value) return;
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   const elapsed = Date.now() - lastCloudSaveAttemptAt;
   const waitForMinInterval = Math.max(0, CLOUD_SAVE_MIN_INTERVAL_MS - elapsed);
@@ -1303,7 +1306,7 @@ function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
 }
 
 async function syncCloudProgress() {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value) return false;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value) return false;
   lastCloudSaveAttemptAt = Date.now();
   isCloudSaving.value = true;
   cloudSaveError.value = false;
@@ -1314,12 +1317,19 @@ async function syncCloudProgress() {
       headers: {
         'Content-Type': 'application/json',
         'x-app-password': appPassword.value,
+        'x-progress-base-updated-at': lastCloudSyncedAt.value || '',
       },
       body: JSON.stringify(payload),
       keepalive: JSON.stringify(payload).length < 60000,
     });
     if (res.status === 401) {
       handleUnauthorized();
+      return false;
+    }
+    if (res.status === 409) {
+      const result = await res.json() as { remote?: Partial<StudyData>; progress?: Partial<StudyData> };
+      const remote = result.remote || result.progress;
+      if (remote) applyRemoteProgress(normalizeData(remote));
       return false;
     }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);

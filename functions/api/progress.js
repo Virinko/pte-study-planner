@@ -15,6 +15,7 @@ const emptyProgress = () => ({
   phases: [],
   tasks: [],
   dailyLogs: {},
+  dailyTargets: {},
   dailyNotes: {},
   reviewPlans: {},
   skippedReviewRegistrations: {},
@@ -42,6 +43,18 @@ export async function onRequestPost({ request, env }) {
     progress = await request.json();
   } catch {
     return json({ ok: false, error: 'Invalid JSON' }, 400);
+  }
+
+  const stored = await env.PROGRESS_KV.get(PROGRESS_KEY, 'json');
+  const storedUpdatedAt = stored?.updatedAt || '';
+  const baseUpdatedAt = request.headers.get('x-progress-base-updated-at') || '';
+  if (storedUpdatedAt && (!baseUpdatedAt || storedUpdatedAt > baseUpdatedAt)) {
+    return json({
+      ok: false,
+      error: 'Conflict',
+      remoteUpdatedAt: storedUpdatedAt,
+      remote: stored,
+    }, 409);
   }
 
   const updatedAt = new Date().toISOString();
