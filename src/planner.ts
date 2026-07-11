@@ -17,7 +17,7 @@ export function defaultData(): StudyData {
   const effectiveEnd = addDays(deadline, -7);
   return {
     version: 1,
-    updatedAt: new Date().toISOString(),
+    updatedAt: '',
     settings: { startDate: today, deadline, bufferDays: 7 },
     phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
     tasks: [],

@@ -57,8 +57,8 @@ export async function onRequestPost({ request, env }) {
     }, 409);
   }
 
-  const updatedAt = new Date().toISOString();
-  const stamped = { ...progress, updatedAt };
+  const nextUpdatedAt = typeof progress?.updatedAt === 'string' ? progress.updatedAt : '';
+  const stamped = { ...progress, updatedAt: nextUpdatedAt };
   await env.PROGRESS_KV.put(PROGRESS_KEY, JSON.stringify(stamped));
-  return json({ ok: true, updatedAt, progress: stamped });
+  return json({ ok: true, updatedAt: nextUpdatedAt, progress: stamped });
 }

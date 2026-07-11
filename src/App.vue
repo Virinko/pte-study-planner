@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Italic, List, Minus, PencilLine, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
@@ -449,6 +449,8 @@ const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
+const lastCloudSyncLabel = ref('');
+const lastCloudSyncMessage = ref('');
 const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
@@ -545,15 +547,15 @@ const planRemainingDays = computed(() => {
 const planElapsedDays = computed(() => Math.max(0, planTotalDays.value - planRemainingDays.value));
 const planTimePercent = computed(() => pct(planElapsedDays.value, planTotalDays.value));
 const estimatedHours = computed(() => Math.max(0.5, Math.round(todayTarget.value * 3.5) / 10));
-const lastSyncedAt = computed(() => lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步');
 const saveStatusText = computed(() => {
   if (IS_LOCAL_DEV) return '本地测试模式';
   if (!appPassword.value) return '请输入访问密码';
   if (passwordError.value) return passwordError.value;
   if (isCloudSaving.value) return '保存中...';
   if (cloudSaveError.value || cloudLoadError.value) return '网络异常，已暂存在本地';
+  if (lastCloudSyncMessage.value) return lastCloudSyncLabel.value || '云端已同步';
   if (isDirty.value) return '有未同步改动';
-  return lastCloudSyncedAt.value ? '已自动保存' : '本地已保存';
+  return lastCloudSyncedAt.value ? '已保存本地并同步云端' : '本地已保存';
 });
 const saveStatusClass = computed(() => ({
   saving: !IS_LOCAL_DEV && isCloudSaving.value,
@@ -561,7 +563,11 @@ const saveStatusClass = computed(() => ({
   error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value),
   saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value),
 }));
-const syncStatusDetail = computed(() => IS_LOCAL_DEV ? '仅保存到本机浏览器，不读写 Cloudflare KV' : lastSyncedAt.value);
+const syncStatusDetail = computed(() => {
+  if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写 Cloudflare KV';
+  if (lastCloudSyncMessage.value) return lastCloudSyncMessage.value;
+  return lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步';
+});
 const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
   .flatMap(([date, notes]) => (notes || []).map((note) => ({ ...note, date: note.date || date })))
   .filter((note) => !isNoteContentEmpty(note.content))
@@ -1183,7 +1189,7 @@ watch([phaseProgress, phase], () => {
 
 watch([todayDynamicTargetSignature, hasTodayTargetSnapshot], () => {
   if (hasTodayTargetSnapshot.value) return;
-  refreshTodayTargets();
+  refreshTodayTargets({ markDirty: false, scheduleSync: false, preserveUpdatedAt: true });
 }, { immediate: true });
 
 function persistProgressBackup(next: StudyData) {
@@ -1197,13 +1203,20 @@ function persistDirty(value: boolean) {
   localStorage.setItem(DIRTY_KEY, value ? 'true' : 'false');
 }
 
-function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
-  const { markDirty = true, scheduleSync = true } = options;
-  const stamped = { ...normalizeData(next), updatedAt: new Date().toISOString() };
+function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
+  const { markDirty = true, scheduleSync = true, preserveUpdatedAt = false } = options;
+  const normalized = normalizeData(next);
+  const nextUpdatedAt = preserveUpdatedAt ? (normalized.updatedAt || data.value.updatedAt || '') : new Date().toISOString();
+  const stamped = {
+    ...normalized,
+    updatedAt: nextUpdatedAt,
+  };
   data.value = stamped;
   persistProgressBackup(stamped);
   cloudLoadError.value = false;
   if (markDirty) {
+    lastCloudSyncLabel.value = '';
+    lastCloudSyncMessage.value = '';
     persistDirty(true);
     cloudSaveError.value = false;
     if (scheduleSync) scheduleCloudSave();
@@ -1217,8 +1230,10 @@ function applyRemoteProgress(remote: StudyData) {
   persistDirty(false);
   cloudLoadError.value = false;
   cloudSaveError.value = false;
-  lastCloudSyncedAt.value = normalized.updatedAt || new Date().toISOString();
+  lastCloudSyncedAt.value = normalized.updatedAt || lastCloudSyncedAt.value || '';
   localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
+  lastCloudSyncLabel.value = '已拉取云端最新进度';
+  lastCloudSyncMessage.value = normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录';
   selectedNoteDate.value = todayIso();
   resetNoteDraft();
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
@@ -1272,17 +1287,14 @@ async function loadCloudProgress(force = false) {
     if (!remote) return;
     hasCheckedCloudBaseline.value = true;
     const remoteUpdatedAt = remote.updatedAt || '';
-    const localBaseUpdatedAt = lastCloudSyncedAt.value || '';
-    const remoteChangedSinceLocalBase = Boolean(remoteUpdatedAt) && (!localBaseUpdatedAt || remoteUpdatedAt > localBaseUpdatedAt);
-    const shouldUseRemote = Boolean(remoteUpdatedAt) && (
-      !hasLocalProgressBackup.value
+    const shouldUseRemote = !hasLocalProgressBackup.value
       || !data.value.updatedAt
-      || remoteUpdatedAt > data.value.updatedAt
-      || (isDirty.value && remoteChangedSinceLocalBase)
-    );
+      || (Boolean(remoteUpdatedAt) && remoteUpdatedAt > data.value.updatedAt);
     if (shouldUseRemote) applyRemoteProgress(remote);
     else {
       cloudLoadError.value = false;
+      lastCloudSyncLabel.value = '';
+      lastCloudSyncMessage.value = '';
       if (!isDirty.value && remoteUpdatedAt) {
         lastCloudSyncedAt.value = remoteUpdatedAt;
         localStorage.setItem(LAST_SYNCED_KEY, remoteUpdatedAt);
@@ -1311,7 +1323,9 @@ async function syncCloudProgress() {
   isCloudSaving.value = true;
   cloudSaveError.value = false;
   try {
-    const payload = normalizeData(data.value);
+    const payload = { ...normalizeData(data.value), updatedAt: data.value.updatedAt || new Date().toISOString() };
+    data.value = payload;
+    persistProgressBackup(payload);
     const res = await fetch('/api/progress', {
       method: 'POST',
       headers: {
@@ -1334,14 +1348,16 @@ async function syncCloudProgress() {
     }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
     const result = await res.json() as { updatedAt?: string; progress?: Partial<StudyData> };
-    const saved = normalizeData(result.progress || { ...payload, updatedAt: result.updatedAt || new Date().toISOString() });
+    const saved = normalizeData(result.progress || payload);
     data.value = saved;
     persistProgressBackup(saved);
     persistDirty(false);
     cloudSaveError.value = false;
     cloudLoadError.value = false;
-    lastCloudSyncedAt.value = saved.updatedAt;
-    localStorage.setItem(LAST_SYNCED_KEY, saved.updatedAt);
+    lastCloudSyncedAt.value = saved.updatedAt || payload.updatedAt;
+    localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
+    lastCloudSyncLabel.value = '已保存并同步云端';
+    lastCloudSyncMessage.value = saved.updatedAt ? `最新修改时间：${new Date(saved.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '最新修改时间：尚未记录';
     return true;
   } catch {
     persistDirty(true);
@@ -1446,9 +1462,9 @@ function selectTimePoint(date: string) {
 }
 
 function timerActionLabel() {
-  if (!runningTimer.value) return '开始';
-  if (!runningTimer.value.paused) return '暂停';
-  return currentTimerSeconds() > 0 ? '继续' : '开始';
+  if (!runningTimer.value) return '开始计时';
+  if (!runningTimer.value.paused) return '暂停计时';
+  return currentTimerSeconds() > 0 ? '继续计时' : '开始计时';
 }
 
 function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '') {
@@ -1493,16 +1509,16 @@ function toggleActiveTimer() {
   persistRunningTimer();
 }
 
-function resetTimer(paused = true) {
+function resetTimer() {
   if (!runningTimer.value) return;
   const timestamp = Date.now();
   nowMs.value = timestamp;
   runningTimer.value = {
     ...runningTimer.value,
-    firstStartedAt: paused ? undefined : timestamp,
+    firstStartedAt: undefined,
     accumulatedSeconds: 0,
     startedAt: timestamp,
-    paused,
+    paused: true,
   };
   clearTimerEditDraft();
   timerEditDirty.value = false;
@@ -1510,6 +1526,16 @@ function resetTimer(paused = true) {
 }
 
 function closeTimerModal() {
+  showTimerModal.value = false;
+  clearTimerEditDraft();
+  timerEditDirty.value = false;
+  persistRunningTimer();
+}
+
+function discardRunningTimer() {
+  if (!runningTimer.value) return;
+  if (currentTimerSeconds() > 0 && !window.confirm('确定取消本次计时吗？不会保存任何学习时长。')) return;
+  runningTimer.value = null;
   showTimerModal.value = false;
   clearTimerEditDraft();
   timerEditDirty.value = false;
@@ -1701,6 +1727,11 @@ function timerPreviewRange(timer: RunningTimer) {
   const startAt = timerPreviewStartAt(timer);
   if (!startAt) return '--:-- - --:--';
   return `${formatClockTime(startAt)}-${formatClockTime(timerEndAtIso())}`;
+}
+
+function formatTimerDisplay(seconds: number) {
+  const parts = durationParts(seconds);
+  return `${String(parts.hours).padStart(2, '0')}:${String(parts.minutes).padStart(2, '0')}:${String(parts.seconds).padStart(2, '0')}`;
 }
 
 function formatDuration(seconds: number) {
@@ -2743,7 +2774,7 @@ function sameTargetSnapshot(a: Record<string, number> = {}, b: Record<string, nu
   return [...keys].every((key) => Number(a[key] || 0) === Number(b[key] || 0));
 }
 
-function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
   const date = todayIso();
   const nextTargets = buildTodayTargetSnapshot();
   const currentTargets = data.value.dailyTargets?.[date] || {};
@@ -4004,53 +4035,97 @@ function taskDisplayName(task: Task) {
 
     <div v-if="showTimerModal && runningTimer" class="modal timer-modal">
       <section class="modal-box timer-modal-box">
-        <button class="modal-close-button" type="button" title="关闭弹窗，保留当前计时" @click="closeTimerModal">×</button>
-        <span class="timer-type">{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
-        <h3>{{ runningTimer.name }}</h3>
-        <strong class="timer-display">{{ formatDuration(currentTimerSeconds()) }}</strong>
-        <div class="timer-time-range">
-          <span>计时时段</span>
-          <strong>{{ timerPreviewRange(runningTimer) }}</strong>
+        <button class="modal-close-button" type="button" title="关闭弹窗，保留当前计时" @click="closeTimerModal">
+          <X :size="30" stroke-width="3" aria-hidden="true" />
+        </button>
+        <div class="timer-hero">
+          <span class="timer-type"><Clock :size="19" stroke-width="2.6" aria-hidden="true" />{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
+          <h3>{{ runningTimer.name }}</h3>
+          <strong class="timer-display">{{ formatTimerDisplay(currentTimerSeconds()) }}</strong>
+          <p>{{ !runningTimer.firstStartedAt ? '尚未开始，点击开始后会记录起点。' : runningTimer.paused ? '已暂停，可以继续计时或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
         </div>
-        <p>{{ !runningTimer.firstStartedAt ? '尚未开始，点击开始后会记录起点。' : runningTimer.paused ? '已暂停，可以重置或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
-        <label class="timer-edit-field">保存时长
-          <span class="timer-duration-inputs">
-            <input
-              type="number"
-              inputmode="numeric"
-              min="0"
-              :value="timerEditPartValue('hours')"
-              aria-label="小时"
-              @input="updateTimerEditPart('hours', ($event.target as HTMLInputElement).value)"
-            >
-            <small>时</small>
-            <input
-              type="number"
-              inputmode="numeric"
-              min="0"
-              max="59"
-              :value="timerEditPartValue('minutes')"
-              aria-label="分钟"
-              @input="updateTimerEditPart('minutes', ($event.target as HTMLInputElement).value)"
-            >
-            <small>分</small>
-            <input
-              type="number"
-              inputmode="numeric"
-              min="0"
-              max="59"
-              :value="timerEditPartValue('seconds')"
-              aria-label="秒"
-              @input="updateTimerEditPart('seconds', ($event.target as HTMLInputElement).value)"
-            >
-            <small>秒</small>
-          </span>
-        </label>
-        <div class="timer-modal-actions">
-          <button type="button" @click="toggleActiveTimer">{{ timerActionLabel() }}</button>
-          <button class="ghost" type="button" @click="resetTimer(true)">重置</button>
-          <button class="ghost" type="button" @click="resetTimer(false)">重新开始</button>
-          <button class="primary" type="button" @click="saveRunningTimer">保存</button>
+        <div class="timer-body">
+          <div class="timer-time-range">
+            <span><Clock :size="22" stroke-width="2.6" aria-hidden="true" />计时时段</span>
+            <strong>{{ timerPreviewRange(runningTimer) }}</strong>
+            <ChevronRight :size="26" stroke-width="2.4" aria-hidden="true" />
+          </div>
+          <div class="timer-edit-field">
+            <span class="timer-edit-title"><i aria-hidden="true"></i>保存时长</span>
+            <div class="timer-duration-inputs">
+              <label class="timer-duration-card timer-duration-card-hours">
+                <span class="timer-duration-icon"><Clock :size="23" stroke-width="2.4" aria-hidden="true" /></span>
+                <input
+                  type="number"
+                  inputmode="numeric"
+                  min="0"
+                  :value="timerEditPartValue('hours')"
+                  aria-label="小时"
+                  @input="updateTimerEditPart('hours', ($event.target as HTMLInputElement).value)"
+                >
+                <small>时</small>
+              </label>
+              <span class="timer-duration-separator" aria-hidden="true">:</span>
+              <label class="timer-duration-card timer-duration-card-minutes">
+                <span class="timer-duration-icon"><Clock :size="23" stroke-width="2.4" aria-hidden="true" /></span>
+                <input
+                  type="number"
+                  inputmode="numeric"
+                  min="0"
+                  max="59"
+                  :value="timerEditPartValue('minutes')"
+                  aria-label="分钟"
+                  @input="updateTimerEditPart('minutes', ($event.target as HTMLInputElement).value)"
+                >
+                <small>分</small>
+              </label>
+              <span class="timer-duration-separator" aria-hidden="true">:</span>
+              <label class="timer-duration-card timer-duration-card-seconds">
+                <span class="timer-duration-icon"><Clock :size="23" stroke-width="2.4" aria-hidden="true" /></span>
+                <input
+                  type="number"
+                  inputmode="numeric"
+                  min="0"
+                  max="59"
+                  :value="timerEditPartValue('seconds')"
+                  aria-label="秒"
+                  @input="updateTimerEditPart('seconds', ($event.target as HTMLInputElement).value)"
+                >
+                <small>秒</small>
+              </label>
+            </div>
+          </div>
+          <div class="timer-control-row">
+            <button class="timer-start-button" type="button" @click="toggleActiveTimer">
+              <span class="timer-start-icon">
+                <Pause v-if="!runningTimer.paused" :size="25" fill="currentColor" stroke-width="0" aria-hidden="true" />
+                <Play v-else :size="25" fill="currentColor" stroke-width="0" aria-hidden="true" />
+              </span>
+              <span>{{ timerActionLabel() }}</span>
+              <small v-if="!runningTimer.firstStartedAt">（点击开始后记录起点）</small>
+            </button>
+            <button class="timer-restart-button" type="button" @click="resetTimer">
+              <RotateCcw :size="25" stroke-width="2.5" aria-hidden="true" />
+              <span>重新计时</span>
+              <small>清零并重新开始</small>
+            </button>
+          </div>
+        </div>
+        <div class="timer-footer-actions">
+          <button class="timer-discard-button" type="button" @click="discardRunningTimer">
+            <span class="timer-footer-title">
+              <Trash2 :size="26" stroke-width="2.4" aria-hidden="true" />
+              <span>取消计时</span>
+            </span>
+            <small>放弃此次计时，不保存记录</small>
+          </button>
+          <button class="timer-save-button primary" type="button" @click="saveRunningTimer">
+            <span class="timer-footer-title">
+              <Save :size="27" stroke-width="2.4" aria-hidden="true" />
+              <span>保存时长</span>
+            </span>
+            <small>保存当前时长记录</small>
+          </button>
         </div>
       </section>
     </div>
