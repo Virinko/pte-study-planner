@@ -612,7 +612,16 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
   const doneToday = dailyTarget > 0 ? todayCompleted >= dailyTarget : taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task);
   const todayPercent = pct(todayCompleted, dailyTarget);
-  const todayStatus = todayCompleted > dailyTarget ? '超额完成' : doneToday ? '已完成' : '待完成';
+  const overdue = taskIsOverdue(task);
+  const todayStatus = taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task)
+    ? '已完成'
+    : overdue
+      ? '已超时'
+      : todayCompleted > dailyTarget
+        ? '超额完成'
+        : doneToday
+          ? '已完成'
+          : '待完成';
   return {
     ...task,
     accent: taskAccentByName(task.name, index),
@@ -628,6 +637,13 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     dailyTarget,
     todayPercent,
     todayStatus,
+    todayStatusClass: todayStatus === '已超时'
+      ? 'status-overdue'
+      : todayStatus === '超额完成'
+        ? 'status-extra'
+        : todayStatus === '已完成'
+          ? 'status-ok'
+          : 'status-warn',
     remainingToday,
     doneToday,
     priorityScore: taskPriorityScore(task.name),
@@ -668,6 +684,16 @@ function taskCompletionDate(task: Task) {
   return latestProgressDate;
 }
 
+function taskEffectiveEndDate(task: Task) {
+  const phase = schedule.value.find((item) => item.id === task.phaseId);
+  return task.endDate || phase?.endDate || data.value.settings.deadline;
+}
+
+function taskIsOverdue(task: Task, date = todayIso()) {
+  const totalTarget = taskTotalTarget(task);
+  return totalTarget > 0 && task.completed < totalTarget && date > taskEffectiveEndDate(task);
+}
+
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
   const done = tasks.reduce((sum, task) => sum + task.completed, 0);
@@ -689,22 +715,27 @@ const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
 })));
 const correctionTask = computed(() => data.value.tasks.find((task) => task.id === correctionTaskId.value));
 
-const taskProgressRows = computed(() => data.value.tasks.map((task, index) => ({
-  ...task,
-  accent: taskAccentByName(task.name, index),
-  initials: taskInitials(task.name),
-  softColor: taskSoftColor(task.name, index),
-  totalTarget: taskTotalTarget(task),
-  percent: pct(task.completed, taskTotalTarget(task)),
-  remaining: taskRemaining(task),
-  currentRound: taskCurrentRound(task),
-  roundCompleted: taskRoundCompleted(task),
-  totalStudySeconds: totalStudySecondsForTask(task),
-  priorityScore: taskPriorityScore(task.name),
-  priorityRank: taskPriorityRank(task.name),
-  sourceIndex: index,
-  status: taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task) ? '已结束' : '进行中',
-})).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
+const taskProgressRows = computed(() => data.value.tasks.map((task, index) => {
+  const overdue = taskIsOverdue(task);
+  const completed = taskTotalTarget(task) > 0 && task.completed >= taskTotalTarget(task);
+  return {
+    ...task,
+    accent: taskAccentByName(task.name, index),
+    initials: taskInitials(task.name),
+    softColor: taskSoftColor(task.name, index),
+    totalTarget: taskTotalTarget(task),
+    percent: pct(task.completed, taskTotalTarget(task)),
+    remaining: taskRemaining(task),
+    currentRound: taskCurrentRound(task),
+    roundCompleted: taskRoundCompleted(task),
+    totalStudySeconds: totalStudySecondsForTask(task),
+    priorityScore: taskPriorityScore(task.name),
+    priorityRank: taskPriorityRank(task.name),
+    sourceIndex: index,
+    status: completed ? '已结束' : overdue ? '已超时' : '进行中',
+    statusClass: completed ? 'is-ended' : overdue ? 'status-overdue' : 'is-active',
+  };
+}).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || activePhaseProgress.value || phaseProgress.value[0]);
 const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
@@ -775,7 +806,7 @@ const todayPracticeItems = computed(() => {
       color: task.accent,
       softColor: task.softColor,
       status: task.todayStatus,
-      statusClass: task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : 'status-warn',
+      statusClass: task.todayStatusClass,
       label: '主任务',
       sourceOrder: index,
     };
@@ -3078,7 +3109,7 @@ function taskDisplayName(task: Task) {
                 </span>
                 <span class="progress-track"><i :style="{ width: `${task.repeatCount > 1 ? pct(task.roundCompleted, task.target) : task.percent}%`, background: task.accent }" /></span>
               </span>
-              <em :class="task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : 'status-warn'">{{ task.todayStatus }}</em>
+              <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
               <span class="row-actions">
                 <button v-if="task.trackingMode === 'itemized'" class="itemized-open" type="button" @click="toggleItemizedDetails(task.id)">
                   {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}
@@ -3416,7 +3447,7 @@ function taskDisplayName(task: Task) {
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
             <span>{{ formatDurationCompact(task.totalStudySeconds) }}</span>
             <span>{{ task.remaining }} 题</span>
-            <em class="detail-progress-status" :class="task.status === '已结束' ? 'is-ended' : 'is-active'">{{ task.status }}</em>
+            <em class="detail-progress-status" :class="task.statusClass">{{ task.status }}</em>
           </div>
           <details v-for="task in filteredTaskProgressRows.filter((item) => item.trackingMode === 'itemized' && item.subItems.length > 0)" :key="`${task.id}-detail`" class="subitem-progress">
             <summary>{{ task.name }} 篇目明细：已完成 {{ itemizedDoneCount(task) }} / {{ task.subItems.length }}</summary>
