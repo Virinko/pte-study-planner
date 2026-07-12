@@ -3016,8 +3016,8 @@ nav button.active::after {
 }
 
 .status-overdue {
-  color: #111827;
-  background: #e5e7eb;
+  color: #dc2626;
+  background: #fee2e2;
 }
 
 .status-extra {
