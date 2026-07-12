@@ -16,6 +16,8 @@ const TIMER_KEY = 'pte-study-planner-running-timer';
 const APP_PASSWORD_KEY = 'pte_app_password';
 const DIRTY_KEY = 'pte_progress_dirty';
 const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
+const LAST_SYNC_LABEL_KEY = 'pte_progress_last_sync_label';
+const LAST_SYNC_MESSAGE_KEY = 'pte_progress_last_sync_message';
 const CLOUD_SAVE_DEBOUNCE_MS = 7000;
 const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
@@ -369,6 +371,22 @@ function readStoredLastSyncedAt() {
   }
 }
 
+function readStoredLastSyncLabel() {
+  try {
+    return localStorage.getItem(LAST_SYNC_LABEL_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function readStoredLastSyncMessage() {
+  try {
+    return localStorage.getItem(LAST_SYNC_MESSAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 function hasStoredProgressBackup() {
   try {
     return Boolean(localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY));
@@ -449,8 +467,8 @@ const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
-const lastCloudSyncLabel = ref('');
-const lastCloudSyncMessage = ref('');
+const lastCloudSyncLabel = ref(readStoredLastSyncLabel());
+const lastCloudSyncMessage = ref(readStoredLastSyncMessage());
 const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
@@ -1234,6 +1252,13 @@ function persistDirty(value: boolean) {
   localStorage.setItem(DIRTY_KEY, value ? 'true' : 'false');
 }
 
+function persistLastCloudSyncState(label: string, message: string) {
+  lastCloudSyncLabel.value = label;
+  lastCloudSyncMessage.value = message;
+  localStorage.setItem(LAST_SYNC_LABEL_KEY, label);
+  localStorage.setItem(LAST_SYNC_MESSAGE_KEY, message);
+}
+
 function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
   const { markDirty = true, scheduleSync = true, preserveUpdatedAt = false } = options;
   const normalized = normalizeData(next);
@@ -1246,8 +1271,7 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
   persistProgressBackup(stamped);
   cloudLoadError.value = false;
   if (markDirty) {
-    lastCloudSyncLabel.value = '';
-    lastCloudSyncMessage.value = '';
+    persistLastCloudSyncState('', '');
     persistDirty(true);
     cloudSaveError.value = false;
     if (scheduleSync) scheduleCloudSave();
@@ -1263,8 +1287,10 @@ function applyRemoteProgress(remote: StudyData) {
   cloudSaveError.value = false;
   lastCloudSyncedAt.value = normalized.updatedAt || lastCloudSyncedAt.value || '';
   localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
-  lastCloudSyncLabel.value = '已拉取云端最新进度';
-  lastCloudSyncMessage.value = normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录';
+  persistLastCloudSyncState(
+    '已拉取云端最新进度',
+    normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录',
+  );
   selectedNoteDate.value = todayIso();
   resetNoteDraft();
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
@@ -1324,8 +1350,6 @@ async function loadCloudProgress(force = false) {
     if (shouldUseRemote) applyRemoteProgress(remote);
     else {
       cloudLoadError.value = false;
-      lastCloudSyncLabel.value = '';
-      lastCloudSyncMessage.value = '';
       if (!isDirty.value && remoteUpdatedAt) {
         lastCloudSyncedAt.value = remoteUpdatedAt;
         localStorage.setItem(LAST_SYNCED_KEY, remoteUpdatedAt);
@@ -1387,8 +1411,10 @@ async function syncCloudProgress() {
     cloudLoadError.value = false;
     lastCloudSyncedAt.value = saved.updatedAt || payload.updatedAt;
     localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
-    lastCloudSyncLabel.value = '已保存并同步云端';
-    lastCloudSyncMessage.value = saved.updatedAt ? `最新修改时间：${new Date(saved.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '最新修改时间：尚未记录';
+    persistLastCloudSyncState(
+      '已保存并同步云端',
+      saved.updatedAt ? `最新修改时间：${new Date(saved.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '最新修改时间：尚未记录',
+    );
     return true;
   } catch {
     persistDirty(true);
