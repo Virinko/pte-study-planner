@@ -18,6 +18,7 @@ const emptyProgress = () => ({
   dailyTargets: {},
   dailyNotes: {},
   reviewPlans: {},
+  reviewLogs: {},
   skippedReviewRegistrations: {},
   timeLogs: {},
   studyTimeEntries: [],

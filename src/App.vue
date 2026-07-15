@@ -6,7 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -109,6 +109,8 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   }));
   const tasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => normalizeTask(task, phases[0]?.id || ''));
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
+  const reviewPlans = normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks);
+  const reviewLogs = normalizeReviewLogs(source?.reviewLogs, reviewPlans, studyTimeEntries);
   return {
     ...base,
     ...source,
@@ -118,7 +120,8 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyTargets: source?.dailyTargets ?? base.dailyTargets,
     dailyNotes: normalizeDailyNotes(source?.dailyNotes),
-    reviewPlans: normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks),
+    reviewPlans,
+    reviewLogs,
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
     timeLogs: entriesToTimeLogs(studyTimeEntries),
     studyTimeEntries,
@@ -218,6 +221,53 @@ function normalizeReviewPlan(plan: Partial<ReviewPlan>, tasks: Task[]): ReviewPl
     subItemIds,
     completedSubItemIds,
   };
+}
+
+function normalizeReviewLogs(source: Partial<StudyData['reviewLogs']> | undefined, reviewPlans: StudyData['reviewPlans'], timeEntries: StudyTimeEntry[]): StudyData['reviewLogs'] {
+  if (source === undefined) return legacyReviewLogs(reviewPlans, timeEntries);
+  return Object.entries(source || {}).reduce<StudyData['reviewLogs']>((acc, [date, logs]) => {
+    const normalized = (logs || []).map((log) => normalizeReviewLog(log, date)).filter((log) => log.amount > 0);
+    if (normalized.length) acc[date] = normalized;
+    return acc;
+  }, {});
+}
+
+function normalizeReviewLog(log: Partial<ReviewLogEntry>, date: string): ReviewLogEntry {
+  return {
+    id: log.id || crypto.randomUUID(),
+    reviewPlanId: log.reviewPlanId || '',
+    taskId: log.taskId || '',
+    taskName: log.taskName || '复习任务',
+    amount: Math.max(0, Math.floor(Number(log.amount || 0))),
+    createdAt: log.createdAt || `${date}T12:00:00`,
+  };
+}
+
+function legacyReviewLogs(reviewPlans: StudyData['reviewPlans'], timeEntries: StudyTimeEntry[]): StudyData['reviewLogs'] {
+  const latestActivityByPlan = timeEntries.reduce<Record<string, StudyTimeEntry>>((acc, entry) => {
+    if (entry.timeType !== 'review' || !entry.reviewPlanId) return acc;
+    const current = acc[entry.reviewPlanId];
+    if (!current || entry.createdAt > current.createdAt) acc[entry.reviewPlanId] = entry;
+    return acc;
+  }, {});
+
+  return Object.entries(reviewPlans).reduce<StudyData['reviewLogs']>((acc, [dueDate, plans]) => {
+    (plans || []).forEach((plan) => {
+      const amount = Math.max(0, Math.floor(plan.completed));
+      if (amount <= 0) return;
+      const activity = latestActivityByPlan[plan.id];
+      const date = activity?.date && activity.date > dueDate ? activity.date : dueDate;
+      acc[date] = [...(acc[date] || []), {
+        id: crypto.randomUUID(),
+        reviewPlanId: plan.id,
+        taskId: plan.taskId,
+        taskName: plan.taskName,
+        amount,
+        createdAt: activity?.createdAt || `${date}T12:00:00`,
+      }];
+    });
+    return acc;
+  }, {});
 }
 
 function normalizeSkippedReviewRegistrations(source: Partial<StudyData['skippedReviewRegistrations']>, tasks: Task[]): StudyData['skippedReviewRegistrations'] {
@@ -504,6 +554,8 @@ const todayTasks = computed(() => {
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
 const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
 const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
+const todayReviewLogs = computed(() => data.value.reviewLogs[todayIso()] || []);
+const todayReviewedPlanIds = computed(() => new Set(todayReviewLogs.value.map((log) => log.reviewPlanId)));
 const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayStudySeconds = computed(() => todayTaskSeconds.value + todayReviewSeconds.value);
@@ -540,7 +592,7 @@ const todayReviewPlans = computed<ReviewPlanRow[]>(() => {
   return Object.entries(data.value.reviewPlans || {})
     .filter(([date]) => date <= today)
     .flatMap(([date, plans]) => (plans || [])
-      .filter((plan) => date === today || plan.completed < plan.target)
+      .filter((plan) => date === today || plan.completed < plan.target || todayReviewedPlanIds.value.has(plan.id))
       .map((plan) => ({ ...plan, dueDate: date, overdue: date < today })))
     .sort((a, b) => Number(a.overdue) - Number(b.overdue) || a.dueDate.localeCompare(b.dueDate) || a.taskName.localeCompare(b.taskName));
 });
@@ -548,7 +600,8 @@ const tomorrowReviewPlans = computed(() => data.value.reviewPlans[addDays(todayI
 const reviewEnabledTasks = computed(() => data.value.tasks.filter((task) => task.reviewEnabled));
 const countReviewEnabledTasks = computed(() => reviewEnabledTasks.value.filter((task) => task.trackingMode !== 'itemized'));
 const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
-const todayReviewDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
+const todayReviewPlanDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
+const todayReviewDone = computed(() => todayReviewLogs.value.reduce((sum, log) => sum + log.amount, 0));
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 const overallDone = computed(() => data.value.tasks.reduce((sum, task) => sum + task.completed, 0));
 const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0));
@@ -781,7 +834,7 @@ const peakStudyDay = computed(() => {
 const practiceTrendRows = computed(() => {
   const rows = dateRangeRows(practiceTrendRange.value).map((date) => {
     const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
-    const reviewTotal = (data.value.reviewPlans[date] || []).reduce((sum, plan) => sum + plan.completed, 0);
+    const reviewTotal = (data.value.reviewLogs[date] || []).reduce((sum, log) => sum + log.amount, 0);
     const practiceTotal = mainTotal + reviewTotal;
     return { date, label: trendLabel(date, practiceTrendRange.value), mainTotal, reviewTotal, practiceTotal };
   });
@@ -791,7 +844,7 @@ const practiceTrendRows = computed(() => {
 const todayPracticeTotal = computed(() => todayLogTotal.value + todayReviewDone.value);
 const todayPracticeTypeCount = computed(() => new Set([
   ...todayTaskRows.value.filter((task) => task.todayCompleted > 0).map((task) => task.initials),
-  ...todayReviewPlans.value.filter((plan) => plan.completed > 0).map((plan) => taskInitials(plan.taskName)),
+  ...todayReviewLogs.value.map((log) => taskInitials(data.value.tasks.find((task) => task.id === log.taskId)?.name || log.taskName)),
 ]).size);
 const timeTrendRows = computed(() => {
   const rows = dateRangeRows(timeTrendRange.value).map((date) => {
@@ -815,7 +868,7 @@ const timeByExamTypeRows = computed(() => {
 const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
 const todayPracticeItems = computed(() => {
-  const mainItems = todayTaskRows.value.filter((task) => task.todayCompleted > 0 && (task.doneToday || task.todayStatus === '超额完成')).map((task, index) => {
+  const mainItems = todayTaskRows.value.filter((task) => task.todayCompleted > 0).map((task, index) => {
     const unit = task.trackingMode === 'itemized' ? '篇' : '题';
     return {
       id: `task-${task.id}`,
@@ -829,18 +882,25 @@ const todayPracticeItems = computed(() => {
       sourceOrder: index,
     };
   });
-  const reviewItems = todayReviewPlans.value.filter((plan) => plan.completed > 0 && plan.completed >= plan.target).map((plan, index) => {
-    const task = data.value.tasks.find((item) => item.id === plan.taskId);
-    const type = taskInitials(plan.taskName);
-    const unit = isItemizedReviewPlan(plan) ? '篇' : '题';
+  const reviewAmountsByPlan = todayReviewLogs.value.reduce<Record<string, { amount: number; log: ReviewLogEntry }>>((acc, log) => {
+    const current = acc[log.reviewPlanId];
+    acc[log.reviewPlanId] = { amount: (current?.amount || 0) + log.amount, log: current?.log || log };
+    return acc;
+  }, {});
+  const reviewItems = Object.entries(reviewAmountsByPlan).map(([planId, entry], index) => {
+    const plan = reviewPlanForId(planId);
+    const task = data.value.tasks.find((item) => item.id === (plan?.taskId || entry.log.taskId));
+    const type = taskInitials(plan?.taskName || entry.log.taskName);
+    const unit = plan && isItemizedReviewPlan(plan) ? '篇' : '题';
+    const completed = Boolean(plan && plan.completed >= plan.target);
     return {
-      id: `review-${plan.id}`,
+      id: `review-${planId}`,
       type,
-      countText: `${plan.completed} ${unit}`,
+      countText: `${entry.amount} ${unit}`,
       color: taskTypeColor(type, index),
       softColor: taskTypeSoftColor(type, index),
-      status: plan.completed >= plan.target ? '已复习' : '待复习',
-      statusClass: plan.completed >= plan.target ? 'status-ok' : 'status-warn',
+      status: completed ? '已复习' : '待复习',
+      statusClass: completed ? 'status-ok' : 'status-warn',
       label: reviewFamiliarity(task),
       sourceOrder: todayTaskRows.value.length + index,
     };
@@ -895,10 +955,11 @@ const practiceReportRows = computed(() => {
     row.mainCount += count;
   });
 
-  (data.value.reviewPlans[practiceReportDate.value] || []).forEach((plan) => {
-    const count = Math.max(0, Math.floor(plan.completed));
+  (data.value.reviewLogs[practiceReportDate.value] || []).forEach((log) => {
+    const count = Math.max(0, Math.floor(log.amount));
     if (count <= 0) return;
-    const row = ensureRow(taskInitials(plan.taskName));
+    const task = taskById.get(log.taskId);
+    const row = ensureRow(taskInitials(task?.name || log.taskName));
     row.reviewCount += count;
   });
 
@@ -2374,20 +2435,65 @@ function updateReviewSubItemFamiliarity(taskId: string, itemId: string, familiar
   saveLocal({ ...data.value, tasks: nextTasks });
 }
 
+function applyReviewProgressDelta(reviewLogs: StudyData['reviewLogs'], plan: ReviewPlan, delta: number): StudyData['reviewLogs'] {
+  const next = Object.entries(reviewLogs || {}).reduce<StudyData['reviewLogs']>((acc, [date, logs]) => {
+    acc[date] = logs.map((log) => ({ ...log }));
+    return acc;
+  }, {});
+
+  if (delta > 0) {
+    const date = todayIso();
+    const entry: ReviewLogEntry = {
+      id: crypto.randomUUID(),
+      reviewPlanId: plan.id,
+      taskId: plan.taskId,
+      taskName: plan.taskName,
+      amount: delta,
+      createdAt: new Date().toISOString(),
+    };
+    next[date] = [...(next[date] || []), entry];
+    return next;
+  }
+
+  let remaining = Math.abs(delta);
+  Object.keys(next).sort((a, b) => b.localeCompare(a)).forEach((date) => {
+    if (remaining <= 0) return;
+    const logs = next[date];
+    for (let index = logs.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      const log = logs[index];
+      if (log.reviewPlanId !== plan.id) continue;
+      const removed = Math.min(log.amount, remaining);
+      log.amount -= removed;
+      remaining -= removed;
+      if (log.amount <= 0) logs.splice(index, 1);
+    }
+    if (logs.length === 0) delete next[date];
+  });
+  return next;
+}
+
 function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>) {
   const plans = data.value.reviewPlans[date] || [];
+  const previousPlan = plans.find((plan) => plan.id === planId);
+  let updatedPlan: ReviewPlan | undefined;
   const nextPlans = plans.map((plan) => {
     if (plan.id !== planId) return plan;
     const nextSubItemIds = patch.subItemIds ?? plan.subItemIds ?? [];
     if (nextSubItemIds.length > 0) {
       const completedSubItemIds = [...new Set(patch.completedSubItemIds ?? plan.completedSubItemIds ?? [])].filter((id) => nextSubItemIds.includes(id));
-      return { ...plan, ...patch, subItemIds: nextSubItemIds, completedSubItemIds, target: nextSubItemIds.length, completed: completedSubItemIds.length };
+      updatedPlan = { ...plan, ...patch, subItemIds: nextSubItemIds, completedSubItemIds, target: nextSubItemIds.length, completed: completedSubItemIds.length };
+      return updatedPlan;
     }
     const target = Math.max(0, Number(patch.target ?? plan.target));
     const completed = Math.min(target, Math.max(0, Number(patch.completed ?? plan.completed)));
-    return { ...plan, ...patch, target, completed, subItemIds: [], completedSubItemIds: [] };
+    updatedPlan = { ...plan, ...patch, target, completed, subItemIds: [], completedSubItemIds: [] };
+    return updatedPlan;
   }).filter((plan) => plan.target > 0 || plan.completed > 0 || (plan.subItemIds?.length || 0) > 0);
-  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans } });
+  const delta = previousPlan && updatedPlan ? updatedPlan.completed - previousPlan.completed : 0;
+  const reviewLogs = delta !== 0 && updatedPlan
+    ? applyReviewProgressDelta(data.value.reviewLogs, updatedPlan, delta)
+    : data.value.reviewLogs;
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans }, reviewLogs });
 }
 
 function addReviewProgress(date: string, plan: ReviewPlan, amount: number) {
@@ -2400,7 +2506,12 @@ function addReviewProgress(date: string, plan: ReviewPlan, amount: number) {
 
 function deleteReviewPlan(date: string, planId: string) {
   const plans = (data.value.reviewPlans[date] || []).filter((plan) => plan.id !== planId);
-  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: plans } });
+  const reviewLogs = Object.entries(data.value.reviewLogs).reduce<StudyData['reviewLogs']>((acc, [logDate, logs]) => {
+    const nextLogs = logs.filter((log) => log.reviewPlanId !== planId);
+    if (nextLogs.length) acc[logDate] = nextLogs;
+    return acc;
+  }, {});
+  saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: plans }, reviewLogs });
 }
 
 function isItemizedExpanded(taskId: string) {
@@ -3338,7 +3449,7 @@ function taskDisplayName(task: Task) {
             <p>复习量独立记录，不计入主任务完成率。</p>
           </div>
           <div class="review-title-metrics">
-            <span>今日待复习 <strong>{{ todayReviewDone }} / {{ todayReviewTarget }}</strong></span>
+            <span>今日待复习 <strong>{{ todayReviewPlanDone }} / {{ todayReviewTarget }}</strong></span>
             <span>明日待复习 <strong>{{ tomorrowReviewTarget }}</strong></span>
           </div>
         </div>
@@ -3383,7 +3494,7 @@ function taskDisplayName(task: Task) {
                   </div>
                   <div class="review-card-meta">
                     <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
-                    <span class="review-status" :class="plan.overdue ? 'status-overdue' : plan.completed >= plan.target ? 'status-ok' : 'status-warn'">{{ plan.overdue ? '已逾期' : plan.completed >= plan.target ? '已完成' : '待完成' }}</span>
+                    <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : plan.overdue ? 'status-overdue' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : plan.overdue ? '已逾期' : '待完成' }}</span>
                   </div>
                 </div>
                 <div v-if="isItemizedReviewPlan(plan)" class="review-card-body itemized-review-card-body">
