@@ -2576,7 +2576,12 @@ function sanitizeNoteHtml(value: string) {
       if (child.nodeType === Node.ELEMENT_NODE) {
         const element = child as HTMLElement;
         if (!allowedTags.has(element.tagName)) {
-          element.replaceWith(document.createTextNode(element.textContent || ''));
+          if (element.tagName === 'SCRIPT' || element.tagName === 'STYLE') {
+            element.remove();
+            return;
+          }
+          cleanNode(element);
+          element.replaceWith(...Array.from(element.childNodes));
           return;
         }
         [...element.attributes].forEach((attr) => element.removeAttribute(attr.name));
@@ -2643,10 +2648,13 @@ function formatInlineCode() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return;
   const range = selection.getRangeAt(0);
-  if (!editor.contains(range.commonAncestorContainer)) return;
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return;
   const selectedText = selection.toString() || '文本';
-  const codeHtml = `<code>${escapeHtml(selectedText)}</code>`;
-  document.execCommand('insertHTML', false, codeHtml);
+  const code = document.createElement('code');
+  code.textContent = selectedText;
+  range.deleteContents();
+  range.insertNode(code);
+  placeCursorAfterElement(code);
   syncNoteDraftFromEditor();
 }
 
