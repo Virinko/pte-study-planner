@@ -3019,13 +3019,22 @@ function exportAnswersToPdf() {
     * { box-sizing: border-box; }
     body { margin: 0; color: #17233c; background: #fff; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .document { max-width: 100%; }
-    .cover { position: relative; display: grid; gap: 12px; padding: 18px 20px 20px; overflow: hidden; color: #fff; background: linear-gradient(125deg, #172a69 0%, #264fb8 56%, #6a55cf 100%); border-radius: 14px; break-inside: avoid; }
-    .cover::after { position: absolute; top: -48px; right: -30px; width: 170px; height: 170px; content: ""; border: 30px solid rgba(255,255,255,.11); border-radius: 50%; }
-    .eyebrow, .cover-meta, .cover-note { position: relative; z-index: 1; }
-    .eyebrow { margin: 0; color: rgba(255,255,255,.76); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
-    h1 { position: relative; z-index: 1; margin: 0; font-size: 30px; letter-spacing: .02em; }
-    .cover-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: rgba(255,255,255,.86); font-size: 10px; }
-    .cover-note { margin: 1px 0 0; color: rgba(255,255,255,.75); font-size: 10px; }
+    .cover { position: relative; display: grid; gap: 13px; min-height: 158px; padding: 20px 25px 19px; overflow: hidden; background: linear-gradient(112deg, #fbfdff 0%, #f6f8ff 54%, #f0efff 100%); border: 1px solid #d9e2ff; border-radius: 15px; break-inside: avoid; }
+    .cover::before { position: absolute; top: 25px; right: 56px; width: 85px; height: 75px; content: ""; background-image: radial-gradient(circle, #b8c7ff 1.6px, transparent 1.8px); background-size: 12px 12px; opacity: .62; }
+    .cover::after { position: absolute; right: -30px; bottom: -55px; width: 190px; height: 190px; content: ""; border: 1px solid #cbd4ff; border-radius: 50%; box-shadow: 0 0 0 36px rgba(206, 213, 255, .37), 0 0 0 72px rgba(226, 229, 255, .42); }
+    .cover-brand, h1, .cover-rule, .cover-meta { position: relative; z-index: 1; }
+    .cover-brand { display: flex; align-items: center; gap: 9px; color: #4d66bc; font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+    .brand-mark, .meta-icon { display: grid; place-items: center; flex: 0 0 auto; color: #5472db; background: linear-gradient(145deg, #dff1ff, #d8ddff); border-radius: 8px; }
+    .brand-mark { width: 25px; height: 25px; box-shadow: 0 5px 10px rgba(85, 111, 210, .18); }
+    .brand-mark svg { width: 15px; height: 15px; }
+    h1 { margin: 5px 0 0; color: #192c59; font-size: 34px; line-height: 1.1; letter-spacing: .01em; }
+    .cover-rule { width: min(74%, 540px); height: 1px; margin-top: 3px; background: #dce4f4; }
+    .cover-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0; color: #4e5f84; font-size: 10.5px; }
+    .cover-meta span { display: inline-flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 16px; border-right: 1px solid #dbe2f1; }
+    .cover-meta span:first-child { padding-left: 0; }
+    .cover-meta span:last-child { border-right: 0; }
+    .meta-icon { width: 22px; height: 22px; }
+    .meta-icon svg { width: 13px; height: 13px; }
     .answers { display: grid; gap: 12px; margin-top: 15px; }
     .answer { position: relative; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; }
     .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -3038,7 +3047,7 @@ function exportAnswersToPdf() {
     .body { color: #40506d; font-size: 12px; line-height: 1.85; white-space: normal; overflow-wrap: anywhere; }
     .document-footer { margin-top: 14px; color: #8a96ab; font-size: 9px; text-align: center; }
     @media print { .answer { box-shadow: none; } }
-  </style></head><body><main class="document"><header class="cover"><p class="eyebrow">PTE STUDY · ANSWER COLLECTION</p><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-meta"><span>共 ${entries.length} 条答案</span><span>导出于 ${generatedAt}</span></div><p class="cover-note">按平台题号整理，适合打印或电子复习。</p></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer></main></body></html>`);
+  </style></head><body><main class="document"><header class="cover"><div class="cover-brand"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5M4 19h16M7 16l4-5 3 3 5-7"/><circle cx="7" cy="16" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/></svg></span>PTE STUDY · ANSWER COLLECTION</div><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-rule"></div><div class="cover-meta"><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 12h6M9 16h6"/></svg></i>共 ${entries.length} 条答案</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></i>导出于 ${generatedAt}</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8V3h10v5M6 17H4v-6h16v6h-2M7 14h10v7H7z"/></svg></i>按平台题号整理，适合打印或电子复习。</span></div></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer></main></body></html>`);
   printWindow.document.close();
   printWindow.document.title = exportTitle;
   printWindow.focus();
