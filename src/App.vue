@@ -3,10 +3,10 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -74,12 +74,14 @@ const tabs = [
   ['progress', '整体进度'],
   ['settings', '计划设置'],
   ['notes', '每日备注'],
+  ['answers', '答案库'],
 ] as const;
 const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string }[] = [
   { key: 'today', label: '今日任务', icon: '📌' },
   { key: 'settings', label: '阶段计划', icon: '🗓️' },
   { key: 'progress', label: '进度统计', icon: '📊' },
   { key: 'notes', label: '每日备注', icon: '📝' },
+  { key: 'answers', label: '答案库', icon: '📚' },
 ];
 type TrendRange = '7' | '30' | 'all';
 type TodayTargetDiffRow = { task: Task; current: number; latest: number };
@@ -120,6 +122,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyLogs: source?.dailyLogs ?? base.dailyLogs,
     dailyTargets: source?.dailyTargets ?? base.dailyTargets,
     dailyNotes: normalizeDailyNotes(source?.dailyNotes),
+    answerEntries: normalizeAnswerEntries(source?.answerEntries),
     reviewPlans,
     reviewLogs,
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
@@ -168,6 +171,26 @@ function normalizeDailyNoteEntry(source: unknown, fallbackDate: string): DailyNo
     createdAt,
     updatedAt: note.updatedAt,
   };
+}
+
+function normalizeAnswerEntries(source: unknown): AnswerEntry[] {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((entry) => {
+      const answer = (entry || {}) as Partial<AnswerEntry>;
+      const createdAt = answer.createdAt || new Date().toISOString();
+      return {
+        id: answer.id || crypto.randomUUID(),
+        examType: answer.examType?.trim() || 'DI',
+        platform: isPracticePlatform(answer.platform) ? answer.platform : '多墨',
+        questionNumber: answer.questionNumber?.trim() || '',
+        title: answer.title?.trim() || '未命名答案',
+        answer: answer.answer || '',
+        createdAt,
+        updatedAt: answer.updatedAt,
+      };
+    })
+    .filter((entry) => entry.answer.trim() || entry.questionNumber || entry.title !== '未命名答案');
 }
 
 function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
@@ -502,6 +525,16 @@ const noteDraft = ref('');
 const selectedNoteExamTypes = ref<string[]>([]);
 const editingNoteId = ref('');
 const noteEditorRef = ref<HTMLDivElement | null>(null);
+const answerExamType = ref('DI');
+const answerPlatform = ref<PracticePlatform>('多墨');
+const answerQuestionNumber = ref('');
+const answerTitle = ref('');
+const answerContent = ref('');
+const editingAnswerId = ref('');
+const answerSearch = ref('');
+const answerTypeFilter = ref('全部');
+const answerPlatformFilter = ref<'全部' | PracticePlatform>('全部');
+const exportAnswerType = ref('DI');
 const importTaskId = ref('');
 const importText = ref('');
 const correctionTaskId = ref('');
@@ -643,6 +676,18 @@ const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
   .flatMap(([date, notes]) => (notes || []).map((note) => ({ ...note, date: note.date || date })))
   .filter((note) => !isNoteContentEmpty(note.content))
   .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+const answerRows = computed(() => {
+  const keyword = answerSearch.value.trim().toLocaleLowerCase();
+  return [...(data.value.answerEntries || [])]
+    .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
+    .filter((entry) => answerPlatformFilter.value === '全部' || entry.platform === answerPlatformFilter.value)
+    .filter((entry) => !keyword || [entry.questionNumber, entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)))
+    .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt));
+});
+const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
+const exportAnswerRows = computed(() => [...data.value.answerEntries]
+  .filter((entry) => entry.examType === exportAnswerType.value)
+  .sort((a, b) => (a.updatedAt || a.createdAt).localeCompare(b.updatedAt || b.createdAt)));
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
 const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
@@ -2878,6 +2923,115 @@ function resetNoteDraft() {
   nextTick(() => setNoteEditorHtml(''));
 }
 
+function resetAnswerDraft() {
+  answerExamType.value = 'DI';
+  answerPlatform.value = '多墨';
+  answerQuestionNumber.value = '';
+  answerTitle.value = '';
+  answerContent.value = '';
+  editingAnswerId.value = '';
+}
+
+function saveAnswer() {
+  const questionNumber = answerQuestionNumber.value.trim();
+  const title = answerTitle.value.trim();
+  const answer = answerContent.value.trim();
+  if (!questionNumber || !title || !answer) {
+    alert('请填写题号、答案标题和答案内容。');
+    return;
+  }
+  const now = new Date().toISOString();
+  const entry: AnswerEntry = {
+    id: editingAnswerId.value || crypto.randomUUID(),
+    examType: answerExamType.value.trim() || 'DI',
+    platform: answerPlatform.value,
+    questionNumber,
+    title,
+    answer,
+    createdAt: now,
+  };
+  const answerEntries = editingAnswerId.value
+    ? data.value.answerEntries.map((item) => item.id === editingAnswerId.value ? { ...item, ...entry, createdAt: item.createdAt, updatedAt: now } : item)
+    : [entry, ...data.value.answerEntries];
+  saveLocal({ ...data.value, answerEntries });
+  resetAnswerDraft();
+}
+
+function editAnswer(entry: AnswerEntry) {
+  answerExamType.value = entry.examType;
+  answerPlatform.value = entry.platform;
+  answerQuestionNumber.value = entry.questionNumber;
+  answerTitle.value = entry.title;
+  answerContent.value = entry.answer;
+  editingAnswerId.value = entry.id;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function deleteAnswer(id: string) {
+  const entry = data.value.answerEntries.find((item) => item.id === id);
+  if (!entry || !confirm(`确定删除「${entry.title}」吗？`)) return;
+  saveLocal({ ...data.value, answerEntries: data.value.answerEntries.filter((item) => item.id !== id) });
+  if (editingAnswerId.value === id) resetAnswerDraft();
+}
+
+function escapePrintHtml(value: string) {
+  return value.replace(/[&<>\"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[character] || character));
+}
+
+function exportAnswersToPdf() {
+  const entries = exportAnswerRows.value;
+  if (!entries.length) {
+    alert(`还没有 ${exportAnswerType.value} 题型的答案可导出。`);
+    return;
+  }
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    alert('浏览器拦截了打印窗口，请允许弹窗后重试。');
+    return;
+  }
+  const exportTitle = `${exportAnswerType.value} 答案`;
+  const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+  const content = entries.map((entry, index) => `
+    <article class="answer">
+      <div class="answer-head">
+        <div class="answer-tags"><span class="type-tag">${escapePrintHtml(entry.examType)}</span><span class="platform-tag">${escapePrintHtml(entry.platform)}</span><span class="question-tag">#${escapePrintHtml(entry.questionNumber)}</span></div>
+        <span class="number">${String(index + 1).padStart(2, '0')}</span>
+      </div>
+      <h2>${escapePrintHtml(entry.title)}</h2>
+      <div class="body">${escapePrintHtml(entry.answer).replace(/\n/g, '<br>')}</div>
+    </article>`).join('');
+  printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapePrintHtml(exportTitle)}</title><style>
+    @page { size: A4; margin: 14mm 15mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #17233c; background: #fff; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .document { max-width: 100%; }
+    .cover { position: relative; display: grid; gap: 12px; padding: 18px 20px 20px; overflow: hidden; color: #fff; background: linear-gradient(125deg, #172a69 0%, #264fb8 56%, #6a55cf 100%); border-radius: 14px; break-inside: avoid; }
+    .cover::after { position: absolute; top: -48px; right: -30px; width: 170px; height: 170px; content: ""; border: 30px solid rgba(255,255,255,.11); border-radius: 50%; }
+    .eyebrow, .cover-meta, .cover-note { position: relative; z-index: 1; }
+    .eyebrow { margin: 0; color: rgba(255,255,255,.76); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+    h1 { position: relative; z-index: 1; margin: 0; font-size: 30px; letter-spacing: .02em; }
+    .cover-meta { display: flex; flex-wrap: wrap; gap: 8px 18px; color: rgba(255,255,255,.86); font-size: 10px; }
+    .cover-note { margin: 1px 0 0; color: rgba(255,255,255,.75); font-size: 10px; }
+    .answers { display: grid; gap: 12px; margin-top: 15px; }
+    .answer { position: relative; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; }
+    .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .answer-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
+    .type-tag { color: #fff; background: #496fe1; }
+    .platform-tag { color: #375081; background: #e7eefc; }
+    .question-tag { color: #5f4bb4; background: #f0ecff; }
+    .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
+    h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
+    .body { color: #40506d; font-size: 12px; line-height: 1.85; white-space: normal; overflow-wrap: anywhere; }
+    .document-footer { margin-top: 14px; color: #8a96ab; font-size: 9px; text-align: center; }
+    @media print { .answer { box-shadow: none; } }
+  </style></head><body><main class="document"><header class="cover"><p class="eyebrow">PTE STUDY · ANSWER COLLECTION</p><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-meta"><span>共 ${entries.length} 条答案</span><span>导出于 ${generatedAt}</span></div><p class="cover-note">按平台题号整理，适合打印或电子复习。</p></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer></main></body></html>`);
+  printWindow.document.close();
+  printWindow.document.title = exportTitle;
+  printWindow.focus();
+  window.setTimeout(() => printWindow.print(), 150);
+}
+
 function openImportModal(taskId: string) {
   importTaskId.value = taskId;
   importText.value = '';
@@ -4206,6 +4360,104 @@ function taskDisplayName(task: Task) {
           </article>
         </div>
         <p v-else class="muted">还没有每日备注。</p>
+      </section>
+    </section>
+
+    <section v-else-if="tab === 'answers'" class="page answers-page">
+      <section class="panel answers-panel answer-compose-panel">
+        <div class="answers-panel-head">
+          <div class="answers-title">
+            <span class="answers-title-icon"><BookOpen :size="30" /></span>
+            <div>
+              <h2>{{ editingAnswerId ? '编辑答案' : '录入答案' }}</h2>
+              <p>保存平台、题号、标题和完整答案，资料会随现有进度自动同步。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="answer-meta-grid">
+          <label>
+            <span>题型</span>
+            <select v-model="answerExamType">
+              <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+            </select>
+          </label>
+          <label>
+            <span>平台</span>
+            <select v-model="answerPlatform">
+              <option v-for="option in practicePlatforms" :key="option" :value="option">{{ option }}</option>
+            </select>
+          </label>
+          <label>
+            <span>平台题号</span>
+            <input v-model="answerQuestionNumber" type="text" placeholder="例如 DI-001">
+          </label>
+          <label class="answer-title-field">
+            <span>答案标题</span>
+            <input v-model="answerTitle" type="text" placeholder="例如：城市交通题通用模板">
+          </label>
+        </div>
+
+        <label class="answer-content-field">
+          <span>答案内容</span>
+          <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 中保留。"></textarea>
+        </label>
+        <div class="answer-compose-foot">
+          <p><Sparkles :size="18" /> 小贴士：题号可按平台原样填写，方便日后快速定位。</p>
+          <div class="panel-actions">
+            <button class="ghost" type="button" @click="resetAnswerDraft"><X :size="18" />取消</button>
+            <button type="button" @click="saveAnswer"><Save :size="18" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel answers-panel answer-library-panel">
+        <div class="answer-library-head">
+          <div>
+            <h2>我的答案</h2>
+            <p>已显示 {{ answerRows.length }} 条答案</p>
+          </div>
+          <div class="answer-export-controls">
+            <label>
+              <span>导出题型</span>
+              <select v-model="exportAnswerType">
+                <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+              </select>
+            </label>
+            <button class="answer-export-button" type="button" @click="exportAnswersToPdf"><FileDown :size="18" />导出 {{ exportAnswerType }} 答案 PDF</button>
+          </div>
+        </div>
+        <div class="answer-filters">
+          <input v-model="answerSearch" type="search" placeholder="搜索题号、标题或答案内容">
+          <select v-model="answerTypeFilter">
+            <option value="全部">全部题型</option>
+            <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+          </select>
+          <select v-model="answerPlatformFilter">
+            <option value="全部">全部平台</option>
+            <option v-for="option in practicePlatforms" :key="option" :value="option">{{ option }}</option>
+          </select>
+        </div>
+
+        <div v-if="answerRows.length" class="answer-list">
+          <article v-for="entry in answerRows" :key="entry.id" class="answer-row">
+            <div class="answer-row-content" @click="editAnswer(entry)">
+              <div class="answer-row-meta">
+                <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
+                <span>{{ entry.platform }}</span>
+                <span>#{{ entry.questionNumber }}</span>
+              </div>
+              <h3>{{ entry.title }}</h3>
+              <p>{{ entry.answer }}</p>
+              <time>更新于 {{ new Date(entry.updatedAt || entry.createdAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
+            </div>
+            <div class="answer-row-actions">
+              <button type="button" @click="editAnswer(entry)"><PencilLine :size="16" />编辑</button>
+              <button type="button" @click="deleteAnswer(entry.id)"><Trash2 :size="16" />删除</button>
+            </div>
+          </article>
+        </div>
+        <p v-else class="muted answer-empty">还没有符合条件的答案，先录入第一条吧。</p>
       </section>
     </section>
 

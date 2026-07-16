@@ -52,6 +52,16 @@ export interface DailyNoteEntry {
   updatedAt?: string;
 }
 export interface DailyNotes { [date: string]: DailyNoteEntry[]; }
+export interface AnswerEntry {
+  id: string;
+  examType: string;
+  platform: PracticePlatform;
+  questionNumber: string;
+  title: string;
+  answer: string;
+  createdAt: string;
+  updatedAt?: string;
+}
 export interface ReviewPlan {
   id: string;
   taskId: string;
@@ -104,5 +114,5 @@ export interface StudyTimeEntry {
   endAt?: string;
   createdAt: string;
 }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; answerEntries: AnswerEntry[]; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }
