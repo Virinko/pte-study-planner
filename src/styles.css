@@ -5042,7 +5042,6 @@ nav button.active::after {
 .answer-row-content {
   min-width: 0;
   flex: 1;
-  cursor: pointer;
 }
 
 .answer-row-meta {

@@ -4448,7 +4448,7 @@ function taskDisplayName(task: Task) {
 
         <div v-if="answerRows.length" class="answer-list">
           <article v-for="entry in answerRows" :key="entry.id" class="answer-row">
-            <div class="answer-row-content" @click="editAnswer(entry)">
+            <div class="answer-row-content">
               <div class="answer-row-meta">
                 <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
                 <template v-for="ref in entry.platformRefs" :key="`${ref.platform}-${ref.questionNumber}`">
