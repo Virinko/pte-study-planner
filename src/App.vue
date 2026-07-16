@@ -6,7 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -22,6 +22,7 @@ const CLOUD_SAVE_DEBOUNCE_MS = 7000;
 const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
+const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
 const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '错题复习'];
 const taskScoreRows = [
   { name: 'SGD', skill: '听力', percent: 20 },
@@ -177,20 +178,35 @@ function normalizeAnswerEntries(source: unknown): AnswerEntry[] {
   if (!Array.isArray(source)) return [];
   return source
     .map((entry) => {
-      const answer = (entry || {}) as Partial<AnswerEntry>;
+      const answer = (entry || {}) as Partial<AnswerEntry> & { platform?: unknown; questionNumber?: unknown };
       const createdAt = answer.createdAt || new Date().toISOString();
+      const rawRefs = Array.isArray(answer.platformRefs)
+        ? answer.platformRefs
+        : [{ platform: answer.platform, questionNumber: answer.questionNumber }];
+      const platformRefs = rawRefs
+        .map((ref) => ({
+          platform: isPracticePlatform(ref?.platform) ? ref.platform : '多墨',
+          questionNumber: String(ref?.questionNumber || '').trim(),
+        }))
+        .filter((ref) => ref.questionNumber);
       return {
         id: answer.id || crypto.randomUUID(),
         examType: answer.examType?.trim() || 'DI',
-        platform: isPracticePlatform(answer.platform) ? answer.platform : '多墨',
-        questionNumber: answer.questionNumber?.trim() || '',
+        platformRefs,
         title: answer.title?.trim() || '未命名答案',
         answer: answer.answer || '',
         createdAt,
         updatedAt: answer.updatedAt,
       };
     })
-    .filter((entry) => entry.answer.trim() || entry.questionNumber || entry.title !== '未命名答案');
+    .filter((entry) => entry.answer.trim() || entry.platformRefs.length || entry.title !== '未命名答案');
+}
+
+function fixedAnswerPlatformRefs(source: PlatformQuestionRef[] = []): PlatformQuestionRef[] {
+  return answerReferencePlatforms.map((platform) => ({
+    platform,
+    questionNumber: source.find((ref) => ref.platform === platform)?.questionNumber || '',
+  }));
 }
 
 function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
@@ -526,8 +542,7 @@ const selectedNoteExamTypes = ref<string[]>([]);
 const editingNoteId = ref('');
 const noteEditorRef = ref<HTMLDivElement | null>(null);
 const answerExamType = ref('DI');
-const answerPlatform = ref<PracticePlatform>('多墨');
-const answerQuestionNumber = ref('');
+const answerPlatformRefs = ref<PlatformQuestionRef[]>(fixedAnswerPlatformRefs());
 const answerTitle = ref('');
 const answerContent = ref('');
 const editingAnswerId = ref('');
@@ -680,8 +695,8 @@ const answerRows = computed(() => {
   const keyword = answerSearch.value.trim().toLocaleLowerCase();
   return [...(data.value.answerEntries || [])]
     .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
-    .filter((entry) => answerPlatformFilter.value === '全部' || entry.platform === answerPlatformFilter.value)
-    .filter((entry) => !keyword || [entry.questionNumber, entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)))
+    .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
+    .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)))
     .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt));
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
@@ -2925,27 +2940,27 @@ function resetNoteDraft() {
 
 function resetAnswerDraft() {
   answerExamType.value = 'DI';
-  answerPlatform.value = '多墨';
-  answerQuestionNumber.value = '';
+  answerPlatformRefs.value = fixedAnswerPlatformRefs();
   answerTitle.value = '';
   answerContent.value = '';
   editingAnswerId.value = '';
 }
 
 function saveAnswer() {
-  const questionNumber = answerQuestionNumber.value.trim();
+  const platformRefs = answerPlatformRefs.value
+    .map((ref) => ({ platform: ref.platform, questionNumber: ref.questionNumber.trim() }))
+    .filter((ref) => ref.questionNumber);
   const title = answerTitle.value.trim();
   const answer = answerContent.value.trim();
-  if (!questionNumber || !title || !answer) {
-    alert('请填写题号、答案标题和答案内容。');
+  if (!platformRefs.length || !title || !answer) {
+    alert('请至少填写一个平台题号、答案标题和答案内容。');
     return;
   }
   const now = new Date().toISOString();
   const entry: AnswerEntry = {
     id: editingAnswerId.value || crypto.randomUUID(),
     examType: answerExamType.value.trim() || 'DI',
-    platform: answerPlatform.value,
-    questionNumber,
+    platformRefs,
     title,
     answer,
     createdAt: now,
@@ -2959,8 +2974,7 @@ function saveAnswer() {
 
 function editAnswer(entry: AnswerEntry) {
   answerExamType.value = entry.examType;
-  answerPlatform.value = entry.platform;
-  answerQuestionNumber.value = entry.questionNumber;
+  answerPlatformRefs.value = fixedAnswerPlatformRefs(entry.platformRefs);
   answerTitle.value = entry.title;
   answerContent.value = entry.answer;
   editingAnswerId.value = entry.id;
@@ -2994,7 +3008,7 @@ function exportAnswersToPdf() {
   const content = entries.map((entry, index) => `
     <article class="answer">
       <div class="answer-head">
-        <div class="answer-tags"><span class="type-tag">${escapePrintHtml(entry.examType)}</span><span class="platform-tag">${escapePrintHtml(entry.platform)}</span><span class="question-tag">#${escapePrintHtml(entry.questionNumber)}</span></div>
+        <div class="answer-tags"><span class="type-tag">${escapePrintHtml(entry.examType)}</span>${entry.platformRefs.map((ref) => `<span class="platform-tag">${escapePrintHtml(ref.platform)} #${escapePrintHtml(ref.questionNumber)}</span>`).join('')}</div>
         <span class="number">${String(index + 1).padStart(2, '0')}</span>
       </div>
       <h2>${escapePrintHtml(entry.title)}</h2>
@@ -3019,7 +3033,6 @@ function exportAnswersToPdf() {
     .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
     .type-tag { color: #fff; background: #496fe1; }
     .platform-tag { color: #375081; background: #e7eefc; }
-    .question-tag { color: #5f4bb4; background: #f0ecff; }
     .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
     h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
     .body { color: #40506d; font-size: 12px; line-height: 1.85; white-space: normal; overflow-wrap: anywhere; }
@@ -4382,19 +4395,13 @@ function taskDisplayName(task: Task) {
               <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
             </select>
           </label>
-          <label>
-            <span>平台</span>
-            <select v-model="answerPlatform">
-              <option v-for="option in practicePlatforms" :key="option" :value="option">{{ option }}</option>
-            </select>
-          </label>
-          <label>
-            <span>平台题号</span>
-            <input v-model="answerQuestionNumber" type="text" placeholder="例如 DI-001">
-          </label>
           <label class="answer-title-field">
             <span>答案标题</span>
             <input v-model="answerTitle" type="text" placeholder="例如：城市交通题通用模板">
+          </label>
+          <label v-for="ref in answerPlatformRefs" :key="ref.platform" class="answer-platform-number">
+            <span>{{ ref.platform }}题号</span>
+            <input v-model="ref.questionNumber" type="text" :placeholder="`${ref.platform}题号`">
           </label>
         </div>
 
@@ -4403,7 +4410,7 @@ function taskDisplayName(task: Task) {
           <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 中保留。"></textarea>
         </label>
         <div class="answer-compose-foot">
-          <p><Sparkles :size="18" /> 小贴士：题号可按平台原样填写，方便日后快速定位。</p>
+          <p><Sparkles :size="18" /> 小贴士：三个平台固定，只需填写各自对应题号。</p>
           <div class="panel-actions">
             <button class="ghost" type="button" @click="resetAnswerDraft"><X :size="18" />取消</button>
             <button type="button" @click="saveAnswer"><Save :size="18" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
@@ -4435,7 +4442,7 @@ function taskDisplayName(task: Task) {
           </select>
           <select v-model="answerPlatformFilter">
             <option value="全部">全部平台</option>
-            <option v-for="option in practicePlatforms" :key="option" :value="option">{{ option }}</option>
+            <option v-for="option in answerReferencePlatforms" :key="option" :value="option">{{ option }}</option>
           </select>
         </div>
 
@@ -4444,8 +4451,9 @@ function taskDisplayName(task: Task) {
             <div class="answer-row-content" @click="editAnswer(entry)">
               <div class="answer-row-meta">
                 <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
-                <span>{{ entry.platform }}</span>
-                <span>#{{ entry.questionNumber }}</span>
+                <template v-for="ref in entry.platformRefs" :key="`${ref.platform}-${ref.questionNumber}`">
+                  <span>{{ ref.platform }} #{{ ref.questionNumber }}</span>
+                </template>
               </div>
               <h3>{{ entry.title }}</h3>
               <p>{{ entry.answer }}</p>

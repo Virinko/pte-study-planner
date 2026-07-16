@@ -4894,7 +4894,7 @@ nav button.active::after {
 
 .answer-meta-grid {
   display: grid;
-  grid-template-columns: 120px 150px minmax(150px, .7fr) minmax(220px, 1.25fr);
+  grid-template-columns: 120px minmax(260px, 1fr) repeat(3, minmax(130px, .46fr));
   gap: 12px;
   margin-top: 24px;
 }
@@ -5072,14 +5072,10 @@ nav button.active::after {
 }
 
 .answer-row-content > p {
-  display: -webkit-box;
   margin: 0;
-  overflow: hidden;
   color: #56657c;
   white-space: pre-wrap;
   line-height: 1.65;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
 }
 
 .answer-row time {

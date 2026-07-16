@@ -52,11 +52,14 @@ export interface DailyNoteEntry {
   updatedAt?: string;
 }
 export interface DailyNotes { [date: string]: DailyNoteEntry[]; }
+export interface PlatformQuestionRef {
+  platform: PracticePlatform;
+  questionNumber: string;
+}
 export interface AnswerEntry {
   id: string;
   examType: string;
-  platform: PracticePlatform;
-  questionNumber: string;
+  platformRefs: PlatformQuestionRef[];
   title: string;
   answer: string;
   createdAt: string;
