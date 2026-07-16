@@ -4391,9 +4391,12 @@ function taskDisplayName(task: Task) {
         <div class="answer-meta-grid">
           <label>
             <span>题型</span>
-            <select v-model="answerExamType">
-              <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
-            </select>
+            <span class="answer-select-control">
+              <select v-model="answerExamType">
+                <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+              </select>
+              <ChevronDown :size="18" aria-hidden="true" />
+            </span>
           </label>
           <label class="answer-title-field">
             <span>答案标题</span>
@@ -4427,23 +4430,32 @@ function taskDisplayName(task: Task) {
           <div class="answer-export-controls">
             <label>
               <span>导出题型</span>
-              <select v-model="exportAnswerType">
-                <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
-              </select>
+              <span class="answer-select-control">
+                <select v-model="exportAnswerType">
+                  <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+                </select>
+                <ChevronDown :size="17" aria-hidden="true" />
+              </span>
             </label>
             <button class="answer-export-button" type="button" @click="exportAnswersToPdf"><FileDown :size="18" />导出 {{ exportAnswerType }} 答案 PDF</button>
           </div>
         </div>
         <div class="answer-filters">
           <input v-model="answerSearch" type="search" placeholder="搜索题号、标题或答案内容">
-          <select v-model="answerTypeFilter">
-            <option value="全部">全部题型</option>
-            <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
-          </select>
-          <select v-model="answerPlatformFilter">
-            <option value="全部">全部平台</option>
-            <option v-for="option in answerReferencePlatforms" :key="option" :value="option">{{ option }}</option>
-          </select>
+          <span class="answer-select-control">
+            <select v-model="answerTypeFilter">
+              <option value="全部">全部题型</option>
+              <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+            </select>
+            <ChevronDown :size="17" aria-hidden="true" />
+          </span>
+          <span class="answer-select-control">
+            <select v-model="answerPlatformFilter">
+              <option value="全部">全部平台</option>
+              <option v-for="option in answerReferencePlatforms" :key="option" :value="option">{{ option }}</option>
+            </select>
+            <ChevronDown :size="17" aria-hidden="true" />
+          </span>
         </div>
 
         <div v-if="answerRows.length" class="answer-list">

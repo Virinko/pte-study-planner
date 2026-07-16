@@ -4924,6 +4924,28 @@ nav button.active::after {
   font-weight: 700;
 }
 
+.answer-select-control {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.answer-select-control select {
+  width: 100%;
+  padding-right: 36px;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.answer-select-control svg {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  color: #62769c;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
 .answer-content-field {
   margin-top: 14px;
 }
