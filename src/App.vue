@@ -713,12 +713,15 @@ const answerRows = computed(() => {
     .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
     .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
     .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)));
-  return rows.sort((a, b) => a.examType.localeCompare(b.examType) || (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
+  if (answerManualSortMode.value) {
+    return rows.sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
+  }
+  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
 const exportAnswerRows = computed(() => {
   const rows = [...data.value.answerEntries].filter((entry) => entry.examType === exportAnswerType.value);
-  return rows.sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
+  return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 });
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
