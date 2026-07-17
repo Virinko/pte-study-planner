@@ -5027,7 +5027,7 @@ nav button.active::after {
 
 .answer-filters {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 150px 150px;
+  grid-template-columns: minmax(220px, 1fr) 150px 150px auto;
   gap: 10px;
   padding: 14px;
   background: #f5f8ff;
@@ -5039,6 +5039,39 @@ nav button.active::after {
 .answer-filters select {
   min-height: 38px;
   font-size: 13px;
+}
+
+.answer-sort-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 8px 12px;
+  color: #4660ab;
+  background: #f2f6ff;
+  border: 1px solid #d7e1f6;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.answer-sort-button.is-active {
+  color: #fff;
+  background: linear-gradient(135deg, #356ce2, #735be4);
+  border-color: transparent;
+  box-shadow: 0 8px 16px rgba(56, 92, 210, .18);
+}
+
+.answer-sort-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 -4px;
+  color: #566dc2;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 .answer-list {
@@ -5059,6 +5092,29 @@ nav button.active::after {
 .answer-row:hover {
   border-color: #a8bdf0;
   box-shadow: 0 5px 16px rgba(56, 92, 160, .08);
+}
+
+.answer-row.is-sortable {
+  border-style: dashed;
+}
+
+.answer-row.is-dragging {
+  opacity: .48;
+}
+
+.answer-drag-handle {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: 28px;
+  min-height: 46px;
+  color: #8fa0c3;
+  cursor: grab;
+}
+
+.answer-drag-handle:active {
+  cursor: grabbing;
 }
 
 .answer-row-content {

@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
@@ -176,7 +176,7 @@ function normalizeDailyNoteEntry(source: unknown, fallbackDate: string): DailyNo
 
 function normalizeAnswerEntries(source: unknown): AnswerEntry[] {
   if (!Array.isArray(source)) return [];
-  return source
+  const entries = source
     .map((entry) => {
       const answer = (entry || {}) as Partial<AnswerEntry> & { platform?: unknown; questionNumber?: unknown };
       const createdAt = answer.createdAt || new Date().toISOString();
@@ -197,9 +197,21 @@ function normalizeAnswerEntries(source: unknown): AnswerEntry[] {
         answer: answer.answer || '',
         createdAt,
         updatedAt: answer.updatedAt,
+        sortOrder: Number.isFinite(answer.sortOrder) ? Math.floor(answer.sortOrder as number) : undefined,
       };
     })
     .filter((entry) => entry.answer.trim() || entry.platformRefs.length || entry.title !== '未命名答案');
+  const nextOrderByType = new Map<string, number>();
+  entries.forEach((entry) => {
+    if (typeof entry.sortOrder !== 'number') return;
+    nextOrderByType.set(entry.examType, Math.max(nextOrderByType.get(entry.examType) || 0, entry.sortOrder + 1));
+  });
+  return entries.map((entry) => {
+    if (typeof entry.sortOrder === 'number') return entry;
+    const nextOrder = nextOrderByType.get(entry.examType) || 0;
+    nextOrderByType.set(entry.examType, nextOrder + 1);
+    return { ...entry, sortOrder: nextOrder };
+  });
 }
 
 function fixedAnswerPlatformRefs(source: PlatformQuestionRef[] = []): PlatformQuestionRef[] {
@@ -549,6 +561,8 @@ const editingAnswerId = ref('');
 const answerSearch = ref('');
 const answerTypeFilter = ref('全部');
 const answerPlatformFilter = ref<'全部' | PracticePlatform>('全部');
+const answerManualSortMode = ref(false);
+const draggingAnswerId = ref('');
 const exportAnswerType = ref('DI');
 const importTaskId = ref('');
 const importText = ref('');
@@ -695,16 +709,17 @@ const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
   .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const answerRows = computed(() => {
   const keyword = answerSearch.value.trim().toLocaleLowerCase();
-  return [...(data.value.answerEntries || [])]
+  const rows = [...(data.value.answerEntries || [])]
     .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
     .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
-    .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)));
+  return rows.sort((a, b) => a.examType.localeCompare(b.examType) || (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
-const exportAnswerRows = computed(() => [...data.value.answerEntries]
-  .filter((entry) => entry.examType === exportAnswerType.value)
-  .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
+const exportAnswerRows = computed(() => {
+  const rows = [...data.value.answerEntries].filter((entry) => entry.examType === exportAnswerType.value);
+  return rows.sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
+});
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
 const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
@@ -3053,6 +3068,63 @@ function resetAnswerDraft() {
   editingAnswerId.value = '';
 }
 
+function nextAnswerSortOrder(examType: string) {
+  const orders = data.value.answerEntries
+    .filter((entry) => entry.examType === examType && typeof entry.sortOrder === 'number')
+    .map((entry) => entry.sortOrder as number);
+  return orders.length ? Math.min(...orders) - 1 : -1;
+}
+
+function toggleAnswerManualSort() {
+  if (answerManualSortMode.value) {
+    answerManualSortMode.value = false;
+    draggingAnswerId.value = '';
+    return;
+  }
+  if (answerTypeFilter.value === '全部') {
+    alert('请先选择一个题型，再调整该题型内的答案顺序。');
+    return;
+  }
+  answerSearch.value = '';
+  answerPlatformFilter.value = '全部';
+  answerManualSortMode.value = true;
+}
+
+function startAnswerDrag(id: string, event: DragEvent) {
+  if (!answerManualSortMode.value) return;
+  event.dataTransfer?.setData('text/plain', id);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move';
+    const row = (event.currentTarget as HTMLElement).closest('.answer-row');
+    if (row) event.dataTransfer.setDragImage(row, 36, 36);
+  }
+  draggingAnswerId.value = id;
+}
+
+function finishAnswerDrag() {
+  draggingAnswerId.value = '';
+}
+
+function dropAnswerAt(targetId: string) {
+  const sourceId = draggingAnswerId.value;
+  if (!answerManualSortMode.value || !sourceId || sourceId === targetId) return;
+  const ordered = [...answerRows.value];
+  const sourceIndex = ordered.findIndex((entry) => entry.id === sourceId);
+  const targetIndex = ordered.findIndex((entry) => entry.id === targetId);
+  if (sourceIndex < 0 || targetIndex < 0) return;
+
+  const [source] = ordered.splice(sourceIndex, 1);
+  ordered.splice(targetIndex, 0, source);
+  const sortOrderById = new Map(ordered.map((entry, index) => [entry.id, index]));
+  saveLocal({
+    ...data.value,
+    answerEntries: data.value.answerEntries.map((entry) => sortOrderById.has(entry.id)
+      ? { ...entry, sortOrder: sortOrderById.get(entry.id) }
+      : entry),
+  });
+  draggingAnswerId.value = '';
+}
+
 function optimizeAnswerText() {
   const normalizeLine = (line: string) => {
     const text = line.trim().replace(/\s+([,.;:!?])/g, '$1');
@@ -3092,6 +3164,8 @@ function saveAnswer() {
     title,
     answer,
     createdAt: now,
+    updatedAt: now,
+    ...(editingAnswerId.value ? {} : { sortOrder: nextAnswerSortOrder(answerExamType.value.trim() || 'DI') }),
   };
   const answerEntries = editingAnswerId.value
     ? data.value.answerEntries.map((item) => item.id === editingAnswerId.value ? { ...item, ...entry, createdAt: item.createdAt, updatedAt: now } : item)
@@ -4582,25 +4656,28 @@ function taskDisplayName(task: Task) {
           </div>
         </div>
         <div class="answer-filters">
-          <input v-model="answerSearch" type="search" placeholder="搜索题号、标题或答案内容">
+          <input v-model="answerSearch" :disabled="answerManualSortMode" type="search" placeholder="搜索题号、标题或答案内容">
           <span class="answer-select-control">
-            <select v-model="answerTypeFilter">
+            <select v-model="answerTypeFilter" :disabled="answerManualSortMode">
               <option value="全部">全部题型</option>
               <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
             </select>
             <ChevronDown :size="17" aria-hidden="true" />
           </span>
           <span class="answer-select-control">
-            <select v-model="answerPlatformFilter">
+            <select v-model="answerPlatformFilter" :disabled="answerManualSortMode">
               <option value="全部">全部平台</option>
               <option v-for="option in answerReferencePlatforms" :key="option" :value="option">{{ option }}</option>
             </select>
             <ChevronDown :size="17" aria-hidden="true" />
           </span>
+          <button class="answer-sort-button" :class="{ 'is-active': answerManualSortMode }" type="button" @click="toggleAnswerManualSort"><List :size="17" />{{ answerManualSortMode ? '完成排序' : '调整排序' }}</button>
         </div>
+        <p v-if="answerManualSortMode" class="answer-sort-hint"><GripVertical :size="16" />正在调整 {{ answerTypeFilter }} 的答案顺序，拖动左侧手柄即可保存。</p>
 
         <div v-if="answerRows.length" class="answer-list">
-          <article v-for="entry in answerRows" :key="entry.id" class="answer-row">
+          <article v-for="entry in answerRows" :key="entry.id" class="answer-row" :class="{ 'is-sortable': answerManualSortMode, 'is-dragging': draggingAnswerId === entry.id }" @dragover.prevent @drop="dropAnswerAt(entry.id)">
+            <span v-if="answerManualSortMode" class="answer-drag-handle" draggable="true" aria-label="拖动调整顺序" @dragstart="startAnswerDrag(entry.id, $event)" @dragend="finishAnswerDrag"><GripVertical :size="21" /></span>
             <div class="answer-row-content">
               <div class="answer-row-meta">
                 <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
@@ -4610,7 +4687,7 @@ function taskDisplayName(task: Task) {
               </div>
               <h3>{{ entry.title }}</h3>
               <p>{{ entry.answer }}</p>
-              <time>录入于 {{ new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) }}<template v-if="entry.updatedAt"> · 更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</template></time>
+              <time v-if="entry.updatedAt">更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
             </div>
             <div class="answer-row-actions">
               <button type="button" @click="editAnswer(entry)"><PencilLine :size="16" />编辑</button>

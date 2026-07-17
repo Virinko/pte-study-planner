@@ -64,6 +64,7 @@ export interface AnswerEntry {
   answer: string;
   createdAt: string;
   updatedAt?: string;
+  sortOrder?: number;
 }
 export interface ReviewPlan {
   id: string;
