@@ -585,9 +585,11 @@ const manualStudyNote = ref('');
 const nowMs = ref(Date.now());
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
+const studyTypeChartEl = ref<HTMLDivElement | null>(null);
 let timerInterval: number | undefined;
 let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
+let studyTypeChartInstance: ECharts | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
@@ -877,13 +879,24 @@ const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysB
 const totalTrackedStudySeconds = computed(() => studyTimeEntries.value.reduce((sum, log) => sum + log.durationSeconds, 0));
 const totalMainStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
 const totalReviewStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
-const trackedStudyTypeRows = computed(() => Object.entries(studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
-  const type = studyTimeExamType(log);
-  acc[type] = (acc[type] || 0) + log.durationSeconds;
-  return acc;
-}, {}))
-  .map(([type, seconds], index) => ({ type, seconds, color: taskTypeColor(type, index), softColor: taskTypeSoftColor(type, index) }))
-  .sort((a, b) => b.seconds - a.seconds || a.type.localeCompare(b.type)));
+const trackedStudyTypeRows = computed(() => {
+  const secondsByType = studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
+    const type = studyTimeExamType(log);
+    acc[type] = (acc[type] || 0) + log.durationSeconds;
+    return acc;
+  }, {});
+  const types = [
+    ...examTypeOptions,
+    ...Object.keys(secondsByType).filter((type) => !examTypeOptions.includes(type)).sort(),
+  ];
+
+  return types.map((type, index) => ({
+    type,
+    seconds: secondsByType[type] || 0,
+    color: taskTypeColor(type, index),
+    softColor: taskTypeSoftColor(type, index),
+  }));
+});
 const peakStudyDay = computed(() => {
   const rows = Object.entries(studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
     acc[log.date] = (acc[log.date] || 0) + log.durationSeconds;
@@ -1267,6 +1280,80 @@ function buildTimeTrendChartOption(): EChartsCoreOption {
   };
 }
 
+function buildStudyTypeChartOption(): EChartsCoreOption {
+  const rows = trackedStudyTypeRows.value;
+  const rowByType = new Map(rows.map((row) => [row.type, row]));
+  const maxSeconds = Math.max(1, ...rows.map((row) => row.seconds));
+  const maxHours = Math.max(1, Math.ceil(maxSeconds / 3600));
+  const intervalHours = Math.max(1, Math.ceil(maxHours / 3));
+  const yMax = Math.ceil(maxHours / intervalHours) * intervalHours * 3600;
+
+  return {
+    animationDuration: 420,
+    grid: { top: 12, right: 10, bottom: 12, left: 10, containLabel: true },
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      backgroundColor: 'transparent',
+      borderWidth: 0,
+      padding: 0,
+      textStyle: { color: '#172033', fontSize: 13, fontWeight: 400 },
+      extraCssText: 'box-shadow:none; border-radius:999px;',
+      formatter(params: unknown) {
+        const data = (params as { data?: { type?: string; seconds?: number; color?: string; softColor?: string } }).data;
+        if (!data?.type || typeof data.seconds !== 'number') return '';
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:${data.softColor};border-radius:999px;line-height:1.45;white-space:nowrap"><strong style="color:${data.color};font-size:16px;font-weight:700">${data.type}</strong><span style="color:#172033;font-size:14px;font-weight:400">${formatDurationCompact(data.seconds)}</span></div>`;
+      },
+    },
+    xAxis: {
+      type: 'category',
+      data: rows.map((row) => row.type),
+      axisLine: { lineStyle: { color: '#e1e7f0' } },
+      axisTick: { show: false },
+      axisLabel: {
+        interval: 0,
+        rotate: 28,
+        margin: 14,
+        fontSize: 12,
+        fontWeight: 700,
+        color(value: string) {
+          return rowByType.get(value)?.color || '#617087';
+        },
+      },
+    },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      max: yMax,
+      interval: intervalHours * 3600,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: { lineStyle: { color: '#edf1f6', type: 'dashed' } },
+      axisLabel: {
+        color: '#8a98ac',
+        fontSize: 13,
+        fontWeight: 500,
+        formatter(value: number) {
+          return value === 0 ? '0' : `${Math.round(value / 3600)}h`;
+        },
+      },
+    },
+    series: [{
+      type: 'bar',
+      barWidth: 12,
+      barMaxWidth: 12,
+      data: rows.map((row) => ({
+        value: row.seconds,
+        type: row.type,
+        seconds: row.seconds,
+        color: row.color,
+        softColor: row.softColor,
+        itemStyle: { color: row.color, borderRadius: [7, 7, 0, 0] },
+      })),
+    }],
+  };
+}
+
 async function renderTimeTrendChart() {
   if (tab.value !== 'progress') return;
   await nextTick();
@@ -1287,6 +1374,18 @@ async function renderTimeTrendChart() {
   chart.resize();
 }
 
+async function renderStudyTypeChart() {
+  if (tab.value !== 'progress') return;
+  await nextTick();
+  const el = studyTypeChartEl.value;
+  if (!el) return;
+  if (!studyTypeChartInstance || studyTypeChartInstance.isDisposed()) {
+    studyTypeChartInstance = init(el);
+  }
+  studyTypeChartInstance.setOption(buildStudyTypeChartOption(), true);
+  studyTypeChartInstance.resize();
+}
+
 async function renderReviewTrendChart() {
   if (tab.value !== 'progress') return;
   await nextTick();
@@ -1302,11 +1401,13 @@ async function renderReviewTrendChart() {
 function renderProgressCharts() {
   void renderReviewTrendChart();
   void renderTimeTrendChart();
+  void renderStudyTypeChart();
 }
 
 function resizeProgressCharts() {
   reviewTrendChartInstance?.resize();
   timeTrendChartInstance?.resize();
+  studyTypeChartInstance?.resize();
 }
 
 function disposeProgressCharts() {
@@ -1314,6 +1415,8 @@ function disposeProgressCharts() {
   reviewTrendChartInstance = null;
   timeTrendChartInstance?.dispose();
   timeTrendChartInstance = null;
+  studyTypeChartInstance?.dispose();
+  studyTypeChartInstance = null;
 }
 
 onMounted(() => {
@@ -1351,6 +1454,10 @@ watch(practiceTrendRows, () => {
 
 watch(timeTrendRows, () => {
   void renderTimeTrendChart();
+}, { deep: true });
+
+watch(trackedStudyTypeRows, () => {
+  void renderStudyTypeChart();
 }, { deep: true });
 
 watch([phaseProgress, phase], () => {
@@ -3800,22 +3907,24 @@ function taskDisplayName(task: Task) {
 
       <div class="progress-layout progress-dashboard">
         <section class="panel hero-progress warm-card">
-          <div class="overview-ring-block">
-            <div class="ring warm-ring" :style="{ '--percent': `${overallPercent}%` }">
-              <strong>{{ overallPercent }}%</strong>
+          <div class="hero-progress-overview">
+            <div class="overview-ring-block">
+              <div class="ring warm-ring" :style="{ '--percent': `${overallPercent}%` }">
+                <strong>{{ overallPercent }}%</strong>
+              </div>
+              <div>
+                <strong>总进度</strong>
+                <span>总体完成率</span>
+              </div>
             </div>
-            <div>
-              <strong>总进度</strong>
-              <span>总体完成率</span>
-            </div>
-          </div>
-          <div class="overview-numbers">
-            <span>已完成 / 总任务</span>
-            <h2>{{ overallDone }} <small>/ {{ overallTarget }}</small></h2>
-            <div>
-              <article><small>已完成任务数</small><strong>{{ overallDone }}</strong></article>
-              <article><small>剩余任务数</small><strong>{{ totalRemaining }}</strong></article>
-              <article><small>总任务数</small><strong>{{ overallTarget }}</strong></article>
+            <div class="overview-numbers">
+              <span>已完成 / 总任务</span>
+              <h2>{{ overallDone }} <small>/ {{ overallTarget }}</small></h2>
+              <div>
+                <article><small>已完成任务数</small><strong>{{ overallDone }}</strong></article>
+                <article><small>剩余任务数</small><strong>{{ totalRemaining }}</strong></article>
+                <article><small>总任务数</small><strong>{{ overallTarget }}</strong></article>
+              </div>
             </div>
           </div>
           <div class="study-investment-card">
@@ -3831,16 +3940,13 @@ function taskDisplayName(task: Task) {
                 <b>{{ peakStudyDay.seconds > 0 ? formatDurationCompact(peakStudyDay.seconds) : '暂无计时' }}</b>
               </div>
             </div>
-            <div class="study-type-time-block">
+          </div>
+          <div class="study-type-time-block">
+            <div class="study-type-time-head">
               <span>已学习的题型总计时</span>
-              <div v-if="trackedStudyTypeRows.length" class="study-type-time-list">
-                <b v-for="row in trackedStudyTypeRows" :key="row.type" :style="{ background: row.softColor }">
-                  <span :style="{ color: row.color }">{{ row.type }}</span>
-                  <strong>{{ formatDurationCompact(row.seconds) }}</strong>
-                </b>
-              </div>
-              <small v-else>暂无计时记录</small>
+              <small>悬停查看时长</small>
             </div>
+            <div ref="studyTypeChartEl" class="study-type-echarts" role="img" aria-label="各题型学习时长柱状图" />
           </div>
         </section>
 

@@ -8627,3 +8627,100 @@ textarea:focus {
     justify-self: start;
   }
 }
+
+/* Progress overview: keep study summary beneath the completion overview. */
+.progress-page .hero-progress {
+  grid-template-columns: minmax(0, .94fr) minmax(0, 1.06fr);
+  grid-template-rows: auto auto;
+  align-items: stretch;
+  gap: 18px 22px;
+}
+
+.hero-progress-overview {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+}
+
+.progress-page .study-investment-card {
+  grid-column: 1;
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 16px;
+}
+
+.progress-page .study-investment-summary {
+  grid-template-columns: minmax(0, 1fr) minmax(182px, .7fr);
+  gap: 20px;
+}
+
+.progress-page .study-type-time-block {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  min-height: 286px;
+  padding: 17px 18px 4px;
+  background: linear-gradient(180deg, #fbfcff, #f8f7ff);
+  border: 1px solid #ded8ff;
+  border-radius: 16px;
+}
+
+.study-type-time-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.study-type-time-head > span {
+  color: var(--text-muted);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.study-type-time-head small {
+  color: #8a98ac;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.study-type-echarts {
+  width: 100%;
+  min-height: 0;
+  height: 280px;
+}
+
+.study-type-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+@media (max-width: 1180px) {
+  .progress-page .hero-progress {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-page .study-investment-card,
+  .progress-page .study-type-time-block {
+    grid-column: auto;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .hero-progress-overview,
+  .progress-page .study-investment-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .progress-page .study-type-time-block {
+    min-height: 270px;
+  }
+}
