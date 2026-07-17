@@ -3053,6 +3053,27 @@ function resetAnswerDraft() {
   editingAnswerId.value = '';
 }
 
+function optimizeAnswerText() {
+  const normalizeLine = (line: string) => {
+    const text = line.trim().replace(/\s+([,.;:!?])/g, '$1');
+    if (!text) return '';
+    const capitalized = text
+      .replace(/(^|[.!?]\s+)([a-z])/g, (_, prefix: string, letter: string) => `${prefix}${letter.toUpperCase()}`)
+      .replace(/\bi\b/g, 'I');
+    if (/[.!?。！？…:：]$/.test(capitalized)) return capitalized;
+    return `${capitalized}${/[A-Za-z]/.test(capitalized) ? '.' : '。'}`;
+  };
+
+  answerContent.value = answerContent.value
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t\u00a0]+/g, ' ')
+    .split('\n')
+    .map(normalizeLine)
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
 function saveAnswer() {
   const platformRefs = answerPlatformRefs.value
     .map((ref) => ({ platform: ref.platform, questionNumber: ref.questionNumber.trim() }))
@@ -4530,6 +4551,7 @@ function taskDisplayName(task: Task) {
         <div class="answer-compose-foot">
           <p><Sparkles :size="18" /> 小贴士：三个平台固定，只需填写各自对应题号。</p>
           <div class="panel-actions">
+            <button class="ghost" type="button" :disabled="!answerContent.trim()" @click="optimizeAnswerText"><Sparkles :size="18" />文本优化</button>
             <button class="ghost" type="button" @click="resetAnswerDraft"><X :size="18" />取消</button>
             <button type="button" @click="saveAnswer"><Save :size="18" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
           </div>
