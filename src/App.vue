@@ -699,12 +699,12 @@ const answerRows = computed(() => {
     .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
     .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
     .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)))
-    .sort((a, b) => (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt));
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
 const exportAnswerRows = computed(() => [...data.value.answerEntries]
   .filter((entry) => entry.examType === exportAnswerType.value)
-  .sort((a, b) => (a.updatedAt || a.createdAt).localeCompare(b.updatedAt || b.createdAt)));
+  .sort((a, b) => a.createdAt.localeCompare(b.createdAt)));
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
 const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
@@ -4610,7 +4610,7 @@ function taskDisplayName(task: Task) {
               </div>
               <h3>{{ entry.title }}</h3>
               <p>{{ entry.answer }}</p>
-              <time>更新于 {{ new Date(entry.updatedAt || entry.createdAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
+              <time>录入于 {{ new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) }}<template v-if="entry.updatedAt"> · 更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</template></time>
             </div>
             <div class="answer-row-actions">
               <button type="button" @click="editAnswer(entry)"><PencilLine :size="16" />编辑</button>
