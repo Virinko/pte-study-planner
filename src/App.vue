@@ -3198,11 +3198,15 @@ function escapePrintHtml(value: string) {
 }
 
 function answerPrintHtml(value: string) {
-  return escapePrintHtml(value
+  const normalized = value
     .replace(/\r\n?/g, '\n')
     .replace(/[\t \u00a0]+/g, ' ')
     .replace(/(\d)\s*[‐‑‒–—−]\s*(\d)/g, '$1-$2')
-    .replace(/\n{3,}/g, '\n\n'));
+    .replace(/\n{3,}/g, '\n\n');
+  return normalized
+    .split('\n')
+    .map((line) => line ? `<p>${escapePrintHtml(line)}</p>` : '<p class="body-gap" aria-hidden="true"></p>')
+    .join('');
 }
 
 function exportAnswersToPdf() {
@@ -3248,8 +3252,8 @@ function exportAnswersToPdf() {
     .cover-meta span:last-child { border-right: 0; }
     .meta-icon { width: 22px; height: 22px; }
     .meta-icon svg { width: 13px; height: 13px; }
-    .answers { display: grid; gap: 12px; margin-top: 15px; }
-    .answer { position: relative; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; }
+    .answers { margin-top: 15px; }
+    .answer { position: relative; margin-bottom: 12px; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; }
     .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .answer-tags { display: flex; flex-wrap: wrap; gap: 6px; }
     .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
@@ -3257,7 +3261,9 @@ function exportAnswersToPdf() {
     .platform-tag { color: #375081; background: #e7eefc; }
     .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
     h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
-    .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: pre-wrap; overflow-wrap: normal; word-break: normal; hyphens: none; }
+    .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
+    .body p { margin: 0; break-inside: avoid; }
+    .body-gap { min-height: 1.65em; }
     .document-footer { margin-top: 14px; color: #8a96ab; font-size: 9px; text-align: center; }
     @media print { .answer { box-shadow: none; } }
   </style></head><body><main class="document"><header class="cover"><div class="cover-brand"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5M4 19h16M7 16l4-5 3 3 5-7"/><circle cx="7" cy="16" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/></svg></span>PTE STUDY · ANSWER COLLECTION</div><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-rule"></div><div class="cover-meta"><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 12h6M9 16h6"/></svg></i>共 ${entries.length} 条答案</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></i>导出于 ${generatedAt}</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8V3h10v5M6 17H4v-6h16v6h-2M7 14h10v7H7z"/></svg></i>按平台题号整理，适合打印或电子复习。</span></div></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer></main></body></html>`);
