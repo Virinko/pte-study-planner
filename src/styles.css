@@ -533,7 +533,6 @@ label {
 input,
 select {
   width: 100%;
-  min-height: 30px;
   border: 1px solid #cfd8e6;
   border-radius: 5px;
   padding: 6px 10px;
@@ -3351,6 +3350,7 @@ nav button.active::after {
 
 .today-done-items article strong {
   min-width: 0;
+  font-weight: 400;
 }
 
 .today-done-items button {
@@ -3478,7 +3478,7 @@ nav button.active::after {
   gap: 8px;
   color: #34445d;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.2;
 }
 
