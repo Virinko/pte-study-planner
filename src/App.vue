@@ -572,6 +572,7 @@ const mockExamDateDrafts = ref<Record<string, string>>({});
 const mockExamNameDrafts = ref<Record<string, string>>({});
 const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
+const showPlanAverageStudyTime = ref(false);
 const practiceReportDate = ref(todayIso());
 const selectedTimePointDate = ref('');
 const showAllTaskProgress = ref(false);
@@ -653,6 +654,10 @@ const todayTasks = computed(() => {
 });
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
 const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
+const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
+  .map((log) => log.date)
+  .filter((date) => date <= todayIso())
+  .sort()[0] || todayIso());
 const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
 const todayCheckInText = computed(() => {
   const secondsByType = todayTimeLogs.value.reduce<Record<string, number>>((acc, log) => {
@@ -689,6 +694,19 @@ const planAverageDailyStudySeconds = computed(() => {
     .reduce((sum, log) => sum + log.durationSeconds, 0);
   return Math.floor(totalSeconds / planAverageStudyDays.value);
 });
+const allAverageStudyDays = computed(() => studyTimeEntries.value.length > 0
+  ? daysBetweenInclusive(firstStudyTimeLogDate.value, todayIso())
+  : 0);
+const allAverageDailyStudySeconds = computed(() => {
+  if (allAverageStudyDays.value <= 0) return 0;
+  const totalSeconds = studyTimeEntries.value
+    .filter((log) => log.date <= todayIso())
+    .reduce((sum, log) => sum + log.durationSeconds, 0);
+  return Math.floor(totalSeconds / allAverageStudyDays.value);
+});
+const displayedAverageStudySeconds = computed(() => showPlanAverageStudyTime.value
+  ? planAverageDailyStudySeconds.value
+  : allAverageDailyStudySeconds.value);
 const runningTimerSeconds = computed(() => currentTimerSeconds());
 const todayLogByTask = computed(() => {
   const result = todayLogs.value.reduce<Record<string, number>>((acc, log) => {
@@ -977,10 +995,6 @@ const firstPracticeLogDate = computed(() => [
   ...Object.keys(data.value.dailyLogs),
   ...Object.keys(data.value.reviewLogs),
 ].filter((date) => date <= todayIso()).sort()[0] || todayIso());
-const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
-  .map((log) => log.date)
-  .filter((date) => date <= todayIso())
-  .sort()[0] || todayIso());
 const practiceTrendRows = computed(() => {
   const rows = dateRangeRows(practiceTrendRange.value, firstPracticeLogDate.value).map((date) => {
     const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
@@ -4244,7 +4258,13 @@ function taskDisplayName(task: Task) {
             <div class="time-chart-title"><span aria-hidden="true"><TrendingUp :size="18" stroke-width="2.4" /></span><strong>{{ timeTrendRange === '7' ? '近 7 天' : timeTrendRange === '30' ? '近 30 天' : '全部' }}学习时长趋势</strong></div>
             <div ref="timeTrendChartEl" class="time-echarts" role="img" aria-label="学习时长趋势图" />
           </div>
-          <p class="time-average-note">从计划开始至今，平均每天学习 <strong>{{ formatDurationCompact(planAverageDailyStudySeconds) }}</strong></p>
+          <div class="time-average-note">
+            <span>{{ showPlanAverageStudyTime ? '本计划开始至今' : '全部学习记录' }}，平均每天学习</span>
+            <strong>{{ formatDurationCompact(displayedAverageStudySeconds) }}</strong>
+            <button class="time-average-toggle" type="button" @click="showPlanAverageStudyTime = !showPlanAverageStudyTime">
+              {{ showPlanAverageStudyTime ? '查看全部平均' : '查看本计划平均' }}
+            </button>
+          </div>
           <div class="review-stats soft-stats time-stats">
             <article><span>今日主任务时长</span><strong>{{ formatDurationCompact(todayTaskSeconds) }}</strong></article>
             <article><span>今日复习时长</span><strong>{{ formatDurationCompact(todayReviewSeconds) }}</strong></article>

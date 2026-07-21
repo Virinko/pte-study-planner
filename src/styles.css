@@ -7432,6 +7432,27 @@ nav button:focus-visible {
   font-size: 16px;
 }
 
+.time-average-toggle {
+  min-height: 28px;
+  margin-left: auto;
+  padding: 4px 9px;
+  color: #b95b20;
+  background: rgba(255, 255, 255, .64);
+  border: 1px solid #f7bd91;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+.time-average-toggle:hover {
+  color: #9d4815;
+  background: #ffffff;
+  border-color: #ee9f66;
+}
+
 .time-chart-title {
   display: inline-flex;
   align-items: center;
