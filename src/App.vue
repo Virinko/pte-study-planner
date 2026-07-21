@@ -627,6 +627,12 @@ const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
+const dailyMottos = ['先开始，进度会自己出现。', '慢一点没关系，别停下来。'] as const;
+const todayMotto = computed(() => {
+  const now = new Date(nowMs.value);
+  const localMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return dailyMottos[Math.floor(localMidnight / 86400000) % dailyMottos.length];
+});
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 const studyTypeChartEl = ref<HTMLDivElement | null>(null);
@@ -3677,7 +3683,7 @@ function taskDisplayName(task: Task) {
       </div>
       <div class="sidebar-note">
         <strong>今日格言</strong>
-        <p>每天进步一点点，考试成功一大步！</p>
+        <p>{{ todayMotto }}</p>
       </div>
     </header>
 
