@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
@@ -624,6 +624,7 @@ const manualStudyMinutes = ref('');
 const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
+const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
@@ -632,6 +633,7 @@ let timerInterval: number | undefined;
 let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
 let studyTypeChartInstance: ECharts | null = null;
+let copiedCheckInTimer: number | undefined;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
@@ -652,6 +654,21 @@ const todayTasks = computed(() => {
 const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
 const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
 const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
+const todayCheckInText = computed(() => {
+  const secondsByType = todayTimeLogs.value.reduce<Record<string, number>>((acc, log) => {
+    const type = studyTimeExamType(log).trim();
+    if (!type) return acc;
+    acc[type] = (acc[type] || 0) + log.durationSeconds;
+    return acc;
+  }, {});
+  const typeOrder = new Map(examTypeOptions.map((type, index) => [type, index]));
+
+  return Object.entries(secondsByType)
+    .map(([type, seconds]) => ({ type, seconds }))
+    .sort((a, b) => (typeOrder.get(a.type) ?? Number.MAX_SAFE_INTEGER) - (typeOrder.get(b.type) ?? Number.MAX_SAFE_INTEGER) || a.type.localeCompare(b.type))
+    .map(({ type, seconds }) => `${type}${formatCheckInDuration(seconds)}`)
+    .join(' ');
+});
 const todayReviewLogs = computed(() => data.value.reviewLogs[todayIso()] || []);
 const todayReviewedPlanIds = computed(() => new Set(todayReviewLogs.value.map((log) => log.reviewPlanId)));
 const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
@@ -956,8 +973,16 @@ const peakStudyDay = computed(() => {
   }, {})).map(([date, seconds]) => ({ date, seconds }));
   return rows.sort((a, b) => b.seconds - a.seconds || b.date.localeCompare(a.date))[0] || { date: '', seconds: 0 };
 });
+const firstPracticeLogDate = computed(() => [
+  ...Object.keys(data.value.dailyLogs),
+  ...Object.keys(data.value.reviewLogs),
+].filter((date) => date <= todayIso()).sort()[0] || todayIso());
+const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
+  .map((log) => log.date)
+  .filter((date) => date <= todayIso())
+  .sort()[0] || todayIso());
 const practiceTrendRows = computed(() => {
-  const rows = dateRangeRows(practiceTrendRange.value).map((date) => {
+  const rows = dateRangeRows(practiceTrendRange.value, firstPracticeLogDate.value).map((date) => {
     const mainTotal = (data.value.dailyLogs[date] || []).reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
     const reviewTotal = (data.value.reviewLogs[date] || []).reduce((sum, log) => sum + log.amount, 0);
     const practiceTotal = mainTotal + reviewTotal;
@@ -972,7 +997,7 @@ const todayPracticeTypeCount = computed(() => new Set([
   ...todayReviewLogs.value.map((log) => taskInitials(data.value.tasks.find((task) => task.id === log.taskId)?.name || log.taskName)),
 ]).size);
 const timeTrendRows = computed(() => {
-  const rows = dateRangeRows(timeTrendRange.value).map((date) => {
+  const rows = dateRangeRows(timeTrendRange.value, firstStudyTimeLogDate.value).map((date) => {
     const totalSeconds = studyTimeEntries.value.filter((log) => log.date === date).reduce((sum, log) => sum + log.durationSeconds, 0);
     return { date, label: trendLabel(date, timeTrendRange.value), totalSeconds };
   });
@@ -2143,6 +2168,14 @@ function formatDurationCompact(seconds: number) {
   const secs = total % 60;
   if (hours > 0) return `${hours}小时${String(minutes).padStart(2, '0')}分${String(secs).padStart(2, '0')}秒`;
   return `${minutes}分${String(secs).padStart(2, '0')}秒`;
+}
+
+function formatCheckInDuration(seconds: number) {
+  const totalMinutes = Math.floor(Math.max(0, seconds) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) return `${totalMinutes}min`;
+  return `${hours}h${minutes >= 15 ? `${String(minutes).padStart(2, '0')}min` : ''}`;
 }
 
 function formatClockRange(log: StudyTimeEntry) {
@@ -3383,6 +3416,35 @@ async function copySubItems(task: Task) {
   alert(`已复制 ${task.subItems.length} 个子项目，可直接粘贴到批量导入。`);
 }
 
+async function copyCheckInText(text: string, copiedKey: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  }
+  copiedCheckInKey.value = copiedKey;
+  if (copiedCheckInTimer) window.clearTimeout(copiedCheckInTimer);
+  copiedCheckInTimer = window.setTimeout(() => { copiedCheckInKey.value = ''; }, 1600);
+}
+
+async function copyTodayCheckIn() {
+  const text = todayCheckInText.value;
+  if (!text) return;
+  await copyCheckInText(text, 'all');
+}
+
+async function copyExamTypeCheckIn(type: string, seconds: number) {
+  await copyCheckInText(`${type}${formatCheckInDuration(seconds)}`, `type:${type}`);
+}
+
 function deleteAllSubItems(task: Task) {
   if (task.subItems.length === 0) return;
   if (!confirm(`确定删除「${task.name || '当前任务'}」的全部子项目吗？`)) return;
@@ -3439,9 +3501,9 @@ function addDays(iso: string, days: number) {
   return `${year}-${month}-${day}`;
 }
 
-function dateRangeRows(range: TrendRange) {
+function dateRangeRows(range: TrendRange, allRangeStartDate: string) {
   const today = todayIso();
-  const startDate = range === 'all' ? data.value.settings.startDate : addDays(today, -(Number(range) - 1));
+  const startDate = range === 'all' ? allRangeStartDate : addDays(today, -(Number(range) - 1));
   const days = daysBetweenInclusive(startDate, today);
   return Array.from({ length: days }, (_, index) => addDays(startDate, index));
 }
@@ -4192,6 +4254,17 @@ function taskDisplayName(task: Task) {
             <article v-for="row in timeByExamTypeRows" :key="row.type" :style="{ '--type-color': row.color, '--type-soft': row.softColor }">
               <span>{{ row.type }}</span>
               <strong>{{ formatDurationCompact(row.seconds) }}</strong>
+              <button
+                class="copy-time-type-button"
+                :class="{ copied: copiedCheckInKey === `type:${row.type}` }"
+                type="button"
+                :title="copiedCheckInKey === `type:${row.type}` ? '已复制' : `复制 ${row.type} 时长`"
+                :aria-label="copiedCheckInKey === `type:${row.type}` ? `${row.type} 时长已复制` : `复制 ${row.type} 时长`"
+                @click="copyExamTypeCheckIn(row.type, row.seconds)"
+              >
+                <Check v-if="copiedCheckInKey === `type:${row.type}`" :size="16" stroke-width="2.6" aria-hidden="true" />
+                <Copy v-else :size="16" stroke-width="2.3" aria-hidden="true" />
+              </button>
             </article>
             <p v-if="timeByExamTypeRows.length === 0" class="soft-empty">今天还没有学习时长记录。</p>
           </div>
@@ -4200,6 +4273,10 @@ function taskDisplayName(task: Task) {
               <h3>今日添加记录</h3>
               <button v-if="recentTodayTimeEntries.length > 5" class="text-button expand-button" type="button" @click="showAllTimeEntries = !showAllTimeEntries">
                 {{ showAllTimeEntries ? '收起' : '展开全部' }}
+              </button>
+              <button class="copy-checkin-button" type="button" :disabled="!todayCheckInText" @click="copyTodayCheckIn">
+                <ClipboardList :size="15" stroke-width="2.4" aria-hidden="true" />
+                {{ copiedCheckInKey === 'all' ? '已复制' : '复制打卡' }}
               </button>
               <form class="manual-time-form" @submit.prevent="addManualStudyTime">
                 <label class="select-control">

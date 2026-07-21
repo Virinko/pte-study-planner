@@ -7532,6 +7532,33 @@ nav button:focus-visible {
   font-weight: 800;
 }
 
+.progress-page .time-progress-card .copy-time-type-button {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  margin-left: -4px;
+  padding: 0;
+  color: var(--type-color, #7A77B9);
+  background: rgba(255, 255, 255, .68);
+  border: 1px solid color-mix(in srgb, var(--type-color, #7A77B9) 20%, #ffffff);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, transform .18s ease;
+}
+
+.progress-page .time-progress-card .copy-time-type-button:hover {
+  background: #ffffff;
+  border-color: var(--type-color, #7A77B9);
+  transform: translateY(-1px);
+}
+
+.progress-page .time-progress-card .copy-time-type-button.copied {
+  color: #2f8e69;
+  background: #e8f7ef;
+  border-color: #a8dfc3;
+}
+
 .progress-page .time-progress-card .manual-time-form {
   width: max-content;
   grid-template-columns: 74px 132px 82px 64px;
@@ -7597,9 +7624,41 @@ nav button:focus-visible {
   border-radius: 8px;
 }
 
+.progress-page .time-progress-card .copy-checkin-button {
+  grid-column: 4;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 10px;
+  color: #5d5aa7;
+  background: #f4f2ff;
+  border: 1px solid #ddd8ff;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+.progress-page .time-progress-card .copy-checkin-button:hover:not(:disabled) {
+  color: #4c4795;
+  background: #ebe8ff;
+  border-color: #c9c1ff;
+}
+
+.progress-page .time-progress-card .copy-checkin-button:disabled {
+  color: #a5a4b8;
+  background: #f7f7fa;
+  border-color: #e8e8ef;
+  cursor: not-allowed;
+}
+
 .progress-page .time-progress-card .time-log-block .chart-head {
   display: grid;
-  grid-template-columns: auto 1fr auto max-content;
+  grid-template-columns: auto 1fr auto auto max-content;
   align-items: center;
   gap: 12px;
 }
@@ -7613,8 +7672,12 @@ nav button:focus-visible {
   grid-column: 3;
 }
 
-.progress-page .time-progress-card .time-log-block .chart-head .manual-time-form {
+.progress-page .time-progress-card .time-log-block .chart-head .copy-checkin-button {
   grid-column: 4;
+}
+
+.progress-page .time-progress-card .time-log-block .chart-head .manual-time-form {
+  grid-column: 5;
 }
 
 .progress-page .time-progress-card .rich-time-log-list {
@@ -8112,6 +8175,7 @@ nav button:focus-visible {
 
   .progress-page .time-progress-card .time-log-block .chart-head h3,
   .progress-page .time-progress-card .time-log-block .chart-head .expand-button,
+  .progress-page .time-progress-card .time-log-block .chart-head .copy-checkin-button,
   .progress-page .time-progress-card .time-log-block .chart-head .manual-time-form {
     grid-column: auto;
   }
