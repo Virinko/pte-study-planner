@@ -6,7 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, ChevronDown, ChevronRight, ClipboardList, Clock, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -104,12 +104,7 @@ type ReviewPlanRow = ReviewPlan & { dueDate: string; overdue: boolean };
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
   const settings = normalizeSettings({ ...base.settings, ...source?.settings });
-  const phases = (source?.phases ?? base.phases).map((phase, index) => ({
-    ...phase,
-    order: phase.order ?? index + 1,
-    startDate: phase.startDate || (index === 0 ? settings.startDate : undefined),
-    endDate: phase.endDate || (index === 0 ? addDays(settings.deadline, -Math.max(0, settings.bufferDays)) : undefined),
-  }));
+  const phases = normalizePhases(source?.phases ?? base.phases, settings);
   const tasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => normalizeTask(task, phases[0]?.id || ''));
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
   const reviewPlans = normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks);
@@ -130,6 +125,37 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     timeLogs: entriesToTimeLogs(studyTimeEntries),
     studyTimeEntries,
   };
+}
+
+function normalizePhases(source: unknown, settings: StudyData['settings']): Phase[] {
+  const raw = Array.isArray(source) ? source as Array<Phase & { kind?: string; mockCompleted?: boolean; isDraft?: boolean }> : [];
+  const studyPhases = raw.filter((phase) => phase.kind !== 'mock' && !phase.isDraft).map((phase, index) => ({
+    id: phase.id || crypto.randomUUID(),
+    name: phase.name || `阶段 ${index + 1}`,
+    order: phase.order ?? index + 1,
+    startDate: phase.startDate || (index === 0 ? settings.startDate : undefined),
+    endDate: phase.endDate || (index === 0 ? addDays(settings.deadline, -Math.max(0, settings.bufferDays)) : undefined),
+    mockExams: normalizeMockExams(phase.mockExams),
+  }));
+  raw.filter((phase) => phase.kind === 'mock' && phase.startDate).forEach((mock) => {
+    const target = studyPhases.find((phase) => mock.startDate! >= (phase.startDate || '') && mock.startDate! <= (phase.endDate || ''))
+      || studyPhases.find((phase) => (phase.startDate || '') > mock.startDate!)
+      || studyPhases[studyPhases.length - 1];
+    if (!target) return;
+    target.mockExams = [...(target.mockExams || []), { id: mock.id || crypto.randomUUID(), date: mock.startDate!, name: mock.name || '模考日', completed: Boolean(mock.mockCompleted) }];
+  });
+  return studyPhases.sort((a, b) => a.order - b.order).map((phase, index) => ({ ...phase, order: index + 1, mockExams: normalizeMockExams(phase.mockExams) }));
+}
+
+function normalizeMockExams(source: unknown): MockExam[] {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((exam) => {
+      const item = (exam || {}) as Partial<MockExam>;
+      return { id: item.id || crypto.randomUUID(), date: item.date || '', name: item.name?.trim() || '模考日', completed: Boolean(item.completed) };
+    })
+    .filter((exam) => Boolean(exam.date))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }
 
 function normalizeSettings(settings: StudyData['settings']): StudyData['settings'] {
@@ -542,6 +568,8 @@ const reviewAddTargetInput = ref(5);
 const expandedItemizedTasks = ref<Record<string, boolean>>({});
 const expandedSubItemLists = ref<Record<string, boolean>>({});
 const selectedProgressPhaseId = ref('');
+const mockExamDateDrafts = ref<Record<string, string>>({});
+const mockExamNameDrafts = ref<Record<string, string>>({});
 const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
 const practiceReportDate = ref(todayIso());
@@ -607,6 +635,12 @@ let studyTypeChartInstance: ECharts | null = null;
 
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
+const todayMockExams = computed(() => schedule.value.flatMap((scheduledPhase) => {
+  const sourcePhase = data.value.phases.find((item) => item.id === scheduledPhase.id);
+  return (sourcePhase?.mockExams || [])
+    .filter((exam) => exam.date === todayIso())
+    .map((exam) => ({ ...exam, phaseId: scheduledPhase.id, phaseName: scheduledPhase.name }));
+}));
 const todayTasks = computed(() => {
   const active = phase.value;
   if (!active) return [];
@@ -2145,6 +2179,36 @@ function updatePhase(id: string, patch: Partial<Phase>) {
   saveLocal({ ...data.value, settings, phases });
 }
 
+function addMockExam(phase: PhaseSchedule) {
+  const date = mockExamDateDrafts.value[phase.id] || '';
+  if (!date || date < phase.startDate || date > phase.endDate) {
+    alert(`请选择 ${phase.startDate} 至 ${phase.endDate} 范围内的模考日期。`);
+    return;
+  }
+  const source = data.value.phases.find((item) => item.id === phase.id);
+  if (!source || source.mockExams?.some((exam) => exam.date === date)) {
+    alert('这个阶段在该日期已经安排了模考。');
+    return;
+  }
+  const name = mockExamNameDrafts.value[phase.id]?.trim() || '模考日';
+  const mockExams = [...(source.mockExams || []), { id: crypto.randomUUID(), date, name, completed: false }];
+  mockExamDateDrafts.value = { ...mockExamDateDrafts.value, [phase.id]: '' };
+  mockExamNameDrafts.value = { ...mockExamNameDrafts.value, [phase.id]: '' };
+  saveLocal({ ...data.value, phases: data.value.phases.map((item) => item.id === phase.id ? { ...item, mockExams } : item) });
+}
+
+function toggleMockExam(phaseId: string, examId: string) {
+  saveLocal({ ...data.value, phases: data.value.phases.map((phase) => phase.id === phaseId
+    ? { ...phase, mockExams: (phase.mockExams || []).map((exam) => exam.id === examId ? { ...exam, completed: !exam.completed } : exam) }
+    : phase) });
+}
+
+function deleteMockExam(phaseId: string, examId: string) {
+  saveLocal({ ...data.value, phases: data.value.phases.map((phase) => phase.id === phaseId
+    ? { ...phase, mockExams: (phase.mockExams || []).filter((exam) => exam.id !== examId) }
+    : phase) });
+}
+
 function deletePhase(id: string) {
   const phases = syncPhaseBoundaries(data.value.phases.filter((item) => item.id !== id), data.value.settings);
   saveLocal({
@@ -3335,7 +3399,7 @@ function deleteDailyNote(date: string, noteId: string) {
 
 function buildTodayTargetSnapshot() {
   return todayTasks.value.reduce<Record<string, number>>((acc, task) => {
-    acc[task.id] = plannedDailyTarget(task, phase.value);
+    acc[task.id] = plannedDailyTarget(task, schedule.value.find((item) => item.id === task.phaseId));
     return acc;
   }, {});
 }
@@ -3616,6 +3680,11 @@ function taskDisplayName(task: Task) {
             <strong>{{ activePhaseProgress.status }}</strong>
           </div>
         </div>
+
+        <section v-if="todayMockExams.length" class="mock-day-panel">
+          <div><span>今日模考安排</span><h3>{{ todayMockExams.map((exam) => exam.name).join('、') }}</h3><p>模考与本阶段常规学习可以并行安排，完成状态不会影响今日任务量。</p></div>
+          <div class="mock-day-actions"><button v-for="exam in todayMockExams" :key="exam.id" class="mock-complete-button" :class="{ completed: exam.completed }" type="button" @click="toggleMockExam(exam.phaseId, exam.id)"><Sparkles :size="17" />{{ exam.completed ? '模考已完成' : '标记模考完成' }}</button></div>
+        </section>
 
         <div class="dashboard-table today-table">
           <div class="dashboard-table-head">
@@ -4321,7 +4390,9 @@ function taskDisplayName(task: Task) {
             <Flag :size="18" stroke-width="2.4" aria-hidden="true" />
             <h3>阶段安排</h3>
           </div>
-          <button class="ghost strong" type="button" @click="addPhase">+ 新增阶段</button>
+          <div class="phase-heading-actions">
+            <button class="ghost strong" type="button" @click="addPhase">+ 新增阶段</button>
+          </div>
         </div>
         <div class="phase-cards">
           <article v-for="(item, index) in phaseProgress" :key="item.id" class="phase-card" :style="{ '--phase-color': item.accent }">
@@ -4341,6 +4412,21 @@ function taskDisplayName(task: Task) {
                   <input type="date" :value="item.endDate" @input="updatePhase(item.id, { endDate: ($event.target as HTMLInputElement).value })">
                 </span>
               </label>
+            </div>
+            <div class="phase-mock-exams">
+              <div class="phase-mock-exams-head"><strong>模考安排</strong><span>模考当天仍显示本阶段常规任务</span></div>
+              <div class="phase-mock-exam-form">
+                <input v-model="mockExamDateDrafts[item.id]" type="date" :min="item.startDate" :max="item.endDate" aria-label="模考日期">
+                <input v-model="mockExamNameDrafts[item.id]" type="text" placeholder="模考名称（可选）" aria-label="模考名称">
+                <button type="button" @click="addMockExam(item)">+ 添加</button>
+              </div>
+              <div v-if="item.mockExams?.length" class="phase-mock-exam-list">
+                <article v-for="exam in item.mockExams" :key="exam.id" :class="{ completed: exam.completed }">
+                  <button class="mock-exam-check" type="button" :title="exam.completed ? '标记未完成' : '标记完成'" @click="toggleMockExam(item.id, exam.id)">{{ exam.completed ? '✓' : '' }}</button>
+                  <time>{{ exam.date }}</time><strong>{{ exam.name }}</strong>
+                  <button class="mock-exam-delete" type="button" title="删除模考安排" @click="deleteMockExam(item.id, exam.id)"><Trash2 :size="14" /></button>
+                </article>
+              </div>
             </div>
             <div class="phase-card-footer">
               <small>今日建议量会按本阶段剩余天数动态均摊。</small>

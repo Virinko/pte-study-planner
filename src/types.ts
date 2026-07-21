@@ -10,7 +10,15 @@ export interface Settings {
   bufferDays: number;
 }
 
-export interface Phase { id: string; name: string; order: number; startDate?: string; endDate?: string; }
+export interface Phase {
+  id: string;
+  name: string;
+  order: number;
+  startDate?: string;
+  endDate?: string;
+  mockExams?: MockExam[];
+}
+export interface MockExam { id: string; date: string; name: string; completed: boolean; }
 
 export interface SubItem {
   id: string;
