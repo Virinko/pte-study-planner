@@ -7737,6 +7737,7 @@ nav button:focus-visible {
 
 .progress-page .time-progress-card .time-log-block .chart-head .expand-button {
   grid-column: 3;
+  white-space: nowrap;
 }
 
 .progress-page .time-progress-card .time-log-block .chart-head .copy-checkin-button {
