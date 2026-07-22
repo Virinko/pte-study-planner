@@ -2508,8 +2508,7 @@ function deleteTodayPracticeItem(itemId: string) {
       .filter((entry) => entry.taskId === task.id)
       .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
     if (todayCompleted <= 0) return;
-    const keepsTotalProgress = task.trackingMode !== 'itemized';
-    if (!confirm(`删除「${taskDisplayName(task)}」今天的 ${todayCompleted} ${task.trackingMode === 'itemized' ? '篇' : '题'}练习记录？${keepsTotalProgress ? '累计总进度不会变化。' : '对应子项目会恢复为未完成。'}`)) return;
+    if (!confirm(`删除「${taskDisplayName(task)}」今天的 ${todayCompleted} ${task.trackingMode === 'itemized' ? '篇' : '题'}练习记录？累计总进度也会相应减少。`)) return;
 
     const nextLogs = logs.filter((entry) => entry.taskId !== task.id);
     const dailyLogs = { ...data.value.dailyLogs };
@@ -2522,7 +2521,8 @@ function deleteTodayPracticeItem(itemId: string) {
       const nextTask = normalizeTask({ ...task, subItems }, data.value.phases[0]?.id || '');
       saveLocal({ ...data.value, tasks: data.value.tasks.map((entry) => entry.id === task.id ? nextTask : entry), dailyLogs });
     } else {
-      saveLocal({ ...data.value, dailyLogs });
+      const nextCompleted = Math.max(0, task.completed - todayCompleted);
+      saveLocal({ ...data.value, tasks: data.value.tasks.map((entry) => entry.id === task.id ? { ...entry, completed: nextCompleted } : entry), dailyLogs });
     }
     return;
   }
@@ -2534,13 +2534,26 @@ function deleteTodayPracticeItem(itemId: string) {
     .filter((entry) => entry.reviewPlanId === reviewPlanId)
     .reduce((sum, entry) => sum + entry.amount, 0);
   if (todayCompleted <= 0) return;
-  if (!confirm(`删除今天的 ${todayCompleted} 题复习记录？复习计划的累计完成量不会变化。`)) return;
+  const plan = reviewPlanForId(reviewPlanId);
+  const unit = plan && isItemizedReviewPlan(plan) ? '篇' : '题';
+  if (!confirm(`删除今天的 ${todayCompleted} ${unit}复习记录？复习计划的累计完成量也会相应减少。`)) return;
 
   const nextLogs = logs.filter((entry) => entry.reviewPlanId !== reviewPlanId);
   const reviewLogs = { ...data.value.reviewLogs };
   if (nextLogs.length > 0) reviewLogs[date] = nextLogs;
   else delete reviewLogs[date];
-  saveLocal({ ...data.value, reviewLogs });
+  const reviewPlans = Object.entries(data.value.reviewPlans).reduce<StudyData['reviewPlans']>((acc, [dueDate, plans]) => {
+    acc[dueDate] = plans.map((entry) => {
+      if (entry.id !== reviewPlanId) return entry;
+      if (isItemizedReviewPlan(entry)) {
+        const completedSubItemIds = (entry.completedSubItemIds || []).slice(0, Math.max(0, (entry.completedSubItemIds || []).length - todayCompleted));
+        return { ...entry, completedSubItemIds, completed: completedSubItemIds.length };
+      }
+      return { ...entry, completed: Math.max(0, entry.completed - todayCompleted) };
+    });
+    return acc;
+  }, {});
+  saveLocal({ ...data.value, reviewPlans, reviewLogs });
 }
 
 function reviewAmount(id: string) {
