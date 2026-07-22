@@ -5301,6 +5301,26 @@ nav button.active::after {
   box-shadow: 0 3px 8px rgba(47, 80, 150, .12);
 }
 
+.answer-row-meta .answer-platform-tag.is-duomo {
+  color: #4264ae;
+  background: #edf3ff;
+}
+
+.answer-row-meta .answer-platform-tag.is-xingji {
+  color: #7555b9;
+  background: #f3efff;
+}
+
+.answer-row-meta .answer-platform-tag.is-yinghuochong {
+  color: #af741f;
+  background: #fff4df;
+}
+
+.answer-row-meta .answer-platform-tag.is-yingzi {
+  color: #287d78;
+  background: #e8f7f4;
+}
+
 .answer-row h3 {
   margin: 9px 0 6px;
   color: #202d46;

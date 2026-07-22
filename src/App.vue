@@ -447,6 +447,15 @@ function isPracticePlatform(value: unknown): value is PracticePlatform {
   return practicePlatforms.includes(value as PracticePlatform);
 }
 
+function answerPlatformTagClass(platform: PracticePlatform) {
+  return {
+    '多墨': 'is-duomo',
+    '猩际': 'is-xingji',
+    '萤火虫': 'is-yinghuochong',
+    '影子三千': 'is-yingzi',
+  }[platform];
+}
+
 function isFrequencyType(value: unknown): value is FrequencyType {
   return frequencyTypes.includes(value as FrequencyType);
 }
@@ -4927,7 +4936,7 @@ function taskDisplayName(task: Task) {
               <div class="answer-row-meta">
                 <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
                 <template v-for="ref in entry.platformRefs" :key="`${ref.platform}-${ref.questionNumber}`">
-                  <span>{{ ref.platform }} #{{ ref.questionNumber }}</span>
+                  <span class="answer-platform-tag" :class="answerPlatformTagClass(ref.platform)">{{ ref.platform }} #{{ ref.questionNumber }}</span>
                 </template>
               </div>
               <h3>{{ entry.title }}</h3>
