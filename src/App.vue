@@ -2310,22 +2310,7 @@ function updateTaskCompleted(task: Task, completed: number, patch: Partial<Task>
     saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
     return;
   }
-
-  const date = todayIso();
-  const logs = data.value.dailyLogs[date] || [];
-  const todayCompleted = logs
-    .filter((entry) => entry.taskId === task.id)
-    .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
-  const historicalCompleted = Math.max(0, task.completed - todayCompleted);
-  const nextTodayCompleted = Math.max(0, nextTask.completed - historicalCompleted);
-  const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
-  const nextLogs = nextTodayCompleted > 0 ? [...otherLogs, { taskId: task.id, count: nextTodayCompleted }] : otherLogs;
-
-  saveLocal({
-    ...data.value,
-    tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item),
-    dailyLogs: { ...data.value.dailyLogs, [date]: nextLogs },
-  });
+  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
 }
 
 function openCorrectionModal(task: Task) {
@@ -2378,20 +2363,9 @@ function submitCorrection() {
     return;
   }
 
-  const date = todayIso();
-  const logs = data.value.dailyLogs[date] || [];
-  const todayCompleted = logs
-    .filter((entry) => entry.taskId === task.id)
-    .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
-  const historicalCompleted = Math.max(0, task.completed - todayCompleted);
-  const nextTodayCompleted = Math.max(0, nextCompleted - historicalCompleted);
-  const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
-  const nextLogs = nextTodayCompleted > 0 ? [...otherLogs, { taskId: task.id, count: nextTodayCompleted }] : otherLogs;
-
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: nextCompleted } : item),
-    dailyLogs: { ...data.value.dailyLogs, [date]: nextLogs },
   });
   closeCorrectionModal();
 }
