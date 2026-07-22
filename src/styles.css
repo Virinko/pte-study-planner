@@ -6839,12 +6839,32 @@ nav button.active::after {
 }
 
 .review-item-list article {
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto 30px;
 }
 
 .review-item-list b {
   color: #6d54d8;
   background: #f3f0ff;
+}
+
+.review-item-list .practice-item-delete {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  color: #d24e62;
+  background: #fff7f8;
+  border: 1px solid #f3bec7;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background .18s ease, border-color .18s ease, color .18s ease;
+}
+
+.review-item-list .practice-item-delete:hover {
+  color: #ffffff;
+  background: #d24e62;
+  border-color: #d24e62;
 }
 
 .time-progress-card {

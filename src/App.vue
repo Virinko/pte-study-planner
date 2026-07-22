@@ -2498,6 +2498,51 @@ function applyManualAmount(task: Task, direction: 1 | -1) {
   addAmount(task, manualAmount(task.id) * direction);
 }
 
+function deleteTodayPracticeItem(itemId: string) {
+  const date = todayIso();
+  if (itemId.startsWith('task-')) {
+    const task = data.value.tasks.find((entry) => entry.id === itemId.slice('task-'.length));
+    if (!task) return;
+    const logs = data.value.dailyLogs[date] || [];
+    const todayCompleted = logs
+      .filter((entry) => entry.taskId === task.id)
+      .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
+    if (todayCompleted <= 0) return;
+    const keepsTotalProgress = task.trackingMode !== 'itemized';
+    if (!confirm(`删除「${taskDisplayName(task)}」今天的 ${todayCompleted} ${task.trackingMode === 'itemized' ? '篇' : '题'}练习记录？${keepsTotalProgress ? '累计总进度不会变化。' : '对应子项目会恢复为未完成。'}`)) return;
+
+    const nextLogs = logs.filter((entry) => entry.taskId !== task.id);
+    const dailyLogs = { ...data.value.dailyLogs };
+    if (nextLogs.length > 0) dailyLogs[date] = nextLogs;
+    else delete dailyLogs[date];
+    if (task.trackingMode === 'itemized') {
+      const subItems = task.subItems.map((item) => item.completedDate === date
+        ? { ...item, status: 'not_started' as const, completedDate: '' }
+        : item);
+      const nextTask = normalizeTask({ ...task, subItems }, data.value.phases[0]?.id || '');
+      saveLocal({ ...data.value, tasks: data.value.tasks.map((entry) => entry.id === task.id ? nextTask : entry), dailyLogs });
+    } else {
+      saveLocal({ ...data.value, dailyLogs });
+    }
+    return;
+  }
+
+  if (!itemId.startsWith('review-')) return;
+  const reviewPlanId = itemId.slice('review-'.length);
+  const logs = data.value.reviewLogs[date] || [];
+  const todayCompleted = logs
+    .filter((entry) => entry.reviewPlanId === reviewPlanId)
+    .reduce((sum, entry) => sum + entry.amount, 0);
+  if (todayCompleted <= 0) return;
+  if (!confirm(`删除今天的 ${todayCompleted} 题复习记录？复习计划的累计完成量不会变化。`)) return;
+
+  const nextLogs = logs.filter((entry) => entry.reviewPlanId !== reviewPlanId);
+  const reviewLogs = { ...data.value.reviewLogs };
+  if (nextLogs.length > 0) reviewLogs[date] = nextLogs;
+  else delete reviewLogs[date];
+  saveLocal({ ...data.value, reviewLogs });
+}
+
 function reviewAmount(id: string) {
   return reviewAmounts.value[id] ?? 5;
 }
@@ -4216,6 +4261,9 @@ function taskDisplayName(task: Task) {
                 </div>
                 <em :class="item.statusClass">{{ item.status }}</em>
                 <b>{{ item.label }}</b>
+                <button class="practice-item-delete" type="button" title="删除今日练习记录" :aria-label="`删除 ${item.type} 的今日练习记录`" @click="deleteTodayPracticeItem(item.id)">
+                  <Trash2 :size="16" stroke-width="2.4" aria-hidden="true" />
+                </button>
               </article>
             </div>
             <p v-else class="soft-empty">今天还没有练习条目。</p>
