@@ -794,6 +794,10 @@ const answerRows = computed(() => {
   return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
+const exportAnswerTypeOptions = computed(() => {
+  const savedTypes = new Set(data.value.answerEntries.map((entry) => entry.examType));
+  return answerExamTypeOptions.value.filter((type) => savedTypes.has(type));
+});
 const exportAnswerRows = computed(() => {
   const rows = [...data.value.answerEntries].filter((entry) => entry.examType === exportAnswerType.value);
   return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1556,6 +1560,10 @@ watch(timeTrendRows, () => {
 watch(trackedStudyTypeRows, () => {
   void renderStudyTypeChart();
 }, { deep: true });
+
+watch(exportAnswerTypeOptions, (options) => {
+  if (!options.includes(exportAnswerType.value)) exportAnswerType.value = options[0] || '';
+}, { immediate: true });
 
 watch([phaseProgress, phase], () => {
   if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
@@ -4883,13 +4891,13 @@ function taskDisplayName(task: Task) {
             <label>
               <span>导出题型</span>
               <span class="answer-select-control">
-                <select v-model="exportAnswerType">
-                  <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
+                <select v-model="exportAnswerType" :disabled="exportAnswerTypeOptions.length === 0">
+                  <option v-for="option in exportAnswerTypeOptions" :key="option" :value="option">{{ option }}</option>
                 </select>
                 <ChevronDown :size="17" aria-hidden="true" />
               </span>
             </label>
-            <button class="answer-export-button" type="button" @click="exportAnswersToPdf"><FileDown :size="18" />导出 {{ exportAnswerType }} 答案 PDF</button>
+            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0" @click="exportAnswersToPdf"><FileDown :size="18" />导出 {{ exportAnswerType }} 答案 PDF</button>
           </div>
         </div>
         <div class="answer-filters">
