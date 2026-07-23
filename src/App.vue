@@ -2201,7 +2201,7 @@ function formatCheckInDuration(seconds: number) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (hours === 0) return `${totalMinutes}min`;
-  return `${hours}h${minutes >= 15 ? `${String(minutes).padStart(2, '0')}min` : ''}`;
+  return `${hours}h${minutes}min`;
 }
 
 function formatTotalCheckInDuration(seconds: number) {
