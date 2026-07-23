@@ -675,19 +675,8 @@ const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
   .sort()[0] || todayIso());
 const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
 const todayCheckInText = computed(() => {
-  const secondsByType = todayTimeLogs.value.reduce<Record<string, number>>((acc, log) => {
-    const type = studyTimeExamType(log).trim();
-    if (!type) return acc;
-    acc[type] = (acc[type] || 0) + log.durationSeconds;
-    return acc;
-  }, {});
-  const typeOrder = new Map(examTypeOptions.map((type, index) => [type, index]));
-
-  return Object.entries(secondsByType)
-    .map(([type, seconds]) => ({ type, seconds }))
-    .sort((a, b) => (typeOrder.get(a.type) ?? Number.MAX_SAFE_INTEGER) - (typeOrder.get(b.type) ?? Number.MAX_SAFE_INTEGER) || a.type.localeCompare(b.type))
-    .map(({ type, seconds }) => `${type}${formatCheckInDuration(seconds)}`)
-    .join(' ');
+  const totalSeconds = todayTimeLogs.value.reduce((sum, log) => sum + log.durationSeconds, 0);
+  return totalSeconds > 0 ? formatTotalCheckInDuration(totalSeconds) : '';
 });
 const todayReviewLogs = computed(() => data.value.reviewLogs[todayIso()] || []);
 const todayReviewedPlanIds = computed(() => new Set(todayReviewLogs.value.map((log) => log.reviewPlanId)));
@@ -2213,6 +2202,13 @@ function formatCheckInDuration(seconds: number) {
   const minutes = totalMinutes % 60;
   if (hours === 0) return `${totalMinutes}min`;
   return `${hours}h${minutes >= 15 ? `${String(minutes).padStart(2, '0')}min` : ''}`;
+}
+
+function formatTotalCheckInDuration(seconds: number) {
+  const totalMinutes = Math.floor(Math.max(0, seconds) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes > 0 ? `${hours}h${minutes}min` : `${hours}h`;
 }
 
 function formatClockRange(log: StudyTimeEntry) {
