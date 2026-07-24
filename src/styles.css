@@ -8662,6 +8662,18 @@ nav button.active {
   border-color: #F7BEC8;
 }
 
+.timer-entry-button.is-running {
+  color: #218655;
+  background: #F0FBF4;
+  border-color: #A9DFC1;
+}
+
+.timer-entry-button.is-paused {
+  color: #3779B8;
+  background: #F1F8FF;
+  border-color: #B7D8F5;
+}
+
 .row-actions button,
 .completed-list button {
   color: var(--pte-indigo);

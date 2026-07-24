@@ -1821,6 +1821,14 @@ function timerSeconds(type: TimeLogType, id: string) {
   return runningTimerIdentity(runningTimer.value) === timerIdentity(type, id) ? runningTimerSeconds.value : 0;
 }
 
+function isTimerRunning(type: TimeLogType, id: string) {
+  return timerSeconds(type, id) > 0 && !runningTimer.value?.paused;
+}
+
+function isTimerPaused(type: TimeLogType, id: string) {
+  return timerSeconds(type, id) > 0 && Boolean(runningTimer.value?.paused);
+}
+
 function timerEntryLabel(type: TimeLogType, id: string) {
   const seconds = timerSeconds(type, id);
   if (seconds <= 0) return '计时';
@@ -3824,7 +3832,7 @@ function taskDisplayName(task: Task) {
                 <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
               </strong>
               <span class="timer-entry-cell">
-                <button class="timer-entry-button" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
+                <button class="timer-entry-button" :class="{ 'is-running': isTimerRunning('task', task.id), 'is-paused': isTimerPaused('task', task.id) }" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
                 <small v-if="savedTimeSeconds('task', task.id) > 0">今日已学 {{ formatDurationText(savedTimeSeconds('task', task.id)) }}</small>
               </span>
               <span class="daily-target-cell">
