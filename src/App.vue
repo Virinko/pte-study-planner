@@ -3,7 +3,7 @@ import { BarChart, LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
@@ -85,6 +85,7 @@ const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string
   { key: 'answers', label: '答案库', icon: '📚' },
 ];
 type TrendRange = '7' | '30' | 'all';
+type StudyTypeTimeRange = 'week' | 'all';
 type TodayTargetDiffRow = { task: Task; current: number; latest: number };
 
 interface RunningTimer {
@@ -581,6 +582,8 @@ const mockExamDateDrafts = ref<Record<string, string>>({});
 const mockExamNameDrafts = ref<Record<string, string>>({});
 const practiceTrendRange = ref<TrendRange>('7');
 const timeTrendRange = ref<TrendRange>('7');
+const studyTypeTimeRange = ref<StudyTypeTimeRange>('week');
+const selectedStudyWeekNumber = ref(0);
 const showPlanAverageStudyTime = ref(false);
 const practiceReportDate = ref(todayIso());
 const selectedTimePointDate = ref('');
@@ -803,13 +806,14 @@ const exportAnswerRows = computed(() => {
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
 const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
+const todayProgressSignature = computed(() => JSON.stringify(todayLogByTask.value));
 const todayTargetDiffRows = computed<TodayTargetDiffRow[]>(() => todayTasks.value
   .map((task) => ({
     task,
     current: todayFrozenTargetByTask.value[task.id] ?? 0,
     latest: todayDynamicTargetByTask.value[task.id] ?? 0,
   }))
-  .filter((row) => row.current !== row.latest));
+  .filter((row) => row.current !== row.latest && (todayLogByTask.value[row.task.id] || 0) > 0));
 const todayTargetDiffRowsByPhase = computed(() => todayTargetDiffRows.value.reduce<Record<string, TodayTargetDiffRow[]>>((acc, row) => {
   const rows = acc[row.task.phaseId] || [];
   rows.push(row);
@@ -974,8 +978,39 @@ const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysB
 const totalTrackedStudySeconds = computed(() => studyTimeEntries.value.reduce((sum, log) => sum + log.durationSeconds, 0));
 const totalMainStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
 const totalReviewStudySeconds = computed(() => studyTimeEntries.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
+const planStudyWeekOptions = computed(() => {
+  const planStart = data.value.settings.startDate;
+  const planEnd = data.value.settings.deadline;
+  const today = todayIso();
+  const visibleEnd = today < planStart ? planStart : today > planEnd ? planEnd : today;
+  const weekCount = Math.max(1, Math.ceil(daysBetweenInclusive(planStart, visibleEnd) / 7));
+  return Array.from({ length: weekCount }, (_, index) => {
+    const startDate = addDays(planStart, index * 7);
+    const fullWeekEnd = addDays(startDate, 6);
+    return {
+      number: index + 1,
+      startDate,
+      endDate: fullWeekEnd > planEnd ? planEnd : fullWeekEnd,
+    };
+  });
+});
+const currentPlanStudyWeekNumber = computed(() => {
+  const planStart = data.value.settings.startDate;
+  const planEnd = data.value.settings.deadline;
+  const today = todayIso();
+  if (today <= planStart) return 1;
+  const effectiveToday = today > planEnd ? planEnd : today;
+  return Math.max(1, Math.ceil(daysBetweenInclusive(planStart, effectiveToday) / 7));
+});
+const selectedStudyWeek = computed(() => planStudyWeekOptions.value.find((week) => week.number === selectedStudyWeekNumber.value)
+  || planStudyWeekOptions.value[planStudyWeekOptions.value.length - 1]);
+const displayedStudyTypeEntries = computed(() => {
+  if (studyTypeTimeRange.value === 'all' || !selectedStudyWeek.value) return studyTimeEntries.value;
+  return studyTimeEntries.value.filter((entry) => entry.date >= selectedStudyWeek.value!.startDate && entry.date <= selectedStudyWeek.value!.endDate);
+});
+const displayedStudyTypeTotalSeconds = computed(() => displayedStudyTypeEntries.value.reduce((sum, entry) => sum + entry.durationSeconds, 0));
 const trackedStudyTypeRows = computed(() => {
-  const secondsByType = studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
+  const secondsByType = displayedStudyTypeEntries.value.reduce<Record<string, number>>((acc, log) => {
     const type = studyTimeExamType(log);
     acc[type] = (acc[type] || 0) + log.durationSeconds;
     return acc;
@@ -1559,6 +1594,10 @@ watch(trackedStudyTypeRows, () => {
   void renderStudyTypeChart();
 }, { deep: true });
 
+watch([() => data.value.settings.startDate, () => data.value.settings.deadline], () => {
+  selectedStudyWeekNumber.value = currentPlanStudyWeekNumber.value;
+}, { immediate: true });
+
 watch(exportAnswerTypeOptions, (options) => {
   if (!options.includes(exportAnswerType.value)) exportAnswerType.value = options[0] || '';
 }, { immediate: true });
@@ -1567,9 +1606,10 @@ watch([phaseProgress, phase], () => {
   if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
 }, { immediate: true });
 
-watch([todayDynamicTargetSignature, hasTodayTargetSnapshot], () => {
-  if (hasTodayTargetSnapshot.value) return;
-  refreshTodayTargets({ markDirty: false, scheduleSync: false, preserveUpdatedAt: true });
+watch([todayDynamicTargetSignature, todayProgressSignature, hasTodayTargetSnapshot], () => {
+  refreshUnstartedTodayTargets(hasTodayTargetSnapshot.value
+    ? {}
+    : { markDirty: false, scheduleSync: false, preserveUpdatedAt: true });
 }, { immediate: true });
 
 function persistProgressBackup(next: StudyData) {
@@ -2347,6 +2387,43 @@ function closeCorrectionModal() {
   correctionError.value = '';
 }
 
+function applyTaskProgressCorrectionToDailyLogs(taskId: string, delta: number) {
+  const nextLogs = Object.entries(data.value.dailyLogs).reduce<StudyData['dailyLogs']>((acc, [date, logs]) => {
+    acc[date] = logs.map((log) => ({ ...log }));
+    return acc;
+  }, {});
+
+  if (delta > 0) {
+    const date = todayIso();
+    nextLogs[date] = [...(nextLogs[date] || []), { taskId, count: delta }];
+    return nextLogs;
+  }
+
+  let remaining = Math.abs(delta);
+  Object.keys(nextLogs).sort((a, b) => b.localeCompare(a)).forEach((date) => {
+    if (remaining <= 0) return;
+    const logs = nextLogs[date];
+    for (let index = logs.length - 1; index >= 0 && remaining > 0; index -= 1) {
+      const log = logs[index];
+      if (log.taskId !== taskId) continue;
+      const count = log.count ?? log.amount ?? 0;
+      if (count <= 0) continue;
+      const removed = Math.min(count, remaining);
+      const nextCount = count - removed;
+      remaining -= removed;
+      if (nextCount <= 0) {
+        logs.splice(index, 1);
+      } else if (typeof log.count === 'number') {
+        log.count = nextCount;
+      } else {
+        log.amount = nextCount;
+      }
+    }
+    if (logs.length === 0) delete nextLogs[date];
+  });
+  return nextLogs;
+}
+
 function submitCorrection() {
   const task = correctionTask.value;
   if (!task) return;
@@ -2384,9 +2461,13 @@ function submitCorrection() {
     return;
   }
 
+  const correctionDelta = nextCompleted - task.completed;
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: nextCompleted } : item),
+    dailyLogs: correctionDelta === 0
+      ? data.value.dailyLogs
+      : applyTaskProgressCorrectionToDailyLogs(task.id, correctionDelta),
   });
   closeCorrectionModal();
 }
@@ -2612,15 +2693,14 @@ function isTaskCompletedOverall(task: Task) {
 }
 
 function isTomorrowReviewRegistrationSkipped(task: Task) {
-  if (isTaskCompletedOverall(task)) {
-    return Object.values(data.value.skippedReviewRegistrations).some((taskIds) => (taskIds || []).includes(task.id));
-  }
   return (data.value.skippedReviewRegistrations[todayIso()] || []).includes(task.id);
 }
 
-function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean }) {
+function shouldShowTomorrowReviewRegister(task: Task & { doneToday: boolean; completedDate?: string }) {
+  const completedOverall = isTaskCompletedOverall(task);
   return task.reviewEnabled
     && task.doneToday
+    && (!completedOverall || task.completedDate === todayIso())
     && task.trackingMode !== 'itemized'
     && tomorrowReviewTargetForTask(task.id) === 0
     && !isTomorrowReviewRegistrationSkipped(task);
@@ -3558,6 +3638,33 @@ function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: bool
   }, options);
 }
 
+function refreshUnstartedTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
+  const date = todayIso();
+  const latestTargets = buildTodayTargetSnapshot();
+  const currentTargets = data.value.dailyTargets?.[date] || {};
+  const todayTaskIds = new Set(todayTasks.value.map((task) => task.id));
+  const nextTargets = Object.entries(currentTargets).reduce<Record<string, number>>((acc, [taskId, target]) => {
+    if (todayTaskIds.has(taskId)) acc[taskId] = target;
+    return acc;
+  }, {});
+
+  todayTasks.value.forEach((task) => {
+    const hasProgress = (todayLogByTask.value[task.id] || 0) > 0;
+    if (!hasProgress || !Object.prototype.hasOwnProperty.call(nextTargets, task.id)) {
+      nextTargets[task.id] = latestTargets[task.id] || 0;
+    }
+  });
+
+  if (sameTargetSnapshot(currentTargets, nextTargets)) return;
+  saveLocal({
+    ...data.value,
+    dailyTargets: {
+      ...(data.value.dailyTargets || {}),
+      [date]: nextTargets,
+    },
+  }, options);
+}
+
 function plannedDailyTarget(task: Task, targetPhase?: PhaseSchedule) {
   if (!targetPhase) return 0;
   const taskStart = task.startDate || targetPhase.startDate;
@@ -3572,6 +3679,21 @@ function addDays(iso: string, days: number) {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatStudyWeekRange(startDate: string, endDate: string) {
+  const startMonth = Number(startDate.slice(5, 7));
+  const startDay = Number(startDate.slice(8, 10));
+  const endMonth = Number(endDate.slice(5, 7));
+  const endDay = Number(endDate.slice(8, 10));
+  return `${startMonth}月${startDay}日–${endMonth}月${endDay}日`;
+}
+
+function shiftStudyWeek(offset: number) {
+  const nextNumber = selectedStudyWeekNumber.value + offset;
+  if (planStudyWeekOptions.value.some((week) => week.number === nextNumber)) {
+    selectedStudyWeekNumber.value = nextNumber;
+  }
 }
 
 function dateRangeRows(range: TrendRange, allRangeStartDate: string) {
@@ -4259,8 +4381,44 @@ function taskDisplayName(task: Task) {
           </div>
           <div class="study-type-time-block">
             <div class="study-type-time-head">
-              <span>已学习的题型总计时</span>
-              <small>悬停查看时长</small>
+              <div class="study-type-time-title">
+                <span>{{ studyTypeTimeRange === 'week' && selectedStudyWeek ? `计划第 ${selectedStudyWeek.number} 周题型计时` : '已学习的题型总计时' }}</span>
+                <strong>{{ studyTypeTimeRange === 'week' ? '本周总计' : '总计' }} {{ formatDurationCompact(displayedStudyTypeTotalSeconds) }}</strong>
+              </div>
+              <div class="study-week-picker" :class="{ 'all-time': studyTypeTimeRange === 'all' }">
+                <template v-if="studyTypeTimeRange === 'week' && selectedStudyWeek">
+                  <button
+                    type="button"
+                    title="上一周"
+                    aria-label="查看上一周"
+                    :disabled="selectedStudyWeek.number <= 1"
+                    @click="shiftStudyWeek(-1)"
+                  >
+                    <ChevronLeft :size="18" stroke-width="2.5" aria-hidden="true" />
+                  </button>
+                  <label class="study-week-select">
+                    <select v-model.number="selectedStudyWeekNumber" aria-label="选择计划周">
+                      <option v-for="week in planStudyWeekOptions" :key="week.number" :value="week.number">
+                        计划第 {{ week.number }} 周（{{ formatStudyWeekRange(week.startDate, week.endDate) }}）
+                      </option>
+                    </select>
+                    <ChevronDown :size="16" stroke-width="2.4" aria-hidden="true" />
+                  </label>
+                  <button
+                    type="button"
+                    title="下一周"
+                    aria-label="查看下一周"
+                    :disabled="selectedStudyWeek.number >= planStudyWeekOptions.length"
+                    @click="shiftStudyWeek(1)"
+                  >
+                    <ChevronRight :size="18" stroke-width="2.5" aria-hidden="true" />
+                  </button>
+                </template>
+              </div>
+              <div class="segmented compact study-type-range-switch">
+                <button type="button" :class="{ active: studyTypeTimeRange === 'week' }" @click="studyTypeTimeRange = 'week'">按周</button>
+                <button type="button" :class="{ active: studyTypeTimeRange === 'all' }" @click="studyTypeTimeRange = 'all'">全部</button>
+              </div>
             </div>
             <div ref="studyTypeChartEl" class="study-type-echarts" role="img" aria-label="各题型学习时长柱状图" />
           </div>
@@ -4631,7 +4789,7 @@ function taskDisplayName(task: Task) {
           <div v-if="shouldShowTodayTargetRefreshForPhase(group.phase.id)" class="today-target-refresh settings-target-refresh">
             <div>
               <strong>今日目标可能已过期</strong>
-              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。今日任务页不会自动变化，可在这里按最新计划手动刷新。</p>
+              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。已有进度的任务不会自动变化，可在这里按最新计划手动刷新。</p>
             </div>
             <button type="button" @click="refreshTodayTargets()">刷新今日目标</button>
           </div>

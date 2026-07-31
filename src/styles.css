@@ -9073,22 +9073,111 @@ textarea:focus {
 }
 
 .study-type-time-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(130px, .8fr) minmax(210px, 1.35fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
-.study-type-time-head > span {
+.study-type-time-title {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.study-type-time-title > span {
   color: var(--text-muted);
   font-size: 14px;
   font-weight: 500;
 }
 
-.study-type-time-head small {
+.study-type-time-title strong {
+  color: #7057d8;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.progress-page .study-type-range-switch {
+  flex: 0 0 auto;
+  padding: 3px;
+}
+
+.progress-page .study-type-range-switch button {
+  min-width: 56px;
+  padding: 6px 12px;
+}
+
+.study-week-picker {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.study-week-picker > button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #7057d8;
+  background: #fff;
+  border: 1px solid #ddd7fb;
+  border-radius: 9px;
+}
+
+.study-week-picker > button:hover:not(:disabled) {
+  color: #fff;
+  background: #8069df;
+  border-color: #8069df;
+}
+
+.study-week-picker > button:disabled {
+  color: #b7c0cf;
+  background: #f4f5f8;
+  border-color: #e5e8ee;
+  cursor: not-allowed;
+}
+
+.study-week-select {
+  position: relative;
+  min-width: 0;
+  width: min(100%, 286px);
+  flex: 1;
+}
+
+.study-week-select select {
+  width: 100%;
+  height: 32px;
+  appearance: none;
+  padding: 0 34px 0 12px;
+  color: #4e596b;
+  background: #fff;
+  border: 1px solid #ddd7fb;
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.study-week-select svg {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  color: #8069df;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.study-week-picker.all-time {
+  justify-content: center;
   color: #8a98ac;
-  font-size: 14px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .study-type-echarts {
@@ -9126,5 +9215,25 @@ textarea:focus {
 
   .progress-page .study-type-time-block {
     min-height: 270px;
+  }
+
+  .study-type-time-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .study-week-picker {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: stretch;
+  }
+
+  .study-week-picker.all-time {
+    justify-content: flex-start;
+  }
+
+  .study-week-select {
+    width: auto;
+    flex: 1;
   }
 }
