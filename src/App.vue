@@ -23,7 +23,7 @@ const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
-const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '错题复习'];
+const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '句乐部', '错题复习'];
 const taskScoreRows = [
   { name: 'SGD', skill: '听力', percent: 20 },
   { name: 'RS', skill: '听力', percent: 17 },
@@ -474,6 +474,7 @@ function isFamiliarity(value: unknown): value is Familiarity {
 }
 
 function inferFrequencyType(name: string): FrequencyType {
+  if (name.includes('句乐部')) return '句乐部';
   if (name.includes('非超高频')) return '非超高频';
   if (name.includes('超高频')) return '超高频';
   return '全题库';
