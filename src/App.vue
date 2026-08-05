@@ -4983,7 +4983,7 @@ function taskDisplayName(task: Task) {
         <div v-if="noteRows.length" class="note-list">
           <article v-for="row in noteRows" :key="row.id">
             <div class="note-list-head">
-              <div class="note-list-meta" @click="editDailyNote(row)">
+              <div class="note-list-meta">
                 <span class="note-date-badge"><CalendarDays :size="18" />{{ row.date }}</span>
                 <time>{{ row.time }}</time>
                 <span
@@ -5000,7 +5000,7 @@ function taskDisplayName(task: Task) {
                 <button type="button" title="删除" @click="deleteDailyNote(row.date, row.id)"><Trash2 :size="16" />删除</button>
               </div>
             </div>
-            <div class="note-rendered" @click="editDailyNote(row)" v-html="renderNoteContent(row.content)"></div>
+            <div class="note-rendered" v-html="renderNoteContent(row.content)"></div>
           </article>
         </div>
         <p v-else class="muted">还没有每日备注。</p>

@@ -4929,7 +4929,6 @@ nav button.active::after {
 .note-list-meta {
   min-width: 0;
   flex-wrap: wrap;
-  cursor: pointer;
 }
 
 .note-date-badge {
@@ -4971,7 +4970,6 @@ nav button.active::after {
 }
 
 .note-rendered {
-  cursor: pointer;
   max-width: 100%;
   overflow: hidden;
   overflow-wrap: anywhere;
