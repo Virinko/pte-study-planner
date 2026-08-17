@@ -4131,7 +4131,7 @@ function taskLastStudyDate(task: Task) {
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
               <strong class="task-name-cell">
                 <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
               </strong>
               <span class="timer-entry-cell">
                 <button class="timer-entry-button" :class="{ 'is-running': isTimerRunning('task', task.id), 'is-paused': isTimerPaused('task', task.id) }" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
@@ -4299,7 +4299,7 @@ function taskLastStudyDate(task: Task) {
               <article class="completed-task-row">
                 <strong class="task-name-cell">
                   <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                  <small>{{ task.platform }}<b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                  <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
                 </strong>
                 <span class="completed-task-metrics">
                   <span class="today-progress-cell overall-progress-cell">

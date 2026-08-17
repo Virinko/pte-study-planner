@@ -3315,6 +3315,43 @@ nav button.active::after {
   font-size: 12px;
 }
 
+.task-name-cell .today-platform-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-name-cell .today-platform-tag.is-duomo {
+  color: #4264ae;
+  background: #edf3ff;
+  border-color: #ccdaf7;
+}
+
+.task-name-cell .today-platform-tag.is-xingji {
+  color: #7555b9;
+  background: #f3efff;
+  border-color: #ddd2fa;
+}
+
+.task-name-cell .today-platform-tag.is-yinghuochong {
+  color: #af741f;
+  background: #fff4df;
+  border-color: #f1d9ad;
+}
+
+.task-name-cell .today-platform-tag.is-yingzi {
+  color: #287d78;
+  background: #e8f7f4;
+  border-color: #bfe3dd;
+}
+
 .task-name-cell b {
   width: fit-content;
   padding: 3px 10px;
@@ -3327,8 +3364,9 @@ nav button.active::after {
 
 .task-name-cell .round-chip {
   padding: 2px 8px;
-  color: #6f3ed4;
-  background: #f3ecff;
+  color: #b5476c;
+  background: #fff0f5;
+  border: 1px solid #f3c7d7;
   border-radius: 999px;
   font-size: 11px;
 }
