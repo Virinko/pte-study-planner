@@ -16,7 +16,7 @@ export function defaultData(): StudyData {
   const deadline = addDays(today, 60);
   const effectiveEnd = addDays(deadline, -7);
   return {
-    version: 2,
+    version: 3,
     updatedAt: '',
     settings: { startDate: today, deadline, bufferDays: 7 },
     phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
@@ -49,7 +49,7 @@ export const taskRoundCompleted = (task: Task) => {
   return Math.max(0, task.completed) % target;
 };
 
-const taskWork = (t: Task) => taskRemaining(t);
+const taskWork = (t: Task) => t.planStatus === 'shelved' ? 0 : taskRemaining(t);
 
 export function buildSchedule(data: StudyData): PhaseSchedule[] {
   const phases = [...data.phases].sort((a, b) => a.order - b.order);
@@ -85,7 +85,7 @@ export function buildSchedule(data: StudyData): PhaseSchedule[] {
 
 export function currentPhase(schedule: PhaseSchedule[], date = todayIso()) { return schedule.find((p) => date >= p.startDate && date <= p.endDate) || schedule.find((p) => date < p.startDate) || schedule[schedule.length - 1]; }
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
-  if (!phase) return 0;
+  if (!phase || task.planStatus === 'shelved') return 0;
   const remaining = taskRemaining(task);
   if (!remaining) return 0;
   const startDate = task.startDate || phase.startDate;

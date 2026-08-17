@@ -6,7 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -23,7 +23,7 @@ const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
-const frequencyTypes: FrequencyType[] = ['全题库', '超高频', '非超高频', '句乐部', '错题复习'];
+const frequencyTypes: FrequencyType[] = ['全题库', '月预测', '超高频', '非超高频', '句乐部', '错题复习'];
 const taskScoreRows = [
   { name: 'SGD', skill: '听力', percent: 20 },
   { name: 'RS', skill: '听力', percent: 17 },
@@ -113,6 +113,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   return {
     ...base,
     ...source,
+    version: base.version,
     settings,
     phases,
     tasks,
@@ -260,6 +261,8 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
   return {
     id: task.id || crypto.randomUUID(),
     phaseId: task.phaseId || fallbackPhaseId,
+    planStatus: isTaskPlanStatus(task.planStatus) ? task.planStatus : 'active',
+    shelvedAt: task.shelvedAt || undefined,
     name,
     startDate: task.startDate || undefined,
     endDate: task.endDate || undefined,
@@ -465,6 +468,10 @@ function isTrackingMode(value: unknown): value is TrackingMode {
   return value === 'count_only' || value === 'itemized';
 }
 
+function isTaskPlanStatus(value: unknown): value is TaskPlanStatus {
+  return value === 'active' || value === 'shelved';
+}
+
 function isSubItemStatus(value: unknown): value is SubItemStatus {
   return value === 'not_started' || value === 'doing' || value === 'done';
 }
@@ -612,6 +619,15 @@ const correctionTaskId = ref('');
 const correctionAmountInput = ref('');
 const correctionError = ref('');
 const correctionField = ref<HTMLInputElement | null>(null);
+const platformSwitchTaskId = ref('');
+const platformSwitchTarget = ref<PracticePlatform>('猩际');
+const platformSwitchFrequency = ref<FrequencyType>('月预测');
+const platformSwitchTargetCount = ref(0);
+const platformSwitchPhaseId = ref('');
+const platformSwitchError = ref('');
+const restoreTaskId = ref('');
+const restorePhaseId = ref('');
+const showShelvedProgress = ref(false);
 const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
 const appPassword = ref(readStoredPassword());
 const passwordInput = ref('');
@@ -655,6 +671,10 @@ let timeTrendChartInstance: ECharts | null = null;
 let studyTypeChartInstance: ECharts | null = null;
 let copiedCheckInTimer: number | undefined;
 
+const activePlanTasks = computed(() => data.value.tasks.filter((task) => task.planStatus === 'active'));
+const shelvedTasks = computed(() => data.value.tasks
+  .filter((task) => task.planStatus === 'shelved')
+  .sort((a, b) => (b.shelvedAt || '').localeCompare(a.shelvedAt || '')));
 const schedule = computed(() => buildSchedule(data.value));
 const phase = computed(() => currentPhase(schedule.value));
 const todayMockExams = computed(() => schedule.value.flatMap((scheduledPhase) => {
@@ -667,6 +687,7 @@ const todayTasks = computed(() => {
   const active = phase.value;
   if (!active) return [];
   return data.value.tasks.filter((task) => {
+    if (task.planStatus !== 'active') return false;
     if (task.phaseId !== active.id) return false;
     return todayIso() >= (task.startDate || active.startDate);
   });
@@ -733,19 +754,21 @@ const todayReviewPlans = computed<ReviewPlanRow[]>(() => {
   return Object.entries(data.value.reviewPlans || {})
     .filter(([date]) => date <= today)
     .flatMap(([date, plans]) => (plans || [])
+      .filter((plan) => data.value.tasks.find((task) => task.id === plan.taskId)?.planStatus !== 'shelved')
       .filter((plan) => date === today || plan.completed < plan.target || todayReviewedPlanIds.value.has(plan.id))
       .map((plan) => ({ ...plan, dueDate: date, overdue: date < today })))
     .sort((a, b) => Number(a.overdue) - Number(b.overdue) || a.dueDate.localeCompare(b.dueDate) || a.taskName.localeCompare(b.taskName));
 });
-const tomorrowReviewPlans = computed(() => data.value.reviewPlans[addDays(todayIso(), 1)] || []);
-const reviewEnabledTasks = computed(() => data.value.tasks.filter((task) => task.reviewEnabled));
+const tomorrowReviewPlans = computed(() => (data.value.reviewPlans[addDays(todayIso(), 1)] || [])
+  .filter((plan) => data.value.tasks.find((task) => task.id === plan.taskId)?.planStatus !== 'shelved'));
+const reviewEnabledTasks = computed(() => activePlanTasks.value.filter((task) => task.reviewEnabled));
 const countReviewEnabledTasks = computed(() => reviewEnabledTasks.value.filter((task) => task.trackingMode !== 'itemized'));
 const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 const todayReviewPlanDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
 const todayReviewDone = computed(() => todayReviewLogs.value.reduce((sum, log) => sum + log.amount, 0));
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
-const overallDone = computed(() => data.value.tasks.reduce((sum, task) => sum + task.completed, 0));
-const overallTarget = computed(() => data.value.tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0));
+const overallDone = computed(() => activePlanTasks.value.reduce((sum, task) => sum + task.completed, 0));
+const overallTarget = computed(() => activePlanTasks.value.reduce((sum, task) => sum + taskTotalTarget(task), 0));
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
@@ -923,12 +946,13 @@ function taskEffectiveEndDate(task: Task) {
 }
 
 function taskIsOverdue(task: Task, date = todayIso()) {
+  if (task.planStatus === 'shelved') return false;
   const totalTarget = taskTotalTarget(task);
   return totalTarget > 0 && task.completed < totalTarget && date > taskEffectiveEndDate(task);
 }
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
-  const tasks = data.value.tasks.filter((task) => task.phaseId === item.id);
+  const tasks = activePlanTasks.value.filter((task) => task.phaseId === item.id);
   const done = tasks.reduce((sum, task) => sum + task.completed, 0);
   const target = tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0);
   const today = todayIso();
@@ -944,9 +968,27 @@ const phaseProgress = computed(() => schedule.value.map((item, index) => {
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
   phase,
-  tasks: data.value.tasks.filter((task) => task.phaseId === phase.id),
+  tasks: activePlanTasks.value.filter((task) => task.phaseId === phase.id),
 })));
 const correctionTask = computed(() => data.value.tasks.find((task) => task.id === correctionTaskId.value));
+const platformSwitchTask = computed(() => data.value.tasks.find((task) => task.id === platformSwitchTaskId.value));
+const platformSwitchExistingTask = computed(() => {
+  const source = platformSwitchTask.value;
+  if (!source) return undefined;
+  return data.value.tasks.find((task) => task.id !== source.id
+    && task.name === source.name
+    && task.platform === platformSwitchTarget.value
+    && task.frequencyType === platformSwitchFrequency.value);
+});
+const restoreTask = computed(() => data.value.tasks.find((task) => task.id === restoreTaskId.value));
+const restoreConflictTask = computed(() => {
+  const source = restoreTask.value;
+  if (!source) return undefined;
+  return data.value.tasks.find((task) => task.id !== source.id
+    && task.planStatus === 'active'
+    && task.name === source.name
+    && !isTaskCompletedOverall(task));
+});
 
 const taskProgressRows = computed(() => data.value.tasks.map((task, index) => {
   const overdue = taskIsOverdue(task);
@@ -965,13 +1007,16 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => {
     priorityScore: taskPriorityScore(task.name),
     priorityRank: taskPriorityRank(task.name),
     sourceIndex: index,
-    status: completed ? '已结束' : overdue ? '已超时' : '进行中',
-    statusClass: completed ? 'is-ended' : overdue ? 'status-overdue' : 'is-active',
+    status: task.planStatus === 'shelved' ? '暂不安排' : completed ? '已结束' : overdue ? '已超时' : '进行中',
+    statusClass: task.planStatus === 'shelved' ? 'is-shelved' : completed ? 'is-ended' : overdue ? 'status-overdue' : 'is-active',
   };
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const visibleTaskProgressRows = computed(() => showAllTaskProgress.value ? taskProgressRows.value : taskProgressRows.value.slice(0, 6));
 const selectedProgressPhase = computed(() => phaseProgress.value.find((item) => item.id === selectedProgressPhaseId.value) || activePhaseProgress.value || phaseProgress.value[0]);
-const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id));
+const filteredTaskProgressRows = computed(() => taskProgressRows.value.filter((task) => {
+  if (!showShelvedProgress.value && task.planStatus === 'shelved') return false;
+  return !selectedProgressPhase.value || task.phaseId === selectedProgressPhase.value.id;
+}));
 
 const activePhaseProgress = computed(() => phaseProgress.value.find((item) => item.id === phase.value?.id) || phaseProgress.value[0]);
 const activePhaseDeadlineDays = computed(() => activePhaseProgress.value ? daysBetweenInclusive(todayIso(), activePhaseProgress.value.endDate) : 0);
@@ -2329,7 +2374,7 @@ function deletePhase(id: string) {
   saveLocal({
     ...data.value,
     phases,
-    tasks: data.value.tasks.filter((task) => task.phaseId !== id),
+    tasks: data.value.tasks.filter((task) => task.phaseId !== id || task.planStatus === 'shelved'),
   });
 }
 
@@ -2363,6 +2408,127 @@ function updateTask(id: string, patch: Partial<Task>) {
     return;
   }
   saveLocal({ ...data.value, tasks: data.value.tasks.map((task) => task.id === id ? normalizeTask({ ...task, ...patch }, data.value.phases[0]?.id || '') : task) });
+}
+
+function handleTaskPlatformChange(task: Task, event: Event) {
+  const select = event.target as HTMLSelectElement;
+  const nextPlatform = select.value as PracticePlatform;
+  if (nextPlatform === task.platform) return;
+  if (task.completed <= 0) {
+    updateTask(task.id, { platform: nextPlatform });
+    return;
+  }
+  select.value = task.platform;
+  openPlatformSwitchModal(task, nextPlatform);
+}
+
+function openPlatformSwitchModal(task: Task, nextPlatform: PracticePlatform) {
+  platformSwitchTaskId.value = task.id;
+  platformSwitchTarget.value = nextPlatform;
+  platformSwitchFrequency.value = nextPlatform === '猩际' && task.name === 'DI' ? '月预测' : task.frequencyType;
+  platformSwitchTargetCount.value = 0;
+  platformSwitchPhaseId.value = task.phaseId || phase.value?.id || schedule.value[0]?.id || '';
+  platformSwitchError.value = '';
+}
+
+function closePlatformSwitchModal() {
+  platformSwitchTaskId.value = '';
+  platformSwitchTargetCount.value = 0;
+  platformSwitchError.value = '';
+}
+
+function submitPlatformSwitch() {
+  const source = platformSwitchTask.value;
+  if (!source) return;
+  if (platformSwitchTarget.value === source.platform) {
+    platformSwitchError.value = '请选择与当前任务不同的平台。';
+    return;
+  }
+  const existing = platformSwitchExistingTask.value;
+  if (existing?.planStatus === 'active') {
+    platformSwitchError.value = `当前计划中已存在“${existing.platform} ${taskDisplayName(existing)}”，请直接使用该任务。`;
+    return;
+  }
+  const target = Math.max(0, Math.floor(Number(platformSwitchTargetCount.value) || 0));
+  if (!existing && target <= 0) {
+    platformSwitchError.value = '请输入新平台的题库量。';
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const tasks = data.value.tasks.map((task) => {
+    if (task.id === source.id) return { ...task, planStatus: 'shelved' as const, shelvedAt: now };
+    if (existing && task.id === existing.id) {
+      return {
+        ...task,
+        phaseId: platformSwitchPhaseId.value,
+        planStatus: 'active' as const,
+        shelvedAt: undefined,
+        startDate: undefined,
+        endDate: undefined,
+      };
+    }
+    return task;
+  });
+
+  if (!existing) {
+    tasks.push({
+      id: crypto.randomUUID(),
+      phaseId: platformSwitchPhaseId.value,
+      planStatus: 'active',
+      shelvedAt: undefined,
+      name: source.name,
+      platform: platformSwitchTarget.value,
+      frequencyType: platformSwitchFrequency.value,
+      trackingMode: source.trackingMode,
+      reviewEnabled: source.reviewEnabled,
+      startDate: undefined,
+      endDate: undefined,
+      subItems: [],
+      target,
+      repeatCount: source.trackingMode === 'itemized' ? 1 : source.repeatCount,
+      completed: 0,
+    });
+  }
+
+  saveLocal({ ...data.value, tasks });
+  closePlatformSwitchModal();
+}
+
+function shelveTask(task: Task) {
+  if (!window.confirm(`将“${task.platform} ${taskDisplayName(task)}”移入暂不安排吗？已有进度会完整保留。`)) return;
+  const shelvedAt = new Date().toISOString();
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? { ...item, planStatus: 'shelved', shelvedAt } : item),
+  });
+}
+
+function openRestoreTaskModal(task: Task) {
+  restoreTaskId.value = task.id;
+  restorePhaseId.value = phase.value?.id || schedule.value[0]?.id || '';
+}
+
+function closeRestoreTaskModal() {
+  restoreTaskId.value = '';
+  restorePhaseId.value = '';
+}
+
+function submitRestoreTask() {
+  const task = restoreTask.value;
+  if (!task || !restorePhaseId.value || restoreConflictTask.value) return;
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? {
+      ...item,
+      phaseId: restorePhaseId.value,
+      planStatus: 'active',
+      shelvedAt: undefined,
+      startDate: undefined,
+      endDate: undefined,
+    } : item),
+  });
+  closeRestoreTaskModal();
 }
 
 function updateTaskCompleted(task: Task, completed: number, patch: Partial<Task> = {}) {
@@ -2482,6 +2648,8 @@ function addTask(phaseId?: string, name = '') {
       {
         id: crypto.randomUUID(),
         phaseId: phaseId || targetPhase?.id || data.value.phases[0]?.id || '',
+        planStatus: 'active',
+        shelvedAt: undefined,
         name,
         platform: '多墨',
         frequencyType: '全题库',
@@ -2500,14 +2668,14 @@ function addTask(phaseId?: string, name = '') {
 
 function sortPhaseTasksByPriority(phaseId: string) {
   const phaseTasks = data.value.tasks
-    .filter((task) => task.phaseId === phaseId)
+    .filter((task) => task.phaseId === phaseId && task.planStatus === 'active')
     .map((task, index) => ({ task, index }))
     .sort((a, b) => taskPriorityScore(b.task.name) - taskPriorityScore(a.task.name) || taskPriorityRank(a.task.name) - taskPriorityRank(b.task.name) || a.index - b.index)
     .map((entry) => entry.task);
   let cursor = 0;
   saveLocal({
     ...data.value,
-    tasks: data.value.tasks.map((task) => task.phaseId === phaseId ? phaseTasks[cursor++] : task),
+    tasks: data.value.tasks.map((task) => task.phaseId === phaseId && task.planStatus === 'active' ? phaseTasks[cursor++] : task),
   });
 }
 
@@ -3826,6 +3994,17 @@ function selectedItemTitles(task: Task) {
 function taskDisplayName(task: Task) {
   return task.name.includes(task.frequencyType) ? task.name : `${task.name} ${task.frequencyType}`;
 }
+
+function taskLastStudyDate(task: Task) {
+  const dates = [
+    ...Object.entries(data.value.dailyLogs)
+      .filter(([, logs]) => logs.some((log) => log.taskId === task.id && (log.count ?? log.amount ?? 0) > 0))
+      .map(([date]) => date),
+    ...task.subItems.map((item) => item.completedDate || '').filter(Boolean),
+    ...data.value.studyTimeEntries.filter((entry) => entry.taskId === task.id).map((entry) => entry.date),
+  ].sort((a, b) => b.localeCompare(a));
+  return dates[0] || '';
+}
 </script>
 
 <template>
@@ -4292,14 +4471,20 @@ function taskDisplayName(task: Task) {
       <section class="dashboard-card">
         <div class="dashboard-title">
           <h2>总进度详情</h2>
-          <label class="phase-filter">阶段
-            <span class="select-control">
-              <select v-model="selectedProgressPhaseId">
-                <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}</option>
-              </select>
-              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
-            </span>
-          </label>
+          <div class="progress-detail-filters">
+            <label class="shelved-progress-toggle">
+              <input v-model="showShelvedProgress" type="checkbox">
+              包含暂不安排
+            </label>
+            <label class="phase-filter">阶段
+              <span class="select-control">
+                <select v-model="selectedProgressPhaseId">
+                  <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}</option>
+                </select>
+                <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+              </span>
+            </label>
+          </div>
         </div>
         <div class="dashboard-table detail-table">
           <div class="dashboard-table-head">
@@ -4807,7 +4992,12 @@ function taskDisplayName(task: Task) {
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
               </label>
               <label class="select-control table-select table-field" data-label="平台">
-                <select :value="task.platform" @change="updateTask(task.id, { platform: ($event.target as HTMLSelectElement).value as PracticePlatform })">
+                <select
+                  :value="task.platform"
+                  :disabled="isTaskCompletedOverall(task)"
+                  :title="isTaskCompletedOverall(task) ? '已完成任务不能直接切换平台，请新增任务' : '有进度时切换平台会保留原任务并创建新任务'"
+                  @change="handleTaskPlatformChange(task, $event)"
+                >
                   <option v-for="platform in practicePlatforms" :key="platform" :value="platform">{{ platform }}</option>
                 </select>
                 <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
@@ -4859,6 +5049,7 @@ function taskDisplayName(task: Task) {
               </label>
               <strong class="suggestion-cell table-field" data-label="建议">{{ plannedDailyTarget(task, group.phase) }}</strong>
               <div class="action-cell table-field" data-label="操作">
+                <button v-if="!isTaskCompletedOverall(task)" class="shelve-task-button" type="button" @click="shelveTask(task)">暂不安排</button>
                 <button class="icon-button" type="button" @click="deleteTask(task.id)">删除</button>
               </div>
             </div>
@@ -4881,6 +5072,34 @@ function taskDisplayName(task: Task) {
             <p v-if="group.tasks.length === 0" class="muted">这个阶段还没有任务。新增任务后会只记录每日完成进度，不保存题库内容。</p>
           </div>
         </div>
+        <details v-if="shelvedTasks.length" class="shelved-task-section">
+          <summary>
+            <span><Pause :size="18" stroke-width="2.5" aria-hidden="true" />暂不安排</span>
+            <b>{{ shelvedTasks.length }}</b>
+            <small>不参与每日任务、动态均摊和默认进度统计</small>
+          </summary>
+          <div class="shelved-task-list">
+            <article v-for="task in shelvedTasks" :key="task.id" class="shelved-task-row">
+              <div class="shelved-task-name">
+                <strong>{{ task.name }}</strong>
+                <span>{{ task.platform }} · {{ task.frequencyType }}</span>
+              </div>
+              <div class="shelved-task-progress">
+                <span>已完成</span>
+                <strong>{{ task.completed }} / {{ taskTotalTarget(task) }}</strong>
+                <span class="progress-track"><i :style="{ width: `${pct(task.completed, taskTotalTarget(task))}%` }" /></span>
+              </div>
+              <div class="shelved-task-last-study">
+                <span>最近学习</span>
+                <strong>{{ taskLastStudyDate(task) || (task.completed > 0 ? '未记录日期' : '尚未学习') }}</strong>
+              </div>
+              <div class="shelved-task-actions">
+                <button class="restore-task-button" type="button" @click="openRestoreTaskModal(task)">重新纳入计划</button>
+                <button class="delete-shelved-task-button" type="button" @click="deleteTask(task.id)">删除</button>
+              </div>
+            </article>
+          </div>
+        </details>
         <p class="hint">提示：动态均摊 = Math.ceil(剩余任务量 / 当前阶段剩余有效练习天数)。如果今天少做，未完成量会在之后的剩余天数里重新均摊。</p>
       </section>
 
@@ -5254,6 +5473,95 @@ function taskDisplayName(task: Task) {
         <div class="timer-modal-actions correction-actions">
           <button class="ghost" type="button" @click="closeCorrectionModal">取消</button>
           <button class="primary" type="submit">保存修正</button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="platformSwitchTask" class="modal">
+      <form class="modal-box platform-switch-modal" @submit.prevent="submitPlatformSwitch">
+        <button class="modal-close-button" type="button" title="关闭弹窗" @click="closePlatformSwitchModal">×</button>
+        <span class="timer-type">切换学习平台</span>
+        <div class="modal-title">
+          <h3>切换 {{ platformSwitchTask.name }} 学习平台</h3>
+          <p>原任务会进入“暂不安排”，已有进度和学习记录不会被覆盖。</p>
+        </div>
+        <div class="platform-switch-source">
+          <div>
+            <span>当前任务</span>
+            <strong>{{ platformSwitchTask.platform }} · {{ platformSwitchTask.frequencyType }}</strong>
+          </div>
+          <b>{{ platformSwitchTask.completed }} / {{ taskTotalTarget(platformSwitchTask) }}</b>
+        </div>
+        <div class="platform-switch-fields">
+          <label>切换到
+            <span class="select-control">
+              <select v-model="platformSwitchTarget" @change="platformSwitchError = ''">
+                <option v-for="platform in practicePlatforms" :key="platform" :value="platform" :disabled="platform === platformSwitchTask.platform">{{ platform }}</option>
+              </select>
+              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+            </span>
+          </label>
+          <label>题库类型
+            <span class="select-control">
+              <select v-model="platformSwitchFrequency" @change="platformSwitchError = ''">
+                <option v-for="frequencyType in frequencyTypes" :key="frequencyType" :value="frequencyType">{{ frequencyType }}</option>
+              </select>
+              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+            </span>
+          </label>
+          <label v-if="!platformSwitchExistingTask">题库量
+            <input v-model.number="platformSwitchTargetCount" type="number" min="1" inputmode="numeric" placeholder="请输入题库数量" @input="platformSwitchError = ''">
+          </label>
+          <label>任务阶段
+            <span class="select-control">
+              <select v-model="platformSwitchPhaseId">
+                <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}</option>
+              </select>
+              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+            </span>
+          </label>
+        </div>
+        <div v-if="platformSwitchExistingTask" class="platform-switch-existing" :class="{ active: platformSwitchExistingTask.planStatus === 'active' }">
+          <strong>{{ platformSwitchExistingTask.planStatus === 'shelved' ? '找到之前暂不安排的任务' : '当前计划已存在相同任务' }}</strong>
+          <p>{{ platformSwitchExistingTask.platform }} · {{ taskDisplayName(platformSwitchExistingTask) }}，已完成 {{ platformSwitchExistingTask.completed }} / {{ taskTotalTarget(platformSwitchExistingTask) }}。</p>
+          <span v-if="platformSwitchExistingTask.planStatus === 'shelved'">确认后会继续这项已有任务，不会重复创建。</span>
+        </div>
+        <div class="platform-switch-impact">
+          <p><Check :size="15" />{{ platformSwitchTask.platform }}进度保留为 {{ platformSwitchTask.completed }} / {{ taskTotalTarget(platformSwitchTask) }}</p>
+          <p><Check :size="15" />原任务不再生成每日学习量，也不会计算逾期</p>
+        </div>
+        <p v-if="platformSwitchError" class="correction-error">{{ platformSwitchError }}</p>
+        <div class="timer-modal-actions correction-actions">
+          <button class="ghost" type="button" @click="closePlatformSwitchModal">取消</button>
+          <button class="primary" type="submit">{{ platformSwitchExistingTask?.planStatus === 'shelved' ? `暂不安排${platformSwitchTask.platform}，继续${platformSwitchTarget}` : `暂不安排${platformSwitchTask.platform}，开始${platformSwitchTarget}` }}</button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="restoreTask" class="modal">
+      <form class="modal-box restore-task-modal" @submit.prevent="submitRestoreTask">
+        <button class="modal-close-button" type="button" title="关闭弹窗" @click="closeRestoreTaskModal">×</button>
+        <span class="timer-type">重新纳入计划</span>
+        <div class="modal-title">
+          <h3>{{ restoreTask.platform }} · {{ taskDisplayName(restoreTask) }}</h3>
+          <p>已有进度 {{ restoreTask.completed }} / {{ taskTotalTarget(restoreTask) }}，重新安排后将从现有进度继续。</p>
+        </div>
+        <label class="restore-phase-field">纳入阶段
+          <span class="select-control">
+            <select v-model="restorePhaseId">
+              <option v-for="item in phaseProgress" :key="item.id" :value="item.id">{{ item.name }}（{{ item.startDate }} ~ {{ item.endDate }}）</option>
+            </select>
+            <ChevronDown class="select-control-icon" :size="16" stroke-width="2.4" aria-hidden="true" />
+          </span>
+        </label>
+        <div v-if="restoreConflictTask" class="restore-conflict-warning">
+          <strong>{{ restoreConflictTask.platform }} · {{ taskDisplayName(restoreConflictTask) }} 仍在进行中</strong>
+          <p>同一题型一次只安排一个未完成的平台任务。请先完成或暂不安排当前 {{ restoreConflictTask.name }} 任务。</p>
+        </div>
+        <p class="restore-task-note">任务日期将重新跟随所选阶段，今日建议量会按剩余数量重新计算。</p>
+        <div class="timer-modal-actions correction-actions">
+          <button class="ghost" type="button" @click="closeRestoreTaskModal">取消</button>
+          <button class="primary" type="submit" :disabled="Boolean(restoreConflictTask)">加入计划</button>
         </div>
       </form>
     </div>

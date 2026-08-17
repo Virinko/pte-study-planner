@@ -9235,3 +9235,398 @@ textarea:focus {
     flex: 1;
   }
 }
+
+.progress-detail-filters {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.shelved-progress-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #667389;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.shelved-progress-toggle input {
+  width: 15px;
+  height: 15px;
+  accent-color: #6f62d9;
+}
+
+.detail-progress-status.is-shelved {
+  color: #687386;
+  background: #f2f4f7;
+  border-color: #d9dee7;
+}
+
+.settings-task-table .action-cell {
+  gap: 5px;
+}
+
+.settings-task-table .action-cell button {
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 3px;
+  border-radius: 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.shelve-task-button {
+  color: #665f73;
+  background: #f7f5fa;
+  border: 1px solid #ded8e8;
+}
+
+.shelved-task-section {
+  margin-top: 20px;
+  overflow: hidden;
+  background: #fafbfc;
+  border: 1px solid #dfe4eb;
+  border-radius: 10px;
+}
+
+.shelved-task-section > summary {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  color: #4f596b;
+  cursor: pointer;
+  list-style: none;
+}
+
+.shelved-task-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.shelved-task-section > summary::after {
+  margin-left: auto;
+  content: "展开";
+  color: #7b8494;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.shelved-task-section[open] > summary::after {
+  content: "收起";
+}
+
+.shelved-task-section > summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #343d4d;
+  font-weight: 900;
+}
+
+.shelved-task-section > summary > b {
+  min-width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  color: #655d72;
+  background: #edeaf1;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.shelved-task-section > summary > small {
+  color: #818a9a;
+  font-size: 12px;
+}
+
+.shelved-task-list {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.shelved-task-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1fr) minmax(120px, .75fr) auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px solid #e2e7ee;
+  border-radius: 9px;
+}
+
+.shelved-task-name,
+.shelved-task-progress,
+.shelved-task-last-study {
+  display: grid;
+  gap: 5px;
+}
+
+.shelved-task-name strong {
+  color: #273142;
+  font-size: 16px;
+}
+
+.shelved-task-name span,
+.shelved-task-progress span,
+.shelved-task-last-study span {
+  color: #7b8596;
+  font-size: 12px;
+}
+
+.shelved-task-progress strong,
+.shelved-task-last-study strong {
+  color: #3f495a;
+  font-size: 13px;
+}
+
+.shelved-task-progress .progress-track {
+  width: 100%;
+  height: 5px;
+}
+
+.shelved-task-progress .progress-track i {
+  background: #8d83a1;
+}
+
+.shelved-task-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.shelved-task-actions button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.restore-task-button {
+  color: #3c67c8;
+  background: #f2f6ff;
+  border: 1px solid #cddcff;
+}
+
+.delete-shelved-task-button {
+  color: #d14c55;
+  background: #fff7f7;
+  border: 1px solid #f2cdd0;
+}
+
+.platform-switch-modal,
+.restore-task-modal {
+  position: relative;
+  width: min(580px, 100%);
+  border: 1px solid #d8ddf2;
+}
+
+.platform-switch-modal .timer-type,
+.restore-task-modal .timer-type {
+  width: max-content;
+  color: #6554c7;
+  background: #f1efff;
+}
+
+.platform-switch-modal .modal-title,
+.restore-task-modal .modal-title {
+  display: grid;
+  gap: 5px;
+  padding-right: 34px;
+}
+
+.platform-switch-modal .modal-title h3,
+.restore-task-modal .modal-title h3 {
+  font-size: 20px;
+}
+
+.platform-switch-modal .modal-title p,
+.restore-task-modal .modal-title p {
+  color: #6c7688;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.platform-switch-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+  background: #f8f9fc;
+  border: 1px solid #e2e6ed;
+  border-radius: 9px;
+}
+
+.platform-switch-source > div {
+  display: grid;
+  gap: 4px;
+}
+
+.platform-switch-source span {
+  color: #7b8595;
+  font-size: 12px;
+}
+
+.platform-switch-source strong {
+  color: #293345;
+  font-size: 14px;
+}
+
+.platform-switch-source > b {
+  color: #4a5568;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.platform-switch-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.platform-switch-fields > label,
+.restore-phase-field {
+  display: grid;
+  gap: 7px;
+  color: #606b7e;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.platform-switch-fields select,
+.platform-switch-fields input,
+.restore-phase-field select {
+  width: 100%;
+  min-height: 42px;
+  padding: 7px 32px 7px 11px;
+  color: #263044;
+  background: #fff;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.platform-switch-fields input {
+  padding-right: 11px;
+}
+
+.platform-switch-fields .select-control,
+.restore-phase-field .select-control {
+  width: 100%;
+}
+
+.platform-switch-existing {
+  display: grid;
+  gap: 4px;
+  padding: 11px 13px;
+  color: #3f5f50;
+  background: #f1fbf5;
+  border: 1px solid #ccebd8;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.platform-switch-existing.active {
+  color: #8a4b25;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.platform-switch-existing p,
+.platform-switch-existing span {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.platform-switch-impact {
+  display: grid;
+  gap: 6px;
+  padding: 11px 13px;
+  color: #536176;
+  background: #fbfcff;
+  border: 1px solid #e5e9f2;
+  border-radius: 8px;
+}
+
+.platform-switch-impact p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+
+.platform-switch-impact svg {
+  flex: 0 0 auto;
+  color: #2b9a5f;
+}
+
+.restore-task-note {
+  padding: 10px 12px;
+  color: #606b7e;
+  background: #f8f9fc;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.restore-conflict-warning {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  color: #9a4f26;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.restore-conflict-warning p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.restore-task-modal .timer-modal-actions button:disabled {
+  color: #9aa3b2;
+  background: #e8ebf0;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+@media (max-width: 760px) {
+  .progress-detail-filters,
+  .shelved-task-section > summary,
+  .shelved-task-actions {
+    width: 100%;
+  }
+
+  .progress-detail-filters {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .shelved-task-section > summary {
+    flex-wrap: wrap;
+  }
+
+  .shelved-task-section > summary > small {
+    order: 3;
+    width: 100%;
+  }
+
+  .shelved-task-row,
+  .platform-switch-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .shelved-task-actions button {
+    flex: 1;
+  }
+}

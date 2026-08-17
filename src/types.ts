@@ -1,8 +1,9 @@
 export type PracticePlatform = '多墨' | '猩际' | '萤火虫' | '影子三千';
-export type FrequencyType = '全题库' | '超高频' | '非超高频' | '句乐部' | '错题复习';
+export type FrequencyType = '全题库' | '月预测' | '超高频' | '非超高频' | '句乐部' | '错题复习';
 export type TrackingMode = 'count_only' | 'itemized';
 export type SubItemStatus = 'not_started' | 'doing' | 'done';
 export type Familiarity = '生' | '半熟' | '熟' | '可默写';
+export type TaskPlanStatus = 'active' | 'shelved';
 
 export interface Settings {
   startDate: string;
@@ -33,6 +34,8 @@ export interface SubItem {
 export interface Task {
   id: string;
   phaseId: string;
+  planStatus: TaskPlanStatus;
+  shelvedAt?: string;
   name: string;
   startDate?: string;
   endDate?: string;
