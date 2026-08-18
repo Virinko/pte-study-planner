@@ -3318,10 +3318,10 @@ nav button.active::after {
 .task-name-cell .today-platform-tag {
   display: inline-flex;
   align-items: center;
-  min-height: 24px;
-  padding: 3px 10px;
+  min-height: 22px;
+  padding: 2px 8px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 3px;
   font-size: 12px;
   font-weight: 400;
   line-height: 1;
