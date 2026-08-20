@@ -1932,6 +1932,10 @@ input[type="number"]::-webkit-inner-spin-button {
   letter-spacing: 0;
 }
 
+.pomodoro-display.is-complete {
+  color: #218655;
+}
+
 .timer-hero p {
   margin: 0;
   color: #667089;
@@ -1943,6 +1947,34 @@ input[type="number"]::-webkit-inner-spin-button {
   display: grid;
   gap: 10px;
   padding: 14px 28px 18px;
+}
+
+.pomodoro-task-picker {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+
+.pomodoro-task-picker .select-control {
+  width: 100%;
+}
+
+.pomodoro-task-picker select {
+  min-height: 46px;
+  padding: 8px 38px 8px 13px;
+  color: #25304a;
+  background: #fcfdff;
+  border-color: #d9dff0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.pomodoro-task-picker select:disabled {
+  color: #777f91;
+  cursor: not-allowed;
+  background: #f2f3f6;
 }
 
 .timer-time-range {
@@ -2103,6 +2135,93 @@ input[type="number"]::-webkit-inner-spin-button {
   margin: 0;
 }
 
+.pomodoro-progress-field {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  text-align: left;
+  background: #fbf9ff;
+  border: 1px solid #dfd3f5;
+  border-radius: 8px;
+}
+
+.pomodoro-progress-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(176px, .9fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.pomodoro-progress-input-row > div {
+  display: grid;
+  gap: 2px;
+}
+
+.pomodoro-progress-input-row > div span {
+  color: #6c7489;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.pomodoro-progress-input-row > div strong {
+  color: #172033;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.pomodoro-progress-input-row label {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(64px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: #6542b3;
+  background: #fff;
+  border: 1px solid #cdbbef;
+  border-radius: 8px;
+}
+
+.pomodoro-progress-input-row input {
+  min-width: 0;
+  padding: 0;
+  color: #172033;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.pomodoro-progress-input-row label:focus-within {
+  border-color: #8f66de;
+  box-shadow: 0 0 0 4px rgba(143, 102, 222, .12);
+}
+
+.pomodoro-progress-message {
+  margin: 0;
+  color: #218655;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.pomodoro-progress-message.error {
+  color: #c43d49;
+}
+
+.pomodoro-itemized-note {
+  gap: 4px;
+  color: #65507e;
+}
+
+.pomodoro-itemized-note p {
+  color: #747083;
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .timer-control-row {
   width: 100%;
   display: grid;
@@ -2127,6 +2246,12 @@ input[type="number"]::-webkit-inner-spin-button {
   box-shadow: 0 10px 20px rgba(112, 65, 216, .22);
   font-size: 18px;
   font-weight: 900;
+}
+
+.pomodoro-start-button:disabled {
+  cursor: default;
+  background: linear-gradient(135deg, #70bd94, #31875a);
+  box-shadow: none;
 }
 
 .timer-start-button small {
@@ -2261,6 +2386,487 @@ input[type="number"]::-webkit-inner-spin-button {
   color: rgba(255, 255, 255, .72);
 }
 
+.pomodoro-modal {
+  z-index: 21;
+  overflow: auto;
+  padding: 12px;
+  background: rgba(29, 38, 53, .58);
+  backdrop-filter: blur(4px);
+}
+
+.pomodoro-modal-box {
+  position: relative;
+  width: min(600px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  gap: 0;
+  padding: 0;
+  overflow: hidden auto;
+  background: #fffafb;
+  border: 1px solid rgba(242, 173, 190, .72);
+  border-radius: 22px;
+  box-shadow: 0 30px 80px rgba(15, 23, 42, .3);
+  font-weight: 400;
+}
+
+.pomodoro-modal-box button,
+.pomodoro-modal-box input,
+.pomodoro-modal-box select,
+.pomodoro-modal-box label {
+  font-weight: 400;
+}
+
+.pomodoro-modal .modal-close-button {
+  top: 17px;
+  right: 17px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  color: #6f6874;
+}
+
+.pomodoro-modal .modal-close-button:hover {
+  color: #403944;
+  background: rgba(255, 255, 255, .7);
+  border-color: #edc8d1;
+}
+
+.pomodoro-hero {
+  position: relative;
+  min-height: 166px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 4px;
+  padding: 14px 60px 10px;
+  text-align: center;
+  background-image:
+    linear-gradient(to bottom, rgba(255, 250, 251, 0) 56%, rgba(255, 250, 251, .48) 78%, #fffafb 100%),
+    url("./assets/pomodoro-background.png");
+  background-position: center, center top;
+  background-repeat: no-repeat;
+  background-size: 100% 100%, 100% auto;
+}
+
+.pomodoro-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  color: #ea456a;
+  background: rgba(255, 244, 247, .78);
+  border: 1px solid #f7c2d0;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pomodoro-hero h3 {
+  margin: 0;
+  color: #20263a;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.pomodoro-display {
+  color: #28202d;
+  font-size: clamp(46px, 7vw, 56px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: .04em;
+}
+
+.pomodoro-hero p {
+  margin: 0;
+  color: #7c7580;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.pomodoro-body {
+  display: grid;
+  gap: 10px;
+  padding: 10px 24px 16px;
+}
+
+.pomodoro-setting-block {
+  display: grid;
+  gap: 7px;
+  padding: 9px 14px;
+  text-align: left;
+  background: rgba(255, 255, 255, .38);
+  border: 1px solid rgba(235, 213, 220, .92);
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(105, 71, 83, .025);
+}
+
+.pomodoro-setting-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pomodoro-setting-title {
+  color: #2d2935;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pomodoro-duration-design-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f04f73;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pomodoro-duration-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.pomodoro-duration-options button {
+  position: relative;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 12px;
+  color: #4d404b;
+  background: rgba(255, 251, 252, .7);
+  border: 1px solid #ead8dd;
+  border-radius: 12px;
+}
+
+.pomodoro-duration-options button strong {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.pomodoro-duration-options button small {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.pomodoro-duration-options button.active {
+  color: #fff;
+  background: linear-gradient(135deg, #ff637f, #f33869);
+  border-color: #f34d72;
+  box-shadow: 0 10px 22px rgba(242, 67, 105, .2);
+}
+
+.pomodoro-duration-check {
+  position: absolute;
+  right: 7px;
+  bottom: 6px;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  color: #f24a70;
+  background: #fff;
+  border-radius: 999px;
+}
+
+.pomodoro-duration-options button:disabled {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
+.pomodoro-task-picker {
+  width: 100%;
+}
+
+.pomodoro-task-picker .select-control {
+  position: relative;
+}
+
+.pomodoro-task-icon {
+  position: absolute;
+  top: 50%;
+  left: 13px;
+  z-index: 1;
+  color: #f05275;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.pomodoro-task-picker select {
+  min-height: 42px;
+  padding: 7px 38px 7px 42px;
+  color: #243047;
+  background: rgba(255, 251, 252, .68);
+  border-color: #ecd9de;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.pomodoro-progress-field {
+  gap: 4px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, .4);
+  border-color: rgba(235, 213, 220, .94);
+  border-radius: 14px;
+}
+
+.pomodoro-progress-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 12px;
+}
+
+.pomodoro-progress-main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.pomodoro-progress-input-row {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+}
+
+.pomodoro-progress-input-row > div {
+  gap: 4px;
+  padding: 0 18px 0 4px;
+  border-right: 1px solid #ecdfe3;
+}
+
+.pomodoro-progress-input-row > div span {
+  color: #7c7480;
+  font-size: 12px;
+}
+
+.pomodoro-progress-input-row label {
+  min-height: 40px;
+  grid-template-columns: auto minmax(48px, 60px) auto;
+  gap: 6px;
+  padding: 0 0 0 24px;
+  color: #7c7480;
+  background: transparent;
+  border: 0;
+}
+
+.pomodoro-progress-input-row label:focus-within {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.pomodoro-progress-input-row input {
+  min-height: 36px;
+  padding: 0 8px;
+  color: #292431;
+  background: rgba(255, 255, 255, .84);
+  border: 1px solid #ead8df;
+  border-radius: 8px;
+  outline: 0;
+  font-size: 20px;
+  text-align: center;
+}
+
+.pomodoro-progress-input-row input:focus {
+  border-color: #d9c1ee;
+  box-shadow: 0 0 0 3px rgba(191, 151, 229, .12);
+}
+
+.pomodoro-progress-input-row input::placeholder {
+  color: #6f6971;
+  opacity: 1;
+}
+
+.pomodoro-progress-input-row label span:last-child {
+  color: #ed4168;
+  font-weight: 600;
+}
+
+.pomodoro-progress-message {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pomodoro-progress-overview {
+  --pomodoro-progress-angle: 0deg;
+  position: relative;
+  width: 96px;
+  height: 96px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  justify-self: end;
+  gap: 1px;
+  overflow: hidden;
+  color: #5c5660;
+  background: conic-gradient(#f15878 var(--pomodoro-progress-angle), #f0e8eb 0deg);
+  border-radius: 999px;
+}
+
+.pomodoro-progress-overview::before {
+  position: absolute;
+  inset: 6px;
+  content: "";
+  background: rgba(255, 252, 252, .96);
+  border-radius: inherit;
+}
+
+.pomodoro-progress-overview::after {
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 14px;
+  height: 5px;
+  content: "";
+  background: #f46a86;
+  border-radius: 999px;
+  transform: translateX(-50%);
+}
+
+.pomodoro-progress-overview span,
+.pomodoro-progress-overview strong,
+.pomodoro-progress-overview small {
+  position: relative;
+  z-index: 1;
+}
+
+.pomodoro-progress-overview span {
+  font-size: 11px;
+}
+
+.pomodoro-progress-overview strong {
+  color: #ef4c70;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.pomodoro-progress-overview small {
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.pomodoro-itemized-note {
+  color: #754c58;
+  background: #fff9f5;
+  border-color: #f0ddd2;
+}
+
+.pomodoro-itemized-note strong {
+  font-weight: 600;
+}
+
+.pomodoro-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(180px, 1fr);
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.pomodoro-start-button,
+.pomodoro-reset-button {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.pomodoro-start-button {
+  color: #fff;
+  background: linear-gradient(135deg, #ff637f, #f13868);
+  box-shadow: 0 12px 24px rgba(241, 61, 103, .2);
+  font-size: 16px;
+}
+
+.pomodoro-start-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: #d75470;
+  background: #fff;
+  border-radius: 999px;
+}
+
+.pomodoro-reset-button {
+  color: #ed4168;
+  background: rgba(255, 252, 252, .7);
+  border: 1px solid #f0c4cf;
+}
+
+.pomodoro-footer-actions {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  margin: 0 24px;
+  padding: 10px 0 13px;
+  background: transparent;
+  border-top: 1px solid rgba(235, 216, 222, .92);
+}
+
+.pomodoro-footer-actions::after {
+  position: absolute;
+  top: 13px;
+  bottom: 13px;
+  left: 50%;
+  width: 1px;
+  content: "";
+  background: #ecdee2;
+}
+
+.pomodoro-footer-actions button {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 5px 18px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.pomodoro-footer-actions button > span {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+}
+
+.pomodoro-footer-actions button strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pomodoro-footer-actions button small {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: .72;
+}
+
+.pomodoro-cancel-button {
+  color: #3c3844;
+  background: transparent;
+}
+
+.pomodoro-save-button {
+  color: #ed4168;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 .timer-modal-actions {
   width: 100%;
   display: grid;
@@ -2323,6 +2929,10 @@ input[type="number"]::-webkit-inner-spin-button {
     font-size: 13px;
   }
 
+  .pomodoro-progress-input-row {
+    grid-template-columns: 1fr;
+  }
+
   .timer-modal-box h3 {
     max-width: 78%;
     font-size: 19px;
@@ -2373,6 +2983,64 @@ input[type="number"]::-webkit-inner-spin-button {
   }
 
   .timer-footer-actions::before {
+    content: none;
+  }
+
+  .pomodoro-modal {
+    padding: 12px;
+  }
+
+  .pomodoro-modal-box {
+    width: 100%;
+    max-height: calc(100vh - 24px);
+    border-radius: 18px;
+  }
+
+  .pomodoro-modal .modal-close-button {
+    top: 12px;
+    right: 12px;
+  }
+
+  .pomodoro-hero {
+    min-height: 150px;
+    padding: 18px 42px 12px;
+  }
+
+  .pomodoro-display {
+    font-size: 42px;
+  }
+
+  .pomodoro-body {
+    padding: 10px 14px 14px;
+  }
+
+  .pomodoro-duration-options {
+    gap: 6px;
+  }
+
+  .pomodoro-duration-options button {
+    padding: 0 6px;
+  }
+
+  .pomodoro-progress-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .pomodoro-progress-overview {
+    justify-self: center;
+  }
+
+  .pomodoro-control-row,
+  .pomodoro-footer-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .pomodoro-footer-actions {
+    margin: 0 14px;
+    padding: 12px 0 14px;
+  }
+
+  .pomodoro-footer-actions::after {
     content: none;
   }
 }
@@ -2866,6 +3534,12 @@ nav button.active::after {
   margin-bottom: 20px;
 }
 
+.dashboard-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .dashboard-title h2,
 .dashboard-card > h2 {
   margin: 0 0 8px;
@@ -2900,6 +3574,60 @@ nav button.active::after {
   color: #fff;
   background: #377df3;
   box-shadow: 0 10px 20px rgba(55, 125, 243, .18);
+}
+
+.pomodoro-launch {
+  min-width: 154px;
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  color: #ed4168;
+  background: rgba(255, 250, 251, .78);
+  border: 1px solid #f34d72;
+  border-radius: 8px;
+  box-shadow: 0 8px 18px rgba(241, 61, 103, .09);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.pomodoro-launch:hover {
+  color: #df315b;
+  background: #fff3f6;
+  border-color: #e93a63;
+}
+
+.pomodoro-launch.is-running {
+  color: #258b59;
+  background: #f2fbf6;
+  border-color: #5dbb84;
+  box-shadow: 0 8px 18px rgba(37, 139, 89, .12);
+}
+
+.pomodoro-launch.is-running:hover {
+  color: #187447;
+  background: #eaf8f0;
+  border-color: #3da66b;
+}
+
+.pomodoro-launch.is-paused {
+  color: #bc6513;
+  background: #fffaf0;
+  border-color: #e5a14d;
+  box-shadow: 0 8px 18px rgba(201, 126, 34, .12);
+}
+
+.pomodoro-launch.is-paused:hover {
+  color: #a65308;
+  background: #fff5df;
+  border-color: #d78b2d;
+}
+
+.pomodoro-launch-icon {
+  font-size: 18px;
+  line-height: 1;
 }
 
 .phase-banner {
@@ -8863,6 +9591,17 @@ textarea:focus {
   .dashboard-title {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .dashboard-title-actions {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-title-actions button {
+    justify-content: center;
+    width: 100%;
   }
 
   .today-target-refresh {

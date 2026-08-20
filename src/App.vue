@@ -13,6 +13,7 @@ use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 const KEY = 'pte_progress_backup';
 const LEGACY_KEY = 'pte-study-planner-data';
 const TIMER_KEY = 'pte-study-planner-running-timer';
+const POMODORO_KEY = 'pte-study-planner-running-pomodoro';
 const APP_PASSWORD_KEY = 'pte_app_password';
 const DIRTY_KEY = 'pte_progress_dirty';
 const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
@@ -87,6 +88,8 @@ const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string
 type TrendRange = '7' | '30' | 'all';
 type StudyTypeTimeRange = 'week' | 'all';
 type TodayTargetDiffRow = { task: Task; current: number; latest: number };
+type PomodoroDurationSeconds = 5 | 1500 | 1800 | 2700;
+type PomodoroStage = 'focus' | 'break';
 
 interface RunningTimer {
   type: TimeLogType;
@@ -100,7 +103,40 @@ interface RunningTimer {
   paused: boolean;
 }
 
+interface RunningPomodoro {
+  taskId: string;
+  name: string;
+  date: string;
+  stage: PomodoroStage;
+  durationSeconds: PomodoroDurationSeconds;
+  focusCompletedAt?: number;
+  firstStartedAt?: number;
+  startedAt: number;
+  accumulatedSeconds: number;
+  paused: boolean;
+}
+
 type ReviewPlanRow = ReviewPlan & { dueDate: string; overdue: boolean };
+const pomodoroDurationOptions = [
+  { seconds: 5, value: 5, unit: '秒测试' },
+  { seconds: 1500, value: 25, unit: '分钟' },
+  { seconds: 1800, value: 30, unit: '分钟' },
+  { seconds: 2700, value: 45, unit: '分钟' },
+] as const satisfies readonly { seconds: PomodoroDurationSeconds; value: number; unit: string }[];
+const showPomodoroTestDuration = false;
+const visiblePomodoroDurationOptions = pomodoroDurationOptions.filter((option) => showPomodoroTestDuration || option.seconds !== 5);
+const POMODORO_SHORT_BREAK_SECONDS = 5 * 60;
+const POMODORO_LONG_BREAK_SECONDS = 10 * 60;
+
+function pomodoroBreakSeconds(durationSeconds: PomodoroDurationSeconds) {
+  if (durationSeconds === 5) return 5;
+  return durationSeconds === 1500 ? POMODORO_SHORT_BREAK_SECONDS : POMODORO_LONG_BREAK_SECONDS;
+}
+
+function pomodoroBreakDurationLabel(durationSeconds: PomodoroDurationSeconds) {
+  if (durationSeconds === 5) return '5 秒';
+  return `${pomodoroBreakSeconds(durationSeconds) / 60} 分钟`;
+}
 
 function normalizeData(source?: Partial<StudyData>): StudyData {
   const base = defaultData();
@@ -553,8 +589,9 @@ function loadRunningTimer(): RunningTimer | null {
   try {
     const raw = localStorage.getItem(TIMER_KEY);
     if (!raw) return null;
-    const timer = JSON.parse(raw) as Partial<RunningTimer>;
+    const timer = JSON.parse(raw) as Partial<RunningTimer> & { mode?: string };
     if (timer.type !== 'task' && timer.type !== 'review') return null;
+    if (timer.mode === 'pomodoro') return null;
     const startedAt = Number(timer.startedAt || Date.now());
     const accumulatedSeconds = Math.max(0, Math.floor(Number(timer.accumulatedSeconds || 0)));
     const paused = Boolean(timer.paused);
@@ -570,6 +607,49 @@ function loadRunningTimer(): RunningTimer | null {
       accumulatedSeconds,
       paused,
     };
+  } catch {
+    return null;
+  }
+}
+
+function loadRunningPomodoro(): RunningPomodoro | null {
+  try {
+    const stored = localStorage.getItem(POMODORO_KEY);
+    const legacy = stored ? null : localStorage.getItem(TIMER_KEY);
+    const raw = stored || legacy;
+    if (!raw) return null;
+    const source = JSON.parse(raw) as Partial<RunningPomodoro> & { durationMinutes?: number; mode?: string; plannedSeconds?: number };
+    if (!stored && source.mode !== 'pomodoro') return null;
+    if (!source.taskId) return null;
+    const requestedSeconds = Number(source.durationSeconds || source.plannedSeconds || Number(source.durationMinutes || 25) * 60);
+    const durationSeconds = pomodoroDurationOptions.some((option) => option.seconds === requestedSeconds)
+      ? requestedSeconds as PomodoroDurationSeconds
+      : 1500;
+    const stage: PomodoroStage = source.stage === 'break' ? 'break' : 'focus';
+    const plannedSeconds = stage === 'break' ? pomodoroBreakSeconds(durationSeconds) : durationSeconds;
+    const startedAt = Number(source.startedAt || Date.now());
+    const accumulatedSeconds = Math.min(plannedSeconds, Math.max(0, Math.floor(Number(source.accumulatedSeconds || 0))));
+    const paused = Boolean(source.paused);
+    const firstStartedAt = Number(source.firstStartedAt || ((accumulatedSeconds > 0 || !paused) ? startedAt : 0));
+    const pomodoro: RunningPomodoro = {
+      taskId: source.taskId,
+      name: source.name || '番茄钟',
+      date: source.date || todayIso(),
+      stage,
+      durationSeconds,
+      focusCompletedAt: Number(source.focusCompletedAt || 0) || undefined,
+      firstStartedAt: firstStartedAt || undefined,
+      startedAt,
+      accumulatedSeconds,
+      paused,
+    };
+    if (!stored || source.durationSeconds !== durationSeconds || source.stage !== stage) {
+      localStorage.setItem(POMODORO_KEY, JSON.stringify(pomodoro));
+    }
+    if (!stored) {
+      localStorage.removeItem(TIMER_KEY);
+    }
+    return pomodoro;
   } catch {
     return null;
   }
@@ -629,6 +709,7 @@ const restoreTaskId = ref('');
 const restorePhaseId = ref('');
 const showShelvedProgress = ref(false);
 const runningTimer = ref<RunningTimer | null>(loadRunningTimer());
+const runningPomodoro = ref<RunningPomodoro | null>(loadRunningPomodoro());
 const appPassword = ref(readStoredPassword());
 const passwordInput = ref('');
 const passwordError = ref('');
@@ -643,11 +724,14 @@ const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
-const showTimerModal = ref(Boolean(runningTimer.value));
+const showTimerModal = ref(false);
+const showPomodoroModal = ref(false);
 const timerEditHours = ref('');
 const timerEditMinutes = ref('');
 const timerEditSeconds = ref('');
 const timerEditDirty = ref(false);
+const pomodoroProgressInput = ref('');
+const pomodoroProgressError = ref('');
 const manualStudyExamType = ref('RS');
 const manualStudyHours = ref('');
 const manualStudyMinutes = ref('');
@@ -666,6 +750,9 @@ const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 const studyTypeChartEl = ref<HTMLDivElement | null>(null);
 let timerInterval: number | undefined;
+let pomodoroAudioContext: AudioContext | null = null;
+let pomodoroTitleFlashTimer: number | undefined;
+let pomodoroOriginalTitle = '';
 let reviewTrendChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
 let studyTypeChartInstance: ECharts | null = null;
@@ -737,6 +824,23 @@ const displayedAverageStudySeconds = computed(() => showPlanAverageStudyTime.val
   ? planAverageDailyStudySeconds.value
   : allAverageDailyStudySeconds.value);
 const runningTimerSeconds = computed(() => currentTimerSeconds());
+const pomodoroElapsedSeconds = computed(() => currentPomodoroSeconds());
+const pomodoroRemainingSeconds = computed(() => Math.max(0, pomodoroPlannedSeconds() - pomodoroElapsedSeconds.value));
+const pomodoroTask = computed(() => data.value.tasks.find((task) => task.id === runningPomodoro.value?.taskId));
+const pomodoroProgressPercent = computed(() => {
+  const task = pomodoroTask.value;
+  return task ? pct(taskQuestionProgress(task), task.target) : 0;
+});
+const pomodoroProgressPreview = computed(() => {
+  const task = pomodoroTask.value;
+  const raw = pomodoroProgressInput.value.trim();
+  if (!task || task.trackingMode !== 'count_only' || !raw) return '';
+  const endpoint = Number(raw);
+  const current = taskQuestionProgress(task);
+  if (!Number.isInteger(endpoint) || endpoint <= current || endpoint > task.target) return '';
+  const delta = endpoint - current;
+  return `将新增 ${delta} 题：今日进度 +${delta}，总进度更新为 ${task.completed + delta} / ${taskTotalTarget(task)}`;
+});
 const todayLogByTask = computed(() => {
   const result = todayLogs.value.reduce<Record<string, number>>((acc, log) => {
     acc[log.taskId] = (acc[log.taskId] || 0) + (log.count ?? log.amount ?? 0);
@@ -909,6 +1013,7 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => task.totalTarget > 0 && task.completed >= task.totalTarget));
 const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !(task.totalTarget > 0 && task.completed >= task.totalTarget)));
+const todayPomodoroTasks = computed(() => activeTodayTaskRows.value.filter((task) => task.target > 0));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
 const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
 const todayPercent = computed(() => pct(activeTodayLogTotal.value, todayTarget.value));
@@ -1602,6 +1707,7 @@ function disposeProgressCharts() {
 onMounted(() => {
   timerInterval = window.setInterval(() => {
     nowMs.value = Date.now();
+    finishPomodoroIfNeeded();
   }, 1000);
   window.addEventListener('resize', resizeProgressCharts);
   window.addEventListener('visibilitychange', handleVisibilityChange);
@@ -1615,6 +1721,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (timerInterval) window.clearInterval(timerInterval);
+  if (pomodoroAudioContext) void pomodoroAudioContext.close();
+  stopPomodoroTitleFlash();
   window.removeEventListener('resize', resizeProgressCharts);
   window.removeEventListener('visibilitychange', handleVisibilityChange);
   window.removeEventListener('pagehide', handlePageHide);
@@ -1852,6 +1960,9 @@ function tryImmediateCloudSave() {
 }
 
 function handleVisibilityChange() {
+  nowMs.value = Date.now();
+  finishPomodoroIfNeeded();
+  if (document.visibilityState === 'visible') stopPomodoroTitleFlash();
   if (document.visibilityState === 'hidden') tryImmediateCloudSave();
 }
 
@@ -1869,10 +1980,15 @@ function restartStudyPlan() {
   const fresh = defaultData();
   const phases = syncPhaseBoundaries(fresh.phases, fresh.settings);
   runningTimer.value = null;
+  runningPomodoro.value = null;
+  stopPomodoroTitleFlash();
   showTimerModal.value = false;
+  showPomodoroModal.value = false;
   clearTimerEditDraft();
+  clearPomodoroProgressDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
+  persistRunningPomodoro();
   selectedProgressPhaseId.value = phases[0]?.id || '';
   selectedNoteDate.value = todayIso();
   noteDraft.value = '';
@@ -1957,6 +2073,11 @@ function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '
     timerEditDirty.value = false;
     return;
   }
+  if (runningTimer.value && currentTimerSeconds() > 0) {
+    showTimerModal.value = true;
+    alert('请先保存或取消当前计时，再开始另一项任务。');
+    return;
+  }
   const timestamp = Date.now();
   nowMs.value = timestamp;
   runningTimer.value = {
@@ -2009,6 +2130,9 @@ function resetTimer() {
 
 function closeTimerModal() {
   showTimerModal.value = false;
+  if (runningTimer.value && !runningTimer.value.firstStartedAt) {
+    runningTimer.value = null;
+  }
   clearTimerEditDraft();
   timerEditDirty.value = false;
   persistRunningTimer();
@@ -2028,6 +2152,10 @@ function clearTimerEditDraft() {
   timerEditHours.value = '';
   timerEditMinutes.value = '';
   timerEditSeconds.value = '';
+}
+
+function taskQuestionProgress(task: Task) {
+  return task.repeatCount > 1 ? taskRoundCompleted(task) : Math.min(task.completed, task.target);
 }
 
 function durationParts(seconds: number) {
@@ -2130,6 +2258,402 @@ function saveRunningTimer() {
   const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
   saveLocal({
     ...data.value,
+    studyTimeEntries,
+    timeLogs: entriesToTimeLogs(studyTimeEntries),
+  });
+}
+
+function persistRunningPomodoro() {
+  if (runningPomodoro.value) localStorage.setItem(POMODORO_KEY, JSON.stringify(runningPomodoro.value));
+  else localStorage.removeItem(POMODORO_KEY);
+}
+
+function pomodoroPlannedSeconds() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return 1500;
+  return pomodoro.stage === 'break' ? pomodoroBreakSeconds(pomodoro.durationSeconds) : pomodoro.durationSeconds;
+}
+
+function rawPomodoroElapsedSeconds(pomodoro: RunningPomodoro) {
+  const liveSeconds = pomodoro.paused ? 0 : Math.floor((nowMs.value - pomodoro.startedAt) / 1000);
+  return Math.max(0, pomodoro.accumulatedSeconds + liveSeconds);
+}
+
+function currentPomodoroSeconds() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return 0;
+  return Math.min(pomodoroPlannedSeconds(), rawPomodoroElapsedSeconds(pomodoro));
+}
+
+function pomodoroDurationLabel(durationSeconds: PomodoroDurationSeconds) {
+  return durationSeconds < 60 ? `${durationSeconds} 秒` : `${durationSeconds / 60} 分钟`;
+}
+
+function preparePomodoroCompletionAlert() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    void Notification.requestPermission().catch(() => undefined);
+  }
+  try {
+    pomodoroAudioContext ||= new AudioContext();
+    if (pomodoroAudioContext.state === 'suspended') void pomodoroAudioContext.resume();
+  } catch {
+    pomodoroAudioContext = null;
+  }
+}
+
+function playPomodoroCompletionSound() {
+  try {
+    pomodoroAudioContext ||= new AudioContext();
+    const audioContext = pomodoroAudioContext;
+    void audioContext.resume().then(() => {
+      const firstBeepAt = audioContext.currentTime + .04;
+      [0, .72, 1.44].forEach((delay) => {
+        const startsAt = firstBeepAt + delay;
+        [1046.5, 2093].forEach((frequency, index) => {
+          const oscillator = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+          oscillator.type = index === 0 ? 'triangle' : 'sine';
+          oscillator.frequency.setValueAtTime(frequency, startsAt);
+          gain.gain.setValueAtTime(.0001, startsAt);
+          gain.gain.exponentialRampToValueAtTime(index === 0 ? .2 : .045, startsAt + .012);
+          gain.gain.exponentialRampToValueAtTime(.0001, startsAt + .48);
+          oscillator.connect(gain);
+          gain.connect(audioContext.destination);
+          oscillator.start(startsAt);
+          oscillator.stop(startsAt + .5);
+        });
+      });
+    }).catch(() => undefined);
+  } catch {
+    // The system notification still works when browser audio is unavailable.
+  }
+}
+
+function playPomodoroBreakCompletionSound() {
+  try {
+    pomodoroAudioContext ||= new AudioContext();
+    const audioContext = pomodoroAudioContext;
+    void audioContext.resume().then(() => {
+      const firstChimeAt = audioContext.currentTime + .04;
+      [
+        { delay: 0, frequency: 987.8 },
+        { delay: .32, frequency: 659.3 },
+        { delay: 1, frequency: 987.8 },
+        { delay: 1.32, frequency: 659.3 },
+      ].forEach(({ delay, frequency }) => {
+        const startsAt = firstChimeAt + delay;
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(frequency, startsAt);
+        gain.gain.setValueAtTime(.0001, startsAt);
+        gain.gain.exponentialRampToValueAtTime(.18, startsAt + .012);
+        gain.gain.exponentialRampToValueAtTime(.0001, startsAt + .42);
+        oscillator.connect(gain);
+        gain.connect(audioContext.destination);
+        oscillator.start(startsAt);
+        oscillator.stop(startsAt + .44);
+      });
+    }).catch(() => undefined);
+  } catch {
+    // The system notification still works when browser audio is unavailable.
+  }
+}
+
+function stopPomodoroTitleFlash() {
+  if (pomodoroTitleFlashTimer) window.clearInterval(pomodoroTitleFlashTimer);
+  pomodoroTitleFlashTimer = undefined;
+  if (pomodoroOriginalTitle) document.title = pomodoroOriginalTitle;
+  pomodoroOriginalTitle = '';
+}
+
+function startPomodoroTitleFlash(alertTitle = '🍅 番茄钟结束') {
+  stopPomodoroTitleFlash();
+  pomodoroOriginalTitle = document.title;
+  let showCompleteTitle = true;
+  const updateTitle = () => {
+    document.title = showCompleteTitle ? alertTitle : pomodoroOriginalTitle;
+    showCompleteTitle = !showCompleteTitle;
+  };
+  updateTitle();
+  pomodoroTitleFlashTimer = window.setInterval(updateTitle, 600);
+}
+
+function alertPomodoroComplete(pomodoro: RunningPomodoro) {
+  playPomodoroCompletionSound();
+  startPomodoroTitleFlash();
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    new Notification('🍅 番茄钟结束', {
+      body: `${pomodoro.name} · ${pomodoroDurationLabel(pomodoro.durationSeconds)}专注已完成，${pomodoroBreakDurationLabel(pomodoro.durationSeconds)}休息已自动开始。`,
+      tag: 'pomodoro-complete',
+      silent: true,
+    });
+  } catch {
+    // Some browsers expose Notification but do not allow constructing one here.
+  }
+}
+
+function alertPomodoroBreakComplete(pomodoro: RunningPomodoro) {
+  playPomodoroBreakCompletionSound();
+  startPomodoroTitleFlash('☕ 休息结束');
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    new Notification('☕ 休息结束', {
+      body: `${pomodoroBreakDurationLabel(pomodoro.durationSeconds)}休息已结束，准备好后手动开始下一轮番茄钟。`,
+      tag: 'pomodoro-break-complete',
+      silent: true,
+    });
+  } catch {
+    // Some browsers expose Notification but do not allow constructing one here.
+  }
+}
+
+function finishPomodoroIfNeeded() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro || pomodoro.paused) return;
+  const breakSeconds = pomodoroBreakSeconds(pomodoro.durationSeconds);
+  const plannedSeconds = pomodoro.stage === 'break' ? breakSeconds : pomodoro.durationSeconds;
+  const elapsedSeconds = rawPomodoroElapsedSeconds(pomodoro);
+  if (elapsedSeconds < plannedSeconds) return;
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  if (pomodoro.stage === 'focus') {
+    const breakElapsedSeconds = Math.max(0, elapsedSeconds - pomodoro.durationSeconds);
+    const breakComplete = breakElapsedSeconds >= breakSeconds;
+    runningPomodoro.value = {
+      ...pomodoro,
+      stage: 'break',
+      focusCompletedAt: timestamp - breakElapsedSeconds * 1000,
+      accumulatedSeconds: Math.min(breakSeconds, breakElapsedSeconds),
+      startedAt: timestamp,
+      paused: breakComplete,
+    };
+    persistRunningPomodoro();
+    if (breakComplete) alertPomodoroBreakComplete(pomodoro);
+    else alertPomodoroComplete(pomodoro);
+    return;
+  }
+  runningPomodoro.value = {
+    ...pomodoro,
+    accumulatedSeconds: breakSeconds,
+    startedAt: timestamp,
+    paused: true,
+  };
+  persistRunningPomodoro();
+  alertPomodoroBreakComplete(pomodoro);
+}
+
+function isPomodoroComplete() {
+  const pomodoro = runningPomodoro.value;
+  return Boolean(pomodoro && currentPomodoroSeconds() >= pomodoroPlannedSeconds());
+}
+
+function pomodoroActionLabel() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return '开始专注';
+  if (pomodoro.stage === 'break') {
+    if (isPomodoroComplete()) return '休息已结束';
+    return pomodoro.paused ? '继续休息' : '暂停休息';
+  }
+  if (isPomodoroComplete()) return '本轮已完成';
+  if (!pomodoro.paused) return '暂停番茄钟';
+  return currentPomodoroSeconds() > 0 ? '继续专注' : '开始专注';
+}
+
+function pomodoroLaunchLabel() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro?.firstStartedAt) return '开始番茄钟';
+  const remaining = formatTimerDisplay(pomodoroRemainingSeconds.value);
+  if (pomodoro.stage === 'break') {
+    if (isPomodoroComplete()) return '休息已结束';
+    return pomodoro.paused ? `休息暂停 · ${remaining}` : `休息中 · ${remaining}`;
+  }
+  if (isPomodoroComplete()) return '番茄钟已完成';
+  return pomodoro.paused ? `已暂停 · ${remaining}` : remaining;
+}
+
+function pomodoroStatusMessage() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return '';
+  if (pomodoro.stage === 'break') {
+    if (isPomodoroComplete()) return '休息已结束，保存本轮后可手动开始下一轮。';
+    if (pomodoro.paused) return '休息已暂停，可以随时继续。';
+    return `休息一下，${pomodoroBreakDurationLabel(pomodoro.durationSeconds)}后提醒你。`;
+  }
+  if (isPomodoroComplete()) return '本轮专注已完成，可以填写进度后保存。';
+  if (pomodoro.firstStartedAt && pomodoro.paused) return '番茄钟已暂停，可以随时继续。';
+  return '专注当下，高效完成每一题';
+}
+
+function openPomodoro() {
+  stopPomodoroTitleFlash();
+  if (runningPomodoro.value) {
+    nowMs.value = Date.now();
+    showPomodoroModal.value = true;
+    return;
+  }
+  const task = todayPomodoroTasks.value[0];
+  if (!task) {
+    alert('今天还没有可选择的任务，请先在计划设置中添加任务。');
+    return;
+  }
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  runningPomodoro.value = {
+    taskId: task.id,
+    name: taskDisplayName(task),
+    date: todayIso(),
+    stage: 'focus',
+    durationSeconds: 1500,
+    startedAt: timestamp,
+    accumulatedSeconds: 0,
+    paused: true,
+  };
+  showPomodoroModal.value = true;
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
+}
+
+function setPomodoroDuration(durationSeconds: PomodoroDurationSeconds) {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro || pomodoro.firstStartedAt) return;
+  runningPomodoro.value = { ...pomodoro, durationSeconds };
+  persistRunningPomodoro();
+}
+
+function changePomodoroTask(taskId: string) {
+  const pomodoro = runningPomodoro.value;
+  const task = todayPomodoroTasks.value.find((item) => item.id === taskId);
+  if (!pomodoro || pomodoro.firstStartedAt || !task) return;
+  runningPomodoro.value = { ...pomodoro, taskId: task.id, name: taskDisplayName(task) };
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
+}
+
+function togglePomodoro() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro || isPomodoroComplete()) return;
+  const seconds = currentPomodoroSeconds();
+  const timestamp = Date.now();
+  const nextPaused = !pomodoro.paused;
+  if (!nextPaused) preparePomodoroCompletionAlert();
+  nowMs.value = timestamp;
+  runningPomodoro.value = {
+    ...pomodoro,
+    firstStartedAt: pomodoro.firstStartedAt || (nextPaused ? pomodoro.startedAt : timestamp),
+    accumulatedSeconds: seconds,
+    startedAt: timestamp,
+    paused: nextPaused,
+  };
+  persistRunningPomodoro();
+}
+
+function resetPomodoro() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return;
+  stopPomodoroTitleFlash();
+  const timestamp = Date.now();
+  nowMs.value = timestamp;
+  runningPomodoro.value = {
+    ...pomodoro,
+    stage: 'focus',
+    focusCompletedAt: undefined,
+    firstStartedAt: undefined,
+    accumulatedSeconds: 0,
+    startedAt: timestamp,
+    paused: true,
+  };
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
+}
+
+function closePomodoroModal() {
+  showPomodoroModal.value = false;
+  if (runningPomodoro.value && !runningPomodoro.value.firstStartedAt) {
+    runningPomodoro.value = null;
+    clearPomodoroProgressDraft();
+  }
+  persistRunningPomodoro();
+}
+
+function cancelPomodoro() {
+  if (!runningPomodoro.value) return;
+  if (runningPomodoro.value.firstStartedAt && !window.confirm('确定取消本次番茄钟吗？不会保存专注时长和进度。')) return;
+  stopPomodoroTitleFlash();
+  runningPomodoro.value = null;
+  showPomodoroModal.value = false;
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
+}
+
+function clearPomodoroProgressDraft() {
+  pomodoroProgressInput.value = '';
+  pomodoroProgressError.value = '';
+}
+
+function updatePomodoroProgressInput(value: string) {
+  pomodoroProgressInput.value = value;
+  pomodoroProgressError.value = '';
+}
+
+function savePomodoro() {
+  const pomodoro = runningPomodoro.value;
+  if (!pomodoro) return;
+  const task = data.value.tasks.find((item) => item.id === pomodoro.taskId);
+  let progressDelta = 0;
+  if (task?.trackingMode === 'count_only' && pomodoroProgressInput.value.trim()) {
+    const endpoint = Number(pomodoroProgressInput.value);
+    const currentQuestion = taskQuestionProgress(task);
+    if (!Number.isInteger(endpoint) || endpoint < currentQuestion || endpoint > task.target) {
+      pomodoroProgressError.value = `请输入 ${currentQuestion} 到 ${task.target} 之间的整数；如需回退请使用“修正总进度”。`;
+      return;
+    }
+    progressDelta = endpoint - currentQuestion;
+  }
+
+  const saveTimestamp = Date.now();
+  stopPomodoroTitleFlash();
+  nowMs.value = saveTimestamp;
+  const durationSeconds = pomodoro.stage === 'break' ? pomodoro.durationSeconds : currentPomodoroSeconds();
+  const endAt = new Date(pomodoro.focusCompletedAt || saveTimestamp).toISOString();
+  const startAt = pomodoro.firstStartedAt
+    ? new Date(pomodoro.firstStartedAt).toISOString()
+    : inferStartAt(endAt, durationSeconds);
+  runningPomodoro.value = null;
+  showPomodoroModal.value = false;
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
+  if (durationSeconds <= 0 && progressDelta <= 0) return;
+
+  const progressDate = todayIso();
+  const nextTasks = progressDelta > 0 && task
+    ? data.value.tasks.map((item) => item.id === task.id ? { ...item, completed: Math.min(taskTotalTarget(item), item.completed + progressDelta) } : item)
+    : data.value.tasks;
+  const nextDailyLogs = progressDelta > 0 && task
+    ? { ...data.value.dailyLogs, [progressDate]: [...(data.value.dailyLogs[progressDate] || []), { taskId: task.id, count: progressDelta }] }
+    : data.value.dailyLogs;
+  const studyTimeEntries = durationSeconds > 0
+    ? [...studyTimeEntriesFromData(data.value), {
+      id: crypto.randomUUID(),
+      date: pomodoro.date || todayIso(),
+      taskId: pomodoro.taskId,
+      reviewPlanId: '',
+      taskName: pomodoro.name,
+      examType: task ? taskInitials(task.name) : examTypeFromName(pomodoro.name),
+      durationSeconds,
+      timeType: 'main' as const,
+      source: 'timer' as const,
+      note: `番茄钟 · ${pomodoroDurationLabel(pomodoro.durationSeconds)}`,
+      startAt,
+      endAt,
+      createdAt: endAt,
+    }]
+    : studyTimeEntriesFromData(data.value);
+  saveLocal({
+    ...data.value,
+    tasks: nextTasks,
+    dailyLogs: nextDailyLogs,
     studyTimeEntries,
     timeLogs: entriesToTimeLogs(studyTimeEntries),
   });
@@ -4094,7 +4618,21 @@ function taskLastStudyDate(task: Task) {
             <h2>今日任务</h2>
             <p>{{ todayIso() }}，当前阶段按剩余任务量动态均摊</p>
           </div>
-          <button class="primary-action" type="button" @click="tab = 'settings'">更新完成进度</button>
+          <div class="dashboard-title-actions">
+            <button
+              class="pomodoro-launch"
+              :class="{
+                'is-running': Boolean(runningPomodoro?.firstStartedAt && !runningPomodoro.paused && !isPomodoroComplete()),
+                'is-paused': Boolean(runningPomodoro?.firstStartedAt && runningPomodoro.paused && !isPomodoroComplete())
+              }"
+              type="button"
+              @click="openPomodoro"
+            >
+              <span class="pomodoro-launch-icon" aria-hidden="true">🍅</span>
+              {{ pomodoroLaunchLabel() }}
+            </button>
+            <button class="primary-action" type="button" @click="tab = 'settings'">更新完成进度</button>
+          </div>
         </div>
 
         <div v-if="activePhaseProgress" class="phase-banner">
@@ -5337,7 +5875,7 @@ function taskLastStudyDate(task: Task) {
 
     <div v-if="showTimerModal && runningTimer" class="modal timer-modal">
       <section class="modal-box timer-modal-box">
-        <button class="modal-close-button" type="button" title="关闭弹窗，保留当前计时" @click="closeTimerModal">
+        <button class="modal-close-button" type="button" title="关闭计时弹窗" @click="closeTimerModal">
           <X :size="30" stroke-width="3" aria-hidden="true" />
         </button>
         <div class="timer-hero">
@@ -5427,6 +5965,120 @@ function taskLastStudyDate(task: Task) {
               <span>保存时长</span>
             </span>
             <small>保存当前时长记录</small>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="showPomodoroModal && runningPomodoro" class="modal pomodoro-modal">
+      <section class="modal-box pomodoro-modal-box">
+        <button class="modal-close-button" type="button" title="关闭番茄钟弹窗" @click="closePomodoroModal">
+          <X :size="28" stroke-width="3" aria-hidden="true" />
+        </button>
+        <div class="pomodoro-hero">
+          <span class="pomodoro-type"><Clock :size="18" stroke-width="2.6" aria-hidden="true" />{{ runningPomodoro.stage === 'break' ? '休息时间' : '独立番茄钟' }}</span>
+          <h3>{{ runningPomodoro.name }}</h3>
+          <strong class="pomodoro-display" :class="{ 'is-complete': isPomodoroComplete() }">{{ formatTimerDisplay(pomodoroRemainingSeconds) }}</strong>
+          <p>{{ pomodoroStatusMessage() }}</p>
+        </div>
+
+        <div class="pomodoro-body">
+          <section class="pomodoro-setting-block">
+            <div class="pomodoro-setting-heading">
+              <span class="pomodoro-setting-title">专注时长</span>
+              <span class="pomodoro-duration-design-label" aria-hidden="true"><Clock :size="15" stroke-width="2.5" />自定义时长</span>
+            </div>
+            <div class="pomodoro-duration-options">
+              <button
+                v-for="option in visiblePomodoroDurationOptions"
+                :key="option.seconds"
+                type="button"
+                :class="{ active: runningPomodoro.durationSeconds === option.seconds }"
+                :disabled="Boolean(runningPomodoro.firstStartedAt)"
+                @click="setPomodoroDuration(option.seconds)"
+              >
+                <strong>{{ option.value }}</strong>
+                <small>{{ option.unit }}</small>
+                <span v-if="runningPomodoro.durationSeconds === option.seconds" class="pomodoro-duration-check"><Check :size="12" stroke-width="3.2" aria-hidden="true" /></span>
+              </button>
+            </div>
+          </section>
+
+          <label class="pomodoro-setting-block pomodoro-task-picker">
+            <span class="pomodoro-setting-title">今天专注的任务</span>
+            <span class="select-control">
+              <Save class="pomodoro-task-icon" :size="17" stroke-width="2.4" aria-hidden="true" />
+              <select :value="runningPomodoro.taskId" :disabled="Boolean(runningPomodoro.firstStartedAt)" @change="changePomodoroTask(($event.target as HTMLSelectElement).value)">
+                <option v-for="task in todayPomodoroTasks" :key="task.id" :value="task.id">
+                  {{ task.platform }} · {{ taskDisplayName(task) }}（{{ task.repeatCount > 1 ? task.roundCompleted : task.completed }}/{{ task.target }}）
+                </option>
+              </select>
+              <ChevronDown class="select-control-icon" :size="16" stroke-width="2.5" aria-hidden="true" />
+            </span>
+          </label>
+
+          <section v-if="pomodoroTask?.trackingMode === 'count_only'" class="pomodoro-setting-block pomodoro-progress-field">
+            <span class="pomodoro-setting-title">本次进度（可不填）</span>
+            <div class="pomodoro-progress-layout">
+              <div class="pomodoro-progress-main">
+                <div class="pomodoro-progress-input-row">
+                  <div>
+                    <span>当前这一遍</span>
+                    <strong>{{ taskQuestionProgress(pomodoroTask) }} / {{ pomodoroTask.target }}</strong>
+                  </div>
+                  <label>
+                    <span>学到第</span>
+                    <input
+                      type="number"
+                      inputmode="numeric"
+                      :min="taskQuestionProgress(pomodoroTask)"
+                      :max="pomodoroTask.target"
+                      :placeholder="String(taskQuestionProgress(pomodoroTask))"
+                      :value="pomodoroProgressInput"
+                      @input="updatePomodoroProgressInput(($event.target as HTMLInputElement).value)"
+                    >
+                    <span>题</span>
+                  </label>
+                </div>
+                <p v-if="pomodoroProgressError" class="pomodoro-progress-message error">{{ pomodoroProgressError }}</p>
+                <p v-else-if="pomodoroProgressPreview" class="pomodoro-progress-message">{{ pomodoroProgressPreview }}</p>
+                <p v-else class="pomodoro-progress-message muted">留空只保存番茄时长；填写后自动更新今日和总进度。</p>
+              </div>
+              <div class="pomodoro-progress-overview" :style="{ '--pomodoro-progress-angle': `${pomodoroProgressPercent * 3.6}deg` }">
+                <span>今日进度</span>
+                <strong>{{ pomodoroProgressPercent }}%</strong>
+                <small>全题库 {{ taskQuestionProgress(pomodoroTask) }}/{{ pomodoroTask.target }}</small>
+              </div>
+            </div>
+          </section>
+          <section v-else-if="pomodoroTask" class="pomodoro-setting-block pomodoro-itemized-note">
+            <strong>该任务按篇目记录</strong>
+            <p>可以保存番茄时长；完成篇目请回到今日任务中勾选。</p>
+          </section>
+
+          <div class="pomodoro-control-row">
+            <button class="pomodoro-start-button" type="button" :disabled="isPomodoroComplete()" @click="togglePomodoro">
+              <span class="pomodoro-start-icon">
+                <Pause v-if="!runningPomodoro.paused" :size="23" fill="currentColor" stroke-width="0" aria-hidden="true" />
+                <Play v-else :size="23" fill="currentColor" stroke-width="0" aria-hidden="true" />
+              </span>
+              {{ pomodoroActionLabel() }}
+            </button>
+            <button class="pomodoro-reset-button" type="button" @click="resetPomodoro">
+              <RotateCcw :size="21" stroke-width="2.5" aria-hidden="true" />
+              重置番茄钟
+            </button>
+          </div>
+        </div>
+
+        <div class="pomodoro-footer-actions">
+          <button class="pomodoro-cancel-button" type="button" @click="cancelPomodoro">
+            <Trash2 :size="21" stroke-width="2.4" aria-hidden="true" />
+            <span><strong>取消番茄钟</strong><small>不保存本次记录</small></span>
+          </button>
+          <button class="pomodoro-save-button" type="button" @click="savePomodoro">
+            <Save :size="22" stroke-width="2.4" aria-hidden="true" />
+            <span><strong>保存番茄钟</strong><small>{{ pomodoroTask?.trackingMode === 'count_only' ? '保存时长和可选进度' : '保存本次专注时长' }}</small></span>
           </button>
         </div>
       </section>
