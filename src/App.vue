@@ -5601,22 +5601,33 @@ function taskLastStudyDate(task: Task) {
                 <button class="icon-button" type="button" @click="deleteTask(task.id)">删除</button>
               </div>
             </div>
-            <div v-for="task in group.tasks.filter((item) => item.trackingMode === 'itemized')" :key="`${task.id}-items`" class="subitem-manager">
-              <div class="subitem-toolbar">
-                <strong>{{ task.name }} 子项目</strong>
-                <button class="purple-soft-button" type="button" @click="addSubItem(task.id)">+ 新增子项目</button>
-                <button type="button" @click="openImportModal(task.id)">批量导入</button>
-                <button type="button" @click="copySubItems(task)">复制全部</button>
-                <button class="danger-light" type="button" @click="deleteAllSubItems(task)">批量删除</button>
-              </div>
-              <div class="subitem-grid">
-                <div v-for="item in task.subItems" :key="item.id" class="subitem-row">
-                  <input :value="item.title" @input="updateSubItem(task.id, item.id, { title: ($event.target as HTMLInputElement).value })">
-                  <button type="button" @click="deleteSubItem(task.id, item.id)">删除</button>
+            <details v-for="task in group.tasks.filter((item) => item.trackingMode === 'itemized')" :key="`${task.id}-items`" class="subitem-manager">
+              <summary class="subitem-manager-summary">
+                <span class="subitem-summary-title">
+                  <strong>{{ task.name }} 子项目</strong>
+                  <small>{{ task.subItems.length }} 个子项目</small>
+                </span>
+                <span class="subitem-summary-action">
+                  编辑子项目
+                  <ChevronDown :size="18" stroke-width="2.5" aria-hidden="true" />
+                </span>
+              </summary>
+              <div class="subitem-manager-content">
+                <div class="subitem-toolbar">
+                  <button class="purple-soft-button" type="button" @click="addSubItem(task.id)">+ 新增子项目</button>
+                  <button type="button" @click="openImportModal(task.id)">批量导入</button>
+                  <button type="button" @click="copySubItems(task)">复制全部</button>
+                  <button class="danger-light" type="button" @click="deleteAllSubItems(task)">批量删除</button>
                 </div>
+                <div class="subitem-grid">
+                  <div v-for="item in task.subItems" :key="item.id" class="subitem-row">
+                    <input :value="item.title" @input="updateSubItem(task.id, item.id, { title: ($event.target as HTMLInputElement).value })">
+                    <button type="button" @click="deleteSubItem(task.id, item.id)">删除</button>
+                  </div>
+                </div>
+                <p v-if="task.subItems.length === 0" class="muted">还没有子项目，可以新增或批量生成。</p>
               </div>
-              <p v-if="task.subItems.length === 0" class="muted">还没有子项目，可以新增或批量生成。</p>
-            </div>
+            </details>
             <p v-if="group.tasks.length === 0" class="muted">这个阶段还没有任务。新增任务后会只记录每日完成进度，不保存题库内容。</p>
           </div>
         </div>

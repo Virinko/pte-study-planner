@@ -5280,30 +5280,46 @@ nav button.active::after {
 
 .subitem-manager {
   margin: 18px 14px;
-  padding: 18px 20px;
+  overflow: hidden;
   background: #ffffff;
   border: 1px solid #e1e6f0;
   border-radius: 10px;
 }
 
-.subitem-toolbar {
+.subitem-manager-summary {
   display: grid;
-  grid-template-columns: 1fr repeat(4, auto);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #e7eaf2;
+  min-height: 58px;
+  padding: 12px 18px;
+  list-style: none;
+  cursor: pointer;
 }
 
-.subitem-toolbar strong {
+.subitem-manager-summary::-webkit-details-marker {
+  display: none;
+}
+
+.subitem-manager-summary:hover {
+  background: #fbfcff;
+}
+
+.subitem-summary-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.subitem-summary-title strong {
   position: relative;
   padding-left: 14px;
   color: #172033;
   font-size: 16px;
 }
 
-.subitem-toolbar strong::before {
+.subitem-summary-title strong::before {
   position: absolute;
   top: 3px;
   bottom: 3px;
@@ -5312,6 +5328,45 @@ nav button.active::after {
   content: "";
   background: #7657ff;
   border-radius: 999px;
+}
+
+.subitem-summary-title small {
+  padding: 3px 8px;
+  color: #69758b;
+  background: #f3f6fb;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.subitem-summary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #5c6474;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.subitem-summary-action svg {
+  transition: transform .2s ease;
+}
+
+.subitem-manager[open] .subitem-summary-action svg {
+  transform: rotate(180deg);
+}
+
+.subitem-manager-content {
+  padding: 0 20px 18px;
+}
+
+.subitem-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e7eaf2;
 }
 
 .subitem-grid {
