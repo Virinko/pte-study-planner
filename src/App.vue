@@ -110,6 +110,7 @@ interface RunningPomodoro {
   stage: PomodoroStage;
   durationSeconds: PomodoroDurationSeconds;
   focusCompletedAt?: number;
+  focusSaved: boolean;
   firstStartedAt?: number;
   startedAt: number;
   accumulatedSeconds: number;
@@ -638,12 +639,13 @@ function loadRunningPomodoro(): RunningPomodoro | null {
       stage,
       durationSeconds,
       focusCompletedAt: Number(source.focusCompletedAt || 0) || undefined,
+      focusSaved: Boolean(source.focusSaved),
       firstStartedAt: firstStartedAt || undefined,
       startedAt,
       accumulatedSeconds,
       paused,
     };
-    if (!stored || source.durationSeconds !== durationSeconds || source.stage !== stage) {
+    if (!stored || source.durationSeconds !== durationSeconds || source.stage !== stage || source.focusSaved === undefined) {
       localStorage.setItem(POMODORO_KEY, JSON.stringify(pomodoro));
     }
     if (!stored) {
@@ -2425,6 +2427,7 @@ function finishPomodoroIfNeeded() {
       ...pomodoro,
       stage: 'break',
       focusCompletedAt: timestamp - breakElapsedSeconds * 1000,
+      focusSaved: false,
       accumulatedSeconds: Math.min(breakSeconds, breakElapsedSeconds),
       startedAt: timestamp,
       paused: breakComplete,
@@ -2506,6 +2509,7 @@ function openPomodoro() {
     date: todayIso(),
     stage: 'focus',
     durationSeconds: 1500,
+    focusSaved: false,
     startedAt: timestamp,
     accumulatedSeconds: 0,
     paused: true,
@@ -2559,6 +2563,7 @@ function resetPomodoro() {
     ...pomodoro,
     stage: 'focus',
     focusCompletedAt: undefined,
+    focusSaved: false,
     firstStartedAt: undefined,
     accumulatedSeconds: 0,
     startedAt: timestamp,
@@ -2579,7 +2584,10 @@ function closePomodoroModal() {
 
 function cancelPomodoro() {
   if (!runningPomodoro.value) return;
-  if (runningPomodoro.value.firstStartedAt && !window.confirm('确定取消本次番茄钟吗？不会保存专注时长和进度。')) return;
+  const confirmMessage = runningPomodoro.value.focusSaved
+    ? '确定结束当前休息吗？已保存的专注记录不会受影响。'
+    : '确定取消本次番茄钟吗？不会保存专注时长和进度。';
+  if (runningPomodoro.value.firstStartedAt && !window.confirm(confirmMessage)) return;
   stopPomodoroTitleFlash();
   runningPomodoro.value = null;
   showPomodoroModal.value = false;
@@ -2615,16 +2623,18 @@ function savePomodoro() {
   const saveTimestamp = Date.now();
   stopPomodoroTitleFlash();
   nowMs.value = saveTimestamp;
+  const keepBreakRunning = pomodoro.stage === 'break' && !isPomodoroComplete();
   const durationSeconds = pomodoro.stage === 'break' ? pomodoro.durationSeconds : currentPomodoroSeconds();
+  const saveFocusTime = durationSeconds > 0 && !pomodoro.focusSaved;
   const endAt = new Date(pomodoro.focusCompletedAt || saveTimestamp).toISOString();
   const startAt = pomodoro.firstStartedAt
     ? new Date(pomodoro.firstStartedAt).toISOString()
     : inferStartAt(endAt, durationSeconds);
-  runningPomodoro.value = null;
+  runningPomodoro.value = keepBreakRunning ? { ...pomodoro, focusSaved: true } : null;
   showPomodoroModal.value = false;
   clearPomodoroProgressDraft();
   persistRunningPomodoro();
-  if (durationSeconds <= 0 && progressDelta <= 0) return;
+  if (!saveFocusTime && progressDelta <= 0) return;
 
   const progressDate = todayIso();
   const nextTasks = progressDelta > 0 && task
@@ -2633,7 +2643,7 @@ function savePomodoro() {
   const nextDailyLogs = progressDelta > 0 && task
     ? { ...data.value.dailyLogs, [progressDate]: [...(data.value.dailyLogs[progressDate] || []), { taskId: task.id, count: progressDelta }] }
     : data.value.dailyLogs;
-  const studyTimeEntries = durationSeconds > 0
+  const studyTimeEntries = saveFocusTime
     ? [...studyTimeEntriesFromData(data.value), {
       id: crypto.randomUUID(),
       date: pomodoro.date || todayIso(),
@@ -6078,7 +6088,10 @@ function taskLastStudyDate(task: Task) {
           </button>
           <button class="pomodoro-save-button" type="button" @click="savePomodoro">
             <Save :size="22" stroke-width="2.4" aria-hidden="true" />
-            <span><strong>保存番茄钟</strong><small>{{ pomodoroTask?.trackingMode === 'count_only' ? '保存时长和可选进度' : '保存本次专注时长' }}</small></span>
+            <span>
+              <strong>{{ runningPomodoro.focusSaved ? '关闭弹窗' : '保存番茄钟' }}</strong>
+              <small>{{ runningPomodoro.focusSaved ? '专注已保存，休息继续计时' : pomodoroTask?.trackingMode === 'count_only' ? '保存时长和可选进度' : '保存本次专注时长' }}</small>
+            </span>
           </button>
         </div>
       </section>
