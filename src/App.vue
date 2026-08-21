@@ -696,6 +696,7 @@ const answerPlatformFilter = ref<'全部' | PracticePlatform>('全部');
 const answerManualSortMode = ref(false);
 const draggingAnswerId = ref('');
 const exportAnswerType = ref('DI');
+const isExportingAnswersPdf = ref(false);
 const importTaskId = ref('');
 const importText = ref('');
 const correctionTaskId = ref('');
@@ -4176,21 +4177,26 @@ function answerPrintHtml(value: string) {
     .join('');
 }
 
-function exportAnswersToPdf() {
+function answerPdfFilename(title: string) {
+  const safeTitle = title
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  return `${safeTitle || 'PTE 答案'}.pdf`;
+}
+
+async function exportAnswersToPdf() {
   const entries = exportAnswerRows.value;
   if (!entries.length) {
     alert(`还没有 ${exportAnswerType.value} 题型的答案可导出。`);
     return;
   }
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('浏览器拦截了打印窗口，请允许弹窗后重试。');
-    return;
-  }
+  if (isExportingAnswersPdf.value) return;
+
   const exportTitle = `${exportAnswerType.value} 答案`;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const content = entries.map((entry, index) => `
-    <article class="answer">
+    <article class="answer-pdf-answer">
       <div class="answer-head">
         <div class="answer-tags"><span class="type-tag">${escapePrintHtml(entry.examType)}</span>${entry.platformRefs.map((ref) => `<span class="platform-tag">${escapePrintHtml(ref.platform)} #${escapePrintHtml(ref.questionNumber)}</span>`).join('')}</div>
         <span class="number">${String(index + 1).padStart(2, '0')}</span>
@@ -4198,46 +4204,72 @@ function exportAnswersToPdf() {
       <h2>${escapePrintHtml(entry.title)}</h2>
       <div class="body">${answerPrintHtml(entry.answer)}</div>
     </article>`).join('');
-  printWindow.document.write(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapePrintHtml(exportTitle)}</title><style>
-    @page { size: A4; margin: 14mm 15mm; }
-    * { box-sizing: border-box; }
-    body { margin: 0; color: #17233c; background: #fff; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .document { max-width: 100%; }
-    .cover { position: relative; display: grid; gap: 13px; min-height: 158px; padding: 20px 25px 19px; overflow: hidden; background: linear-gradient(112deg, #fbfdff 0%, #f6f8ff 54%, #f0efff 100%); border: 1px solid #d9e2ff; border-radius: 15px; break-inside: avoid; }
-    .cover::before { position: absolute; top: 25px; right: 56px; width: 85px; height: 75px; content: ""; background-image: radial-gradient(circle, #b8c7ff 1.6px, transparent 1.8px); background-size: 12px 12px; opacity: .62; }
-    .cover::after { position: absolute; right: -30px; bottom: -55px; width: 190px; height: 190px; content: ""; border: 1px solid #cbd4ff; border-radius: 50%; box-shadow: 0 0 0 36px rgba(206, 213, 255, .37), 0 0 0 72px rgba(226, 229, 255, .42); }
-    .cover-brand, h1, .cover-rule, .cover-meta { position: relative; z-index: 1; }
-    .cover-brand { display: flex; align-items: center; gap: 9px; color: #4d66bc; font-size: 11px; font-weight: 800; letter-spacing: .1em; }
-    .brand-mark, .meta-icon { display: grid; place-items: center; flex: 0 0 auto; color: #5472db; background: linear-gradient(145deg, #dff1ff, #d8ddff); border-radius: 8px; }
-    .brand-mark { width: 25px; height: 25px; box-shadow: 0 5px 10px rgba(85, 111, 210, .18); }
-    .brand-mark svg { width: 15px; height: 15px; }
-    h1 { margin: 5px 0 0; color: #192c59; font-size: 34px; line-height: 1.1; letter-spacing: .01em; }
-    .cover-rule { width: min(74%, 540px); height: 1px; margin-top: 3px; background: #dce4f4; }
-    .cover-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0; color: #4e5f84; font-size: 10.5px; }
-    .cover-meta span { display: inline-flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 16px; border-right: 1px solid #dbe2f1; }
-    .cover-meta span:first-child { padding-left: 0; }
-    .cover-meta span:last-child { border-right: 0; }
-    .meta-icon { width: 22px; height: 22px; }
-    .meta-icon svg { width: 13px; height: 13px; }
-    .answers { margin-top: 15px; }
-    .answer { position: relative; margin-bottom: 12px; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; }
-    .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .answer-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-    .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
-    .type-tag { color: #fff; background: #496fe1; }
-    .platform-tag { color: #375081; background: #e7eefc; }
-    .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
-    h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
-    .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
-    .body p { margin: 0; break-inside: avoid; }
-    .body-gap { min-height: 1.65em; }
-    .document-footer { margin-top: 14px; color: #8a96ab; font-size: 9px; text-align: center; }
-    @media print { .answer { box-shadow: none; } }
-  </style></head><body><main class="document"><header class="cover"><div class="cover-brand"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5M4 19h16M7 16l4-5 3 3 5-7"/><circle cx="7" cy="16" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/></svg></span>PTE STUDY · ANSWER COLLECTION</div><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-rule"></div><div class="cover-meta"><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 12h6M9 16h6"/></svg></i>共 ${entries.length} 条答案</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></i>导出于 ${generatedAt}</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8V3h10v5M6 17H4v-6h16v6h-2M7 14h10v7H7z"/></svg></i>按平台题号整理，适合打印或电子复习。</span></div></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer></main></body></html>`);
-  printWindow.document.close();
-  printWindow.document.title = exportTitle;
-  printWindow.focus();
-  window.setTimeout(() => printWindow.print(), 150);
+
+  const exportStyle = document.createElement('style');
+  const exportMount = document.createElement('div');
+  const source = document.createElement('div');
+  exportStyle.textContent = `
+    .answer-pdf-document, .answer-pdf-document * { box-sizing: border-box; }
+    .answer-pdf-document { width: 180mm; margin: 0; color: #17233c; background: #fff; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; }
+    .answer-pdf-document .answer-pdf-cover { position: relative; display: grid; gap: 13px; min-height: 158px; padding: 20px 25px 19px; overflow: hidden; background: linear-gradient(112deg, #fbfdff 0%, #f6f8ff 54%, #f0efff 100%); border: 1px solid #d9e2ff; border-radius: 15px; break-inside: avoid; page-break-inside: avoid; }
+    .answer-pdf-document .answer-pdf-cover::before { position: absolute; top: 25px; right: 56px; width: 85px; height: 75px; content: ""; background-image: radial-gradient(circle, #b8c7ff 1.6px, transparent 1.8px); background-size: 12px 12px; opacity: .62; }
+    .answer-pdf-document .answer-pdf-cover::after { position: absolute; right: -30px; bottom: -55px; width: 190px; height: 190px; content: ""; border: 1px solid #cbd4ff; border-radius: 50%; box-shadow: 0 0 0 36px rgba(206, 213, 255, .37), 0 0 0 72px rgba(226, 229, 255, .42); }
+    .answer-pdf-document .cover-brand, .answer-pdf-document h1, .answer-pdf-document .cover-rule, .answer-pdf-document .cover-meta { position: relative; z-index: 1; }
+    .answer-pdf-document .cover-brand { display: flex; align-items: center; gap: 9px; color: #4d66bc; font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+    .answer-pdf-document .brand-mark, .answer-pdf-document .meta-icon { display: grid; place-items: center; flex: 0 0 auto; color: #5472db; background: linear-gradient(145deg, #dff1ff, #d8ddff); border-radius: 8px; }
+    .answer-pdf-document .brand-mark { width: 25px; height: 25px; box-shadow: 0 5px 10px rgba(85, 111, 210, .18); }
+    .answer-pdf-document .brand-mark svg { width: 15px; height: 15px; }
+    .answer-pdf-document h1 { margin: 5px 0 0; color: #192c59; font-size: 34px; line-height: 1.1; letter-spacing: .01em; }
+    .answer-pdf-document .cover-rule { width: min(74%, 540px); height: 1px; margin-top: 3px; background: #dce4f4; }
+    .answer-pdf-document .cover-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0; color: #4e5f84; font-size: 10.5px; }
+    .answer-pdf-document .cover-meta span { display: inline-flex; align-items: center; gap: 7px; min-height: 26px; padding: 0 16px; border-right: 1px solid #dbe2f1; }
+    .answer-pdf-document .cover-meta span:first-child { padding-left: 0; }
+    .answer-pdf-document .cover-meta span:last-child { border-right: 0; }
+    .answer-pdf-document .meta-icon { width: 22px; height: 22px; }
+    .answer-pdf-document .meta-icon svg { width: 13px; height: 13px; }
+    .answer-pdf-document .answers { margin-top: 15px; }
+    .answer-pdf-document .answer-pdf-answer { position: relative; margin-bottom: 12px; padding: 16px 18px 17px; background: #f8faff; border: 1px solid #dbe4fb; border-left: 5px solid #496fe1; border-radius: 10px; break-inside: avoid; page-break-inside: avoid; }
+    .answer-pdf-document .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .answer-pdf-document .answer-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .answer-pdf-document .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
+    .answer-pdf-document .type-tag { color: #fff; background: #496fe1; }
+    .answer-pdf-document .platform-tag { color: #375081; background: #e7eefc; }
+    .answer-pdf-document .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
+    .answer-pdf-document h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
+    .answer-pdf-document .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
+    .answer-pdf-document .body p { margin: 0; break-inside: avoid; page-break-inside: avoid; }
+    .answer-pdf-document .body-gap { min-height: 1.65em; }
+    .answer-pdf-document .document-footer { margin-top: 14px; color: #8a96ab; font-size: 9px; text-align: center; }
+  `;
+  exportMount.style.cssText = 'position: fixed; left: -100000px; top: 0; pointer-events: none;';
+  source.className = 'answer-pdf-document';
+  source.innerHTML = `<header class="answer-pdf-cover"><div class="cover-brand"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V5M4 19h16M7 16l4-5 3 3 5-7"/><circle cx="7" cy="16" r="1"/><circle cx="11" cy="11" r="1"/><circle cx="14" cy="14" r="1"/><circle cx="19" cy="7" r="1"/></svg></span>PTE STUDY · ANSWER COLLECTION</div><h1>${escapePrintHtml(exportTitle)}</h1><div class="cover-rule"></div><div class="cover-meta"><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4M9 12h6M9 16h6"/></svg></i>共 ${entries.length} 条答案</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg></i>导出于 ${generatedAt}</span><span><i class="meta-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 8V3h10v5M6 17H4v-6h16v6h-2M7 14h10v7H7z"/></svg></i>按平台题号整理，适合打印或电子复习。</span></div></header><section class="answers">${content}</section><footer class="document-footer">PTE Study Planner · ${escapePrintHtml(exportTitle)}</footer>`;
+
+  isExportingAnswersPdf.value = true;
+  document.head.appendChild(exportStyle);
+  exportMount.appendChild(source);
+  document.body.appendChild(exportMount);
+  try {
+    const { default: html2pdf } = await import('html2pdf.js');
+    await document.fonts.ready;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const options = {
+      margin: [14, 15, 14, 15] as [number, number, number, number],
+      filename: answerPdfFilename(exportTitle),
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
+      pagebreak: { mode: ['css', 'legacy'], avoid: ['.answer-pdf-cover', '.answer-pdf-answer'] },
+    };
+    await html2pdf().set(options).from(source).save();
+  } catch (error) {
+    console.error('Failed to export answers PDF', error);
+    alert('PDF 生成失败，请稍后重试。');
+  } finally {
+    exportMount.remove();
+    exportStyle.remove();
+    isExportingAnswersPdf.value = false;
+  }
 }
 
 function openImportModal(taskId: string) {
@@ -5889,7 +5921,7 @@ function taskLastStudyDate(task: Task) {
                 <ChevronDown :size="17" aria-hidden="true" />
               </span>
             </label>
-            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0" @click="exportAnswersToPdf"><FileDown :size="18" />导出 {{ exportAnswerType }} 答案 PDF</button>
+            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0 || isExportingAnswersPdf" @click="exportAnswersToPdf"><FileDown :size="18" />{{ isExportingAnswersPdf ? '正在生成 PDF…' : `下载 ${exportAnswerType} 答案 PDF` }}</button>
           </div>
         </div>
         <div class="answer-filters">
