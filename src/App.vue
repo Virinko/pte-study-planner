@@ -4030,8 +4030,8 @@ function resetNoteDraft() {
   nextTick(() => setNoteEditorHtml(''));
 }
 
-function resetAnswerDraft() {
-  answerExamType.value = 'DI';
+function resetAnswerDraft(preserveExamType = false) {
+  if (!preserveExamType) answerExamType.value = 'DI';
   answerPlatformRefs.value = fixedAnswerPlatformRefs();
   answerTitle.value = '';
   answerContent.value = '';
@@ -4141,7 +4141,7 @@ function saveAnswer() {
     ? data.value.answerEntries.map((item) => item.id === editingAnswerId.value ? { ...item, ...entry, createdAt: item.createdAt, updatedAt: now } : item)
     : [entry, ...data.value.answerEntries];
   saveLocal({ ...data.value, answerEntries });
-  resetAnswerDraft();
+  resetAnswerDraft(true);
 }
 
 function editAnswer(entry: AnswerEntry) {
@@ -5867,7 +5867,7 @@ function taskLastStudyDate(task: Task) {
           <p><Sparkles :size="18" /> 小贴士：三个平台固定，只需填写各自对应题号。</p>
           <div class="panel-actions">
             <button class="ghost" type="button" :disabled="!answerContent.trim()" @click="optimizeAnswerText"><Sparkles :size="18" />文本优化</button>
-            <button class="ghost" type="button" @click="resetAnswerDraft"><X :size="18" />取消</button>
+            <button class="ghost" type="button" @click="resetAnswerDraft()"><X :size="18" />取消</button>
             <button type="button" @click="saveAnswer"><Save :size="18" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
           </div>
         </div>
