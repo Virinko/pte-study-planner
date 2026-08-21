@@ -47,6 +47,7 @@ export interface Task {
   target: number;
   repeatCount: number;
   completed: number;
+  completionArchived?: boolean;
 }
 
 export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; }

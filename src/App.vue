@@ -311,6 +311,7 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     target,
     repeatCount,
     completed: Math.max(0, completed),
+    completionArchived: totalTarget > 0 && completed >= totalTarget ? task.completionArchived !== false : true,
   };
 }
 
@@ -1075,8 +1076,17 @@ const phaseProgress = computed(() => schedule.value.map((item, index) => {
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
   phase,
-  tasks: activePlanTasks.value.filter((task) => task.phaseId === phase.id),
+  tasks: activePlanTasks.value.filter((task) => task.phaseId === phase.id && (!isTaskCompletedOverall(task) || task.completionArchived === false)),
 })));
+const completedSettingsTasks = computed(() => activePlanTasks.value
+  .filter((task) => isTaskCompletedOverall(task) && task.completionArchived !== false)
+  .map((task) => ({
+    ...task,
+    phaseName: phaseProgress.value.find((phase) => phase.id === task.phaseId)?.name || '未分配阶段',
+    totalTarget: taskTotalTarget(task),
+    completedDate: taskCompletionDate(task),
+  }))
+  .sort((a, b) => (b.completedDate || '').localeCompare(a.completedDate || '')));
 const correctionTask = computed(() => data.value.tasks.find((task) => task.id === correctionTaskId.value));
 const platformSwitchTask = computed(() => data.value.tasks.find((task) => task.id === platformSwitchTaskId.value));
 const platformSwitchExistingTask = computed(() => {
@@ -3395,6 +3405,10 @@ function isTaskCompletedOverall(task: Task) {
   return totalTarget > 0 && task.completed >= totalTarget;
 }
 
+function restoreCompletedTask(task: Task) {
+  updateTask(task.id, { completionArchived: false });
+}
+
 function isTomorrowReviewRegistrationSkipped(task: Task) {
   return (data.value.skippedReviewRegistrations[todayIso()] || []).includes(task.id);
 }
@@ -5628,9 +5642,37 @@ function taskLastStudyDate(task: Task) {
                 <p v-if="task.subItems.length === 0" class="muted">还没有子项目，可以新增或批量生成。</p>
               </div>
             </details>
-            <p v-if="group.tasks.length === 0" class="muted">这个阶段还没有任务。新增任务后会只记录每日完成进度，不保存题库内容。</p>
+            <p v-if="group.tasks.length === 0" class="muted">这个阶段暂无进行中的任务。新增任务后会只记录每日完成进度，不保存题库内容。</p>
           </div>
         </div>
+        <details v-if="completedSettingsTasks.length" class="shelved-task-section completed-settings-section">
+          <summary>
+            <span><Check :size="18" stroke-width="2.7" aria-hidden="true" />已完成</span>
+            <b>{{ completedSettingsTasks.length }}</b>
+            <small>已从原阶段任务表移出，需要调整时可重新纳入计划</small>
+          </summary>
+          <div class="shelved-task-list completed-settings-list">
+            <article v-for="task in completedSettingsTasks" :key="task.id" class="shelved-task-row completed-settings-row">
+              <div class="shelved-task-name">
+                <strong>{{ task.name }}</strong>
+                <span>{{ task.phaseName }} · {{ task.platform }} · {{ task.frequencyType }}</span>
+              </div>
+              <div class="shelved-task-progress">
+                <span>总进度</span>
+                <strong>{{ task.completed }} / {{ task.totalTarget }}</strong>
+                <span class="progress-track"><i style="width: 100%" /></span>
+              </div>
+              <div class="shelved-task-last-study">
+                <span>完成时间</span>
+                <strong>{{ task.completedDate || '未记录日期' }}</strong>
+              </div>
+              <div class="shelved-task-actions">
+                <button class="completed-settings-restore-button" type="button" @click="restoreCompletedTask(task)">重新纳入计划</button>
+                <button class="delete-shelved-task-button" type="button" @click="deleteTask(task.id)">删除</button>
+              </div>
+            </article>
+          </div>
+        </details>
         <details v-if="shelvedTasks.length" class="shelved-task-section">
           <summary>
             <span><Pause :size="18" stroke-width="2.5" aria-hidden="true" />暂不安排</span>

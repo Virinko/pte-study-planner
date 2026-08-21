@@ -10251,6 +10251,38 @@ textarea:focus {
   border: 1px solid #f2cdd0;
 }
 
+.completed-settings-section {
+  background: #f7fcf9;
+  border-color: #cfe8d8;
+}
+
+.completed-settings-section > summary > span {
+  color: #257248;
+}
+
+.completed-settings-section > summary > b {
+  color: #257248;
+  background: #dcf5e5;
+}
+
+.completed-settings-section > summary > small {
+  color: #6e8377;
+}
+
+.completed-settings-row {
+  border-color: #d9ebe0;
+}
+
+.completed-settings-row .shelved-task-progress .progress-track i {
+  background: #43a96d;
+}
+
+.completed-settings-restore-button {
+  color: #2f6bbf;
+  background: #f3f7ff;
+  border: 1px solid #cddcff;
+}
+
 .platform-switch-modal,
 .restore-task-modal {
   position: relative;
