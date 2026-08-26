@@ -14,12 +14,11 @@ export const clamp = (n: number, min: number, max: number) => Math.min(max, Math
 export function defaultData(): StudyData {
   const today = todayIso();
   const deadline = addDays(today, 60);
-  const effectiveEnd = addDays(deadline, -7);
   return {
     version: 3,
     updatedAt: '',
-    settings: { startDate: today, deadline, bufferDays: 7 },
-    phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: effectiveEnd }],
+    settings: { startDate: today, deadline },
+    phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: deadline }],
     tasks: [],
     dailyLogs: {},
     dailyTargets: {},

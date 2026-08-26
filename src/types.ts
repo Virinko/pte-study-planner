@@ -8,7 +8,6 @@ export type TaskPlanStatus = 'active' | 'shelved';
 export interface Settings {
   startDate: string;
   deadline: string;
-  bufferDays: number;
 }
 
 export interface Phase {
