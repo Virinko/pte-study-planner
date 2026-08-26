@@ -1378,6 +1378,8 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
   const max = Math.max(5, ...rows.map((row) => row.practiceTotal));
   const interval = max <= 5 ? 1 : Math.ceil(max / 4);
   const yMax = Math.ceil(max / interval) * interval;
+  const barWidth = rows.length > 30 ? 4 : rows.length > 12 ? 8 : 18;
+  const barRadius = rows.length > 30 ? 2 : rows.length > 12 ? 4 : 8;
 
   return {
     animationDuration: 450,
@@ -1414,6 +1416,7 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
       axisLine: { lineStyle: { color: '#e0e7f1' } },
       axisTick: { show: false },
       axisLabel: {
+        interval: timeTrendAxisInterval(rows.length),
         color: '#667389',
         fontSize: 12,
         fontWeight: 600,
@@ -1444,14 +1447,14 @@ function buildPracticeTrendChartOption(): EChartsCoreOption {
     series: [
       {
         type: 'bar',
-        barWidth: rows.length > 12 ? 11 : 18,
+        barWidth,
         data: rows.map((row) => ({
           value: row.practiceTotal,
           date: row.date,
         })),
         itemStyle: {
           color: '#8b5cf6',
-          borderRadius: [9, 9, 0, 0],
+          borderRadius: [barRadius, barRadius, 0, 0],
         },
       },
     ],
