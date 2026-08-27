@@ -19,9 +19,9 @@ const DIRTY_KEY = 'pte_progress_dirty';
 const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
 const LAST_SYNC_LABEL_KEY = 'pte_progress_last_sync_label';
 const LAST_SYNC_MESSAGE_KEY = 'pte_progress_last_sync_message';
+const LAST_CLOUD_LOAD_DATE_KEY = 'pte_progress_last_cloud_load_date';
 const CLOUD_SAVE_DEBOUNCE_MS = 7000;
 const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
-const CLOUD_LOAD_MIN_INTERVAL_MS = 3000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -609,6 +609,14 @@ function readStoredLastSyncMessage() {
   }
 }
 
+function readStoredLastCloudLoadDate() {
+  try {
+    return localStorage.getItem(LAST_CLOUD_LOAD_DATE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 function hasStoredProgressBackup() {
   try {
     return Boolean(localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY));
@@ -772,11 +780,10 @@ const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
 const lastCloudSyncLabel = ref(readStoredLastSyncLabel());
 const lastCloudSyncMessage = ref(readStoredLastSyncMessage());
-const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
+const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV || readStoredLastCloudLoadDate() === todayIso());
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
-let lastCloudLoadAttemptAt = 0;
 const showTimerModal = ref(false);
 const showPomodoroModal = ref(false);
 const timerEditHours = ref('');
@@ -1952,9 +1959,10 @@ async function fetchCloudProgress() {
 async function loadCloudProgress(force = false) {
   if (IS_LOCAL_DEV || !appPassword.value) return;
   if (isCloudLoading.value) return;
-  const now = Date.now();
-  if (!force && now - lastCloudLoadAttemptAt < CLOUD_LOAD_MIN_INTERVAL_MS) return;
-  lastCloudLoadAttemptAt = now;
+  if (!force && readStoredLastCloudLoadDate() === todayIso()) {
+    hasCheckedCloudBaseline.value = true;
+    return;
+  }
   isCloudLoading.value = true;
   cloudLoadError.value = false;
   try {
@@ -1974,6 +1982,7 @@ async function loadCloudProgress(force = false) {
       }
     }
     if (isDirty.value) scheduleCloudSave(1200);
+    localStorage.setItem(LAST_CLOUD_LOAD_DATE_KEY, todayIso());
   } catch {
     cloudLoadError.value = true;
   } finally {
@@ -2070,7 +2079,7 @@ function handleWindowFocus() {
 }
 
 function handleWindowOnline() {
-  if (document.visibilityState === 'visible') void loadCloudProgress(true);
+  if (document.visibilityState === 'visible') void loadCloudProgress();
 }
 
 function handlePageHide() {
@@ -3000,8 +3009,8 @@ function updatePhase(id: string, patch: Partial<Phase>) {
 
 function addMockExam(phase: PhaseSchedule) {
   const date = mockExamDateDrafts.value[phase.id] || '';
-  if (!date || date < phase.startDate || date > phase.endDate) {
-    alert(`请选择 ${phase.startDate} 至 ${phase.endDate} 范围内的模考日期。`);
+  if (!date || date < phase.startDate) {
+    alert(`请选择不早于 ${phase.startDate} 的模考日期。`);
     return;
   }
   const source = data.value.phases.find((item) => item.id === phase.id);
@@ -4931,7 +4940,7 @@ function taskLastStudyDate(task: Task) {
       </div>
     </header>
 
-    <div v-if="!IS_LOCAL_DEV && isCloudLoading" class="cloud-refresh-guard" role="status" aria-live="polite">
+    <div v-if="!IS_LOCAL_DEV && isCloudLoading && (!hasCheckedCloudBaseline || isDirty)" class="cloud-refresh-guard" role="status" aria-live="polite">
       <div>
         <span class="cloud-refresh-spinner" aria-hidden="true"></span>
         <strong>正在同步最新进度</strong>
@@ -5806,7 +5815,7 @@ function taskLastStudyDate(task: Task) {
         </div>
         <div v-for="item in phaseProgress" :key="item.id" class="phase-mock-exams">
           <div class="phase-mock-exam-form">
-            <input v-model="mockExamDateDrafts[item.id]" type="date" :min="item.startDate" :max="item.endDate" aria-label="模考日期">
+            <input v-model="mockExamDateDrafts[item.id]" type="date" :min="item.startDate" aria-label="模考日期">
             <input v-model="mockExamNameDrafts[item.id]" type="text" placeholder="模考名称（可选）" aria-label="模考名称">
             <button type="button" @click="addMockExam(item)">+ 添加</button>
             <span class="mock-exam-count">已安排 {{ item.mockExams?.length || 0 }} 次</span>
