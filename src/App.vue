@@ -21,6 +21,7 @@ const LAST_SYNC_LABEL_KEY = 'pte_progress_last_sync_label';
 const LAST_SYNC_MESSAGE_KEY = 'pte_progress_last_sync_message';
 const CLOUD_SAVE_DEBOUNCE_MS = 7000;
 const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
+const CLOUD_LOAD_MIN_INTERVAL_MS = 3000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -115,13 +116,6 @@ interface RunningPomodoro {
   startedAt: number;
   accumulatedSeconds: number;
   paused: boolean;
-}
-
-interface FullBackupEnvelope {
-  format: 'pte-study-planner-backup';
-  formatVersion: 1;
-  exportedAt: string;
-  data: StudyData;
 }
 
 type ReviewPlanRow = ReviewPlan & { dueDate: string; overdue: boolean };
@@ -724,10 +718,10 @@ const appPassword = ref(readStoredPassword());
 const passwordInput = ref('');
 const passwordError = ref('');
 const isDirty = ref(readStoredDirty());
+const isCloudLoading = ref(false);
 const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
-const syncConflictRemote = ref<StudyData | null>(null);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
 const lastCloudSyncLabel = ref(readStoredLastSyncLabel());
 const lastCloudSyncMessage = ref(readStoredLastSyncMessage());
@@ -735,6 +729,7 @@ const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
+let lastCloudLoadAttemptAt = 0;
 const showTimerModal = ref(false);
 const showPomodoroModal = ref(false);
 const timerEditHours = ref('');
@@ -750,9 +745,6 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
-const backupFileInput = ref<HTMLInputElement | null>(null);
-const backupStatusMessage = ref('');
-const backupStatusError = ref(false);
 const nowMs = ref(Date.now());
 const dailyMottos = ['先开始，进度会自己出现。', '慢一点没关系，别停下来。'] as const;
 const todayMotto = computed(() => {
@@ -903,7 +895,7 @@ const saveStatusText = computed(() => {
   if (IS_LOCAL_DEV) return '本地测试模式';
   if (!appPassword.value) return '请输入访问密码';
   if (passwordError.value) return passwordError.value;
-  if (syncConflictRemote.value) return '检测到同步冲突';
+  if (isCloudLoading.value) return '正在检查云端最新进度...';
   if (isCloudSaving.value) return '保存中...';
   if (cloudSaveError.value || cloudLoadError.value) return '网络异常，已暂存在本地';
   if (lastCloudSyncMessage.value) return lastCloudSyncLabel.value || '云端已同步';
@@ -911,14 +903,14 @@ const saveStatusText = computed(() => {
   return lastCloudSyncedAt.value ? '已保存本地并同步云端' : '本地已保存';
 });
 const saveStatusClass = computed(() => ({
-  saving: !IS_LOCAL_DEV && isCloudSaving.value,
-  pending: !IS_LOCAL_DEV && isDirty.value && !isCloudSaving.value,
-  error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || Boolean(syncConflictRemote.value) || cloudSaveError.value || cloudLoadError.value),
-  saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudSaving.value && !passwordError.value && !syncConflictRemote.value && !cloudSaveError.value && !cloudLoadError.value),
+  saving: !IS_LOCAL_DEV && (isCloudLoading.value || isCloudSaving.value),
+  pending: !IS_LOCAL_DEV && isDirty.value && !isCloudLoading.value && !isCloudSaving.value,
+  error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value),
+  saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudLoading.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value),
 }));
 const syncStatusDetail = computed(() => {
   if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写 Cloudflare KV';
-  if (syncConflictRemote.value) return '本地和云端都有新修改，自动同步已暂停';
+  if (isCloudLoading.value) return '正在比较本地与云端更新时间';
   if (lastCloudSyncMessage.value) return lastCloudSyncMessage.value;
   return lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步';
 });
@@ -1737,7 +1729,9 @@ onMounted(() => {
     finishPomodoroIfNeeded();
   }, 1000);
   window.addEventListener('resize', resizeProgressCharts);
-  window.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('focus', handleWindowFocus);
+  window.addEventListener('online', handleWindowOnline);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('pagehide', handlePageHide);
   window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
@@ -1751,7 +1745,9 @@ onBeforeUnmount(() => {
   if (pomodoroAudioContext) void pomodoroAudioContext.close();
   stopPomodoroTitleFlash();
   window.removeEventListener('resize', resizeProgressCharts);
-  window.removeEventListener('visibilitychange', handleVisibilityChange);
+  window.removeEventListener('focus', handleWindowFocus);
+  window.removeEventListener('online', handleWindowOnline);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
   window.removeEventListener('pagehide', handlePageHide);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
@@ -1811,71 +1807,6 @@ function persistLastCloudSyncState(label: string, message: string) {
   localStorage.setItem(LAST_SYNC_MESSAGE_KEY, message);
 }
 
-function backupTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-function downloadFullBackup(source: StudyData, label = '完整备份') {
-  const envelope: FullBackupEnvelope = {
-    format: 'pte-study-planner-backup',
-    formatVersion: 1,
-    exportedAt: new Date().toISOString(),
-    data: normalizeData(source),
-  };
-  const blob = new Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `PTE学习计划-${label}-${backupTimestamp()}.json`;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
-
-function exportCurrentFullBackup() {
-  downloadFullBackup(data.value);
-  backupStatusError.value = false;
-  backupStatusMessage.value = '完整备份已下载。';
-}
-
-function openFullBackupImport() {
-  backupStatusMessage.value = '';
-  backupStatusError.value = false;
-  backupFileInput.value?.click();
-}
-
-function parseFullBackup(value: unknown): Partial<StudyData> | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const candidate = record.format === 'pte-study-planner-backup' ? record.data : value;
-  if (!candidate || typeof candidate !== 'object') return null;
-  const dataRecord = candidate as Record<string, unknown>;
-  if (!dataRecord.settings || typeof dataRecord.settings !== 'object') return null;
-  if (!Array.isArray(dataRecord.phases) || !Array.isArray(dataRecord.tasks)) return null;
-  return candidate as Partial<StudyData>;
-}
-
-async function importFullBackup(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
-  if (!file) return;
-  try {
-    const parsed = parseFullBackup(JSON.parse(await file.text()) as unknown);
-    if (!parsed) throw new Error('invalid-backup');
-    if (!window.confirm(`确定恢复备份“${file.name}”吗？当前数据会先自动下载一份备份，然后替换为文件中的数据。`)) return;
-    downloadFullBackup(data.value, '恢复前自动备份');
-    syncConflictRemote.value = null;
-    saveLocal(normalizeData(parsed));
-    backupStatusError.value = false;
-    backupStatusMessage.value = '备份恢复成功，当前数据已保存并等待同步。';
-  } catch {
-    backupStatusError.value = true;
-    backupStatusMessage.value = '无法恢复：请选择由本系统导出的完整 JSON 备份。';
-  }
-}
-
 function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
   const { markDirty = true, scheduleSync = true, preserveUpdatedAt = false } = options;
   const normalized = normalizeData(next);
@@ -1897,7 +1828,6 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
 
 function applyRemoteProgress(remote: StudyData) {
   const normalized = normalizeData(remote);
-  syncConflictRemote.value = null;
   data.value = normalized;
   persistProgressBackup(normalized);
   persistDirty(false);
@@ -1912,41 +1842,6 @@ function applyRemoteProgress(remote: StudyData) {
   selectedNoteDate.value = todayIso();
   resetNoteDraft();
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
-}
-
-function captureSyncConflict(remote: StudyData) {
-  syncConflictRemote.value = normalizeData(remote);
-  persistProgressBackup(data.value);
-  persistDirty(true);
-  cloudLoadError.value = false;
-  cloudSaveError.value = false;
-  persistLastCloudSyncState('检测到同步冲突', '本地和云端都有新修改，自动同步已暂停');
-}
-
-function downloadLocalConflictBackup() {
-  downloadFullBackup(data.value, '同步冲突-本地版本');
-}
-
-function downloadRemoteConflictBackup() {
-  if (syncConflictRemote.value) downloadFullBackup(syncConflictRemote.value, '同步冲突-云端版本');
-}
-
-function resolveSyncConflictWithRemote() {
-  const remote = syncConflictRemote.value;
-  if (!remote) return;
-  downloadFullBackup(data.value, '采用云端前-本地版本');
-  applyRemoteProgress(remote);
-}
-
-function resolveSyncConflictWithLocal() {
-  const remote = syncConflictRemote.value;
-  if (!remote) return;
-  downloadFullBackup(remote, '覆盖云端前-云端版本');
-  lastCloudSyncedAt.value = remote.updatedAt || '';
-  localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
-  syncConflictRemote.value = null;
-  saveLocal(data.value, { scheduleSync: false });
-  void syncCloudProgress();
 }
 
 function clearAppPassword() {
@@ -1992,20 +1887,20 @@ async function fetchCloudProgress() {
 
 async function loadCloudProgress(force = false) {
   if (IS_LOCAL_DEV || !appPassword.value) return;
+  if (isCloudLoading.value) return;
+  const now = Date.now();
+  if (!force && now - lastCloudLoadAttemptAt < CLOUD_LOAD_MIN_INTERVAL_MS) return;
+  lastCloudLoadAttemptAt = now;
+  isCloudLoading.value = true;
+  cloudLoadError.value = false;
   try {
     const remote = await fetchCloudProgress();
     if (!remote) return;
     hasCheckedCloudBaseline.value = true;
     const remoteUpdatedAt = remote.updatedAt || '';
-    const remoteAheadOfBase = Boolean(remoteUpdatedAt)
-      && (!lastCloudSyncedAt.value || remoteUpdatedAt > lastCloudSyncedAt.value);
-    if (isDirty.value && remoteAheadOfBase) {
-      captureSyncConflict(remote);
-      return;
-    }
-    const shouldUseRemote = !isDirty.value && (!hasLocalProgressBackup.value
+    const shouldUseRemote = !hasLocalProgressBackup.value
       || !data.value.updatedAt
-      || (Boolean(remoteUpdatedAt) && remoteUpdatedAt > data.value.updatedAt));
+      || (Boolean(remoteUpdatedAt) && remoteUpdatedAt > data.value.updatedAt);
     if (shouldUseRemote) applyRemoteProgress(remote);
     else {
       cloudLoadError.value = false;
@@ -2017,11 +1912,13 @@ async function loadCloudProgress(force = false) {
     if (isDirty.value) scheduleCloudSave(1200);
   } catch {
     cloudLoadError.value = true;
+  } finally {
+    isCloudLoading.value = false;
   }
 }
 
 function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || !hasCheckedCloudBaseline.value || syncConflictRemote.value) return;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || !hasCheckedCloudBaseline.value) return;
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   const elapsed = Date.now() - lastCloudSaveAttemptAt;
   const waitForMinInterval = Math.max(0, CLOUD_SAVE_MIN_INTERVAL_MS - elapsed);
@@ -2032,7 +1929,7 @@ function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
 }
 
 async function syncCloudProgress() {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value || syncConflictRemote.value) return false;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value) return false;
   lastCloudSaveAttemptAt = Date.now();
   isCloudSaving.value = true;
   cloudSaveError.value = false;
@@ -2057,7 +1954,7 @@ async function syncCloudProgress() {
     if (res.status === 409) {
       const result = await res.json() as { remote?: Partial<StudyData>; progress?: Partial<StudyData> };
       const remote = result.remote || result.progress;
-      if (remote) captureSyncConflict(normalizeData(remote));
+      if (remote) applyRemoteProgress(normalizeData(remote));
       return false;
     }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
@@ -2096,8 +1993,20 @@ function tryImmediateCloudSave() {
 function handleVisibilityChange() {
   nowMs.value = Date.now();
   finishPomodoroIfNeeded();
-  if (document.visibilityState === 'visible') stopPomodoroTitleFlash();
-  if (document.visibilityState === 'hidden') tryImmediateCloudSave();
+  if (document.visibilityState === 'visible') {
+    stopPomodoroTitleFlash();
+    void loadCloudProgress();
+  } else {
+    tryImmediateCloudSave();
+  }
+}
+
+function handleWindowFocus() {
+  if (document.visibilityState === 'visible') void loadCloudProgress();
+}
+
+function handleWindowOnline() {
+  if (document.visibilityState === 'visible') void loadCloudProgress(true);
 }
 
 function handlePageHide() {
@@ -4743,6 +4652,14 @@ function taskLastStudyDate(task: Task) {
       </div>
     </header>
 
+    <div v-if="!IS_LOCAL_DEV && isCloudLoading" class="cloud-refresh-guard" role="status" aria-live="polite">
+      <div>
+        <span class="cloud-refresh-spinner" aria-hidden="true"></span>
+        <strong>正在同步最新进度</strong>
+        <p>检查完成前暂时锁定编辑，避免旧页面覆盖新数据。</p>
+      </div>
+    </div>
+
     <section v-if="tab === 'today'" class="page dashboard-page">
       <section class="plan-strip">
         <div>
@@ -5856,23 +5773,6 @@ function taskLastStudyDate(task: Task) {
         <p class="hint">提示：动态均摊 = Math.ceil(剩余任务量 / 当前阶段剩余有效练习天数)。如果今天少做，未完成量会在之后的剩余天数里重新均摊。</p>
       </section>
 
-      <section class="panel backup-panel">
-        <div>
-          <h2>完整备份</h2>
-          <p>导出包含阶段、任务、每日进度、复习、计时、备注和答案库的完整 JSON 文件，也可以用备份文件恢复全部数据。</p>
-          <p v-if="backupStatusMessage" class="backup-status" :class="{ error: backupStatusError }">{{ backupStatusMessage }}</p>
-        </div>
-        <div class="backup-panel-actions">
-          <button class="backup-export-button" type="button" @click="exportCurrentFullBackup">
-            <FileDown :size="17" stroke-width="2.4" aria-hidden="true" />导出完整备份
-          </button>
-          <button class="backup-import-button" type="button" @click="openFullBackupImport">
-            <RotateCcw :size="17" stroke-width="2.4" aria-hidden="true" />从备份恢复
-          </button>
-          <input ref="backupFileInput" hidden type="file" accept="application/json,.json" @change="importFullBackup">
-        </div>
-      </section>
-
       <section class="panel restart-panel">
         <div>
           <h2>重新开始</h2>
@@ -6451,40 +6351,6 @@ function taskLastStudyDate(task: Task) {
           <button class="primary" type="submit" :disabled="Boolean(restoreConflictTask)">加入计划</button>
         </div>
       </form>
-    </div>
-
-    <div v-if="syncConflictRemote" class="modal sync-conflict-modal">
-      <section class="modal-box sync-conflict-modal-box" role="dialog" aria-modal="true" aria-labelledby="sync-conflict-title">
-        <span class="sync-conflict-badge">同步已暂停</span>
-        <div class="modal-title">
-          <div>
-            <h3 id="sync-conflict-title">检测到本地与云端冲突</h3>
-            <p>两边都有新的修改，系统没有自动覆盖任何数据。选择采用哪个版本后，另一份数据会先自动下载为完整备份。</p>
-          </div>
-        </div>
-        <div class="sync-conflict-versions">
-          <article>
-            <span>本地版本</span>
-            <strong>{{ data.updatedAt ? new Date(data.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录修改时间' }}</strong>
-            <button type="button" @click="downloadLocalConflictBackup">下载本地备份</button>
-          </article>
-          <article>
-            <span>云端版本</span>
-            <strong>{{ syncConflictRemote.updatedAt ? new Date(syncConflictRemote.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '未记录修改时间' }}</strong>
-            <button type="button" @click="downloadRemoteConflictBackup">下载云端备份</button>
-          </article>
-        </div>
-        <div class="sync-conflict-actions">
-          <button class="sync-use-local" type="button" :disabled="isCloudSaving" @click="resolveSyncConflictWithLocal">
-            <strong>保留本地版本</strong>
-            <span>先备份云端，再用本地数据覆盖云端</span>
-          </button>
-          <button class="sync-use-remote" type="button" :disabled="isCloudSaving" @click="resolveSyncConflictWithRemote">
-            <strong>采用云端版本</strong>
-            <span>先备份本地，再用云端数据替换本地</span>
-          </button>
-        </div>
-      </section>
     </div>
 
     <div v-if="!IS_LOCAL_DEV && !appPassword" class="modal password-modal">
