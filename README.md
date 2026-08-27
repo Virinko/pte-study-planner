@@ -8,9 +8,9 @@
 - localStorage 保存本地计划和进度，key 为 `pte_progress_backup`
 - Cloudflare Pages Functions + Cloudflare KV 自动同步完整进度
 - 访问密码由 Cloudflare Pages Secret `APP_PASSWORD` 提供，前端不写死密码
-- 支持 phased_pool、fixed_pool、daily_fixed、memorization 策略
-- 支持 adaptive_average、none、next_day carryoverMode
-- 自动计算阶段日期、当前阶段、今日建议任务量和整体进度
+- 使用单一备考总计划，可安排多个模考日
+- 数量型任务可手动开启错题轮刷，背诵型任务继续按篇目与熟悉度记录
+- 自动计算当前任务或当前轮的今日建议量和整体进度
 
 ## 本地开发
 

@@ -15,10 +15,10 @@ export function defaultData(): StudyData {
   const today = todayIso();
   const deadline = addDays(today, 60);
   return {
-    version: 3,
+    version: 4,
     updatedAt: '',
     settings: { startDate: today, deadline },
-    phases: [{ id: crypto.randomUUID(), name: '基础推进期', order: 1, startDate: today, endDate: deadline }],
+    phases: [{ id: crypto.randomUUID(), name: '备考总计划', order: 1, startDate: today, endDate: deadline }],
     tasks: [],
     dailyLogs: {},
     dailyTargets: {},
@@ -33,15 +33,22 @@ export function defaultData(): StudyData {
 }
 
 export const taskRepeatCount = (task: Task) => Math.max(1, Math.floor(Number(task.repeatCount || 1)));
-export const taskTotalTarget = (task: Task) => Math.max(0, Number(task.target || 0) * taskRepeatCount(task));
-export const taskRemaining = (task: Task) => Math.max(0, taskTotalTarget(task) - Math.max(0, Number(task.completed || 0)));
+export const taskProgressCompleted = (task: Task) => task.roundModeEnabled
+  ? task.roundCleared ? Math.max(0, Number(task.target || 0)) : Math.max(0, Number(task.roundCompleted || 0))
+  : Math.max(0, Number(task.completed || 0));
+export const taskTotalTarget = (task: Task) => task.roundModeEnabled
+  ? task.roundCleared ? Math.max(0, Number(task.target || 0)) : Math.max(0, Number(task.roundTarget || 0))
+  : Math.max(0, Number(task.target || 0) * taskRepeatCount(task));
+export const taskRemaining = (task: Task) => Math.max(0, taskTotalTarget(task) - taskProgressCompleted(task));
 export const taskCurrentRound = (task: Task) => {
+  if (task.roundModeEnabled) return task.roundStage;
   const target = Math.max(1, Number(task.target || 0));
   const repeatCount = taskRepeatCount(task);
   if (taskTotalTarget(task) <= 0) return 1;
   return clamp(Math.floor(Math.max(0, task.completed) / target) + 1, 1, repeatCount);
 };
 export const taskRoundCompleted = (task: Task) => {
+  if (task.roundModeEnabled) return taskProgressCompleted(task);
   const target = Math.max(0, Number(task.target || 0));
   if (target <= 0) return 0;
   if (Math.max(0, task.completed) >= taskTotalTarget(task)) return target;

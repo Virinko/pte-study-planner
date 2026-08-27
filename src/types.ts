@@ -4,6 +4,7 @@ export type TrackingMode = 'count_only' | 'itemized';
 export type SubItemStatus = 'not_started' | 'doing' | 'done';
 export type Familiarity = '生' | '半熟' | '熟' | '可默写';
 export type TaskPlanStatus = 'active' | 'shelved';
+export type TaskRoundStage = 1 | 2 | 3 | 4;
 
 export interface Settings {
   startDate: string;
@@ -30,6 +31,17 @@ export interface SubItem {
   note: string;
 }
 
+export interface TaskRoundHistoryEntry {
+  id: string;
+  cycle: number;
+  stage: TaskRoundStage;
+  pass: number;
+  target: number;
+  completed: number;
+  remainingMarked?: number;
+  completedAt: string;
+}
+
 export interface Task {
   id: string;
   phaseId: string;
@@ -47,9 +59,18 @@ export interface Task {
   repeatCount: number;
   completed: number;
   completionArchived?: boolean;
+  roundModeEnabled: boolean;
+  roundCycle: number;
+  roundStage: TaskRoundStage;
+  roundPass: number;
+  roundTarget: number;
+  roundCompleted: number;
+  roundPracticeTotal: number;
+  roundCleared: boolean;
+  roundHistory: TaskRoundHistoryEntry[];
 }
 
-export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; }
+export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; roundCycle?: number; roundStage?: TaskRoundStage; roundPass?: number; }
 export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyTargets { [date: string]: Record<string, number>; }
 export interface DailyNoteEntry {
