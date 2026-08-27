@@ -3849,7 +3849,7 @@ nav button.active::after {
   min-height: 18px;
   color: #7a56c5;
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 500;
   line-height: 18px;
   text-align: center;
 }
