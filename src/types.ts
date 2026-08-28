@@ -65,6 +65,7 @@ export interface Task {
   roundPass: number;
   roundTarget: number;
   roundCompleted: number;
+  roundStageEndDate?: string;
   roundPracticeTotal: number;
   roundCleared: boolean;
   roundHistory: TaskRoundHistoryEntry[];

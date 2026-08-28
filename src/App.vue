@@ -5,7 +5,7 @@ import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echart
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
@@ -145,7 +145,17 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   const settings = normalizeSettings({ ...base.settings, ...source?.settings });
   const phases = normalizePhases(source?.phases ?? base.phases, settings);
   const planId = phases[0]?.id || '';
-  const tasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => ({ ...normalizeTask(task, planId), phaseId: planId }));
+  const normalizedTasks = ((source?.tasks ?? base.tasks) as Array<Partial<Task>>).map((task) => ({ ...normalizeTask(task, planId), phaseId: planId }));
+  const planPhase: PhaseSchedule = {
+    ...phases[0],
+    startDate: settings.startDate,
+    endDate: settings.deadline,
+    days: daysBetweenInclusive(settings.startDate, settings.deadline),
+    totalWork: 0,
+  };
+  const tasks = normalizedTasks.map((task) => task.roundModeEnabled && !task.roundCleared && !task.roundStageEndDate
+    ? { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase) }
+    : task);
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
   const reviewPlans = normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks);
   const reviewLogs = normalizeReviewLogs(source?.reviewLogs, reviewPlans, studyTimeEntries);
@@ -293,7 +303,9 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
   const doneCount = subItems.filter((item) => item.status === 'done').length;
   const target = Number(task.target ?? subItems.length ?? 0);
   const roundModeEnabled = trackingMode === 'count_only' && Boolean(task.roundModeEnabled);
-  const repeatCount = 1;
+  const repeatCount = trackingMode === 'count_only' && !roundModeEnabled
+    ? Math.max(1, Math.floor(Number(task.repeatCount ?? 1) || 1))
+    : 1;
   const totalTarget = Math.max(0, target * repeatCount);
   const completed = trackingMode === 'itemized' && subItems.length > 0 ? doneCount : Number(task.completed ?? 0);
   const roundStage = isTaskRoundStage(task.roundStage) ? task.roundStage : 1;
@@ -325,6 +337,7 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     roundPass: Math.max(1, Math.floor(Number(task.roundPass ?? 1))),
     roundTarget,
     roundCompleted,
+    roundStageEndDate: roundModeEnabled && task.roundStageEndDate ? task.roundStageEndDate : undefined,
     roundPracticeTotal: Math.max(0, Math.floor(Number(task.roundPracticeTotal ?? (roundModeEnabled ? completed : 0)))),
     roundCleared,
     roundHistory: normalizeTaskRoundHistory(task.roundHistory),
@@ -1807,7 +1820,8 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
   if (!IS_LOCAL_DEV) {
-    void loadCloudProgress();
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    void loadCloudProgress(navigation?.type === 'reload');
   }
 });
 
@@ -2988,7 +3002,10 @@ function formatClockTime(value: string) {
 function updateSettings(patch: Partial<StudyData['settings']>) {
   const settings = { ...data.value.settings, ...patch };
   const phases = syncPhaseBoundaries(data.value.phases, settings);
-  saveLocal({ ...data.value, settings, phases });
+  const nextData = { ...data.value, settings, phases };
+  const nextSchedule = buildSchedule(nextData);
+  const tasks = nextData.tasks.map((task) => resetRoundStageEndDate(task, nextSchedule));
+  saveLocal({ ...nextData, tasks });
 }
 
 function updatePhase(id: string, patch: Partial<Phase>) {
@@ -3004,7 +3021,10 @@ function updatePhase(id: string, patch: Partial<Phase>) {
     data.value.phases.map((item) => item.id === id ? { ...item, ...patch } : item),
     settings,
   );
-  saveLocal({ ...data.value, settings, phases });
+  const nextData = { ...data.value, settings, phases };
+  const nextSchedule = buildSchedule(nextData);
+  const tasks = nextData.tasks.map((task) => resetRoundStageEndDate(task, nextSchedule));
+  saveLocal({ ...nextData, tasks });
 }
 
 function addMockExam(phase: PhaseSchedule) {
@@ -3075,7 +3095,24 @@ function updateTask(id: string, patch: Partial<Task>) {
     updateTaskCompleted(task, Number(patch.completed ?? 0), patch);
     return;
   }
-  saveLocal({ ...data.value, tasks: data.value.tasks.map((task) => task.id === id ? normalizeTask({ ...task, ...patch }, data.value.phases[0]?.id || '') : task) });
+  const shouldResetRoundDeadline = Boolean(task?.roundModeEnabled)
+    && (Object.prototype.hasOwnProperty.call(patch, 'startDate') || Object.prototype.hasOwnProperty.call(patch, 'endDate'));
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => {
+      if (item.id !== id) return item;
+      const nextTask = normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
+      return shouldResetRoundDeadline ? resetRoundStageEndDate(nextTask) : nextTask;
+    }),
+  });
+}
+
+function resetRoundStageEndDate(task: Task, targetSchedule = schedule.value): Task {
+  if (!task.roundModeEnabled || task.roundCleared) return { ...task, roundStageEndDate: undefined };
+  const targetPhase = targetSchedule.find((item) => item.id === task.phaseId) || targetSchedule[0];
+  return targetPhase
+    ? { ...task, roundStageEndDate: taskRoundStageEndDate(task, targetPhase, todayIso()) }
+    : task;
 }
 
 function roundStageLabel(task: Task) {
@@ -3146,7 +3183,7 @@ function submitRoundSetup() {
   }
   const previousCycles = task.roundHistory.map((entry) => entry.cycle);
   const cycle = Math.max(1, task.roundCycle || 1, ...previousCycles);
-  const nextTask = normalizeTask({
+  const nextTask = resetRoundStageEndDate(normalizeTask({
     ...task,
     target,
     repeatCount: 1,
@@ -3159,7 +3196,7 @@ function submitRoundSetup() {
     roundPracticeTotal: Math.max(task.roundPracticeTotal || 0, task.completed || 0),
     roundCleared: false,
     completionArchived: true,
-  }, data.value.phases[0]?.id || '');
+  }, data.value.phases[0]?.id || ''));
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
   closeRoundSetup();
 }
@@ -3208,7 +3245,7 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
   const cleared = task.roundStage !== 3 && remainingMarked === 0;
   let patch: Partial<Task>;
   if (cleared) {
-    patch = { roundCleared: true, roundTarget: 0, roundCompleted: 0, completionArchived: true };
+    patch = { roundCleared: true, roundTarget: 0, roundCompleted: 0, roundStageEndDate: undefined, completionArchived: true };
   } else if (task.roundStage === 1) {
     patch = { roundStage: 2, roundPass: 1, roundTarget: remainingMarked || 0, roundCompleted: 0 };
   } else if (task.roundStage === 2) {
@@ -3218,13 +3255,14 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
   } else {
     patch = { roundStage: 4, roundPass: task.roundPass + 1, roundTarget: remainingMarked || 0, roundCompleted: 0 };
   }
-  const nextTask = normalizeTask({ ...task, ...patch, roundHistory: [...task.roundHistory, historyEntry] }, data.value.phases[0]?.id || '');
+  const normalizedNextTask = normalizeTask({ ...task, ...patch, roundHistory: [...task.roundHistory, historyEntry] }, data.value.phases[0]?.id || '');
+  const nextTask = cleared ? normalizedNextTask : resetRoundStageEndDate(normalizedNextTask);
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
 }
 
 function restartRoundCycle(task: Task) {
   if (!task.roundModeEnabled || !task.roundCleared) return;
-  const nextTask = normalizeTask({
+  const nextTask = resetRoundStageEndDate(normalizeTask({
     ...task,
     roundCycle: task.roundCycle + 1,
     roundStage: 1,
@@ -3233,7 +3271,7 @@ function restartRoundCycle(task: Task) {
     roundCompleted: 0,
     roundCleared: false,
     completionArchived: true,
-  }, data.value.phases[0]?.id || '');
+  }, data.value.phases[0]?.id || ''));
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
 }
 
@@ -5872,7 +5910,7 @@ function taskLastStudyDate(task: Task) {
           </div>
           <div class="task-table settings-task-table">
             <div class="task-table-head">
-              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>轮刷</span><span>完成</span><span>建议</span><span>操作</span>
+              <span>任务</span><span>平台</span><span>频率</span><span>记录</span><span>任务日期</span><span>复习</span><span>题库量</span><span>重复</span><span>轮刷</span><span>完成</span><span>建议</span><span>操作</span>
             </div>
             <div v-for="task in group.tasks" :key="task.id" class="task-table-row" :class="{ 'is-completed': isTaskCompletedOverall(task) }">
               <label class="select-control table-select task-type-select table-field" data-label="任务">
@@ -5927,6 +5965,18 @@ function taskLastStudyDate(task: Task) {
               <label class="table-field number-field" data-label="题库量">
                 <input type="number" :value="task.target || ''" :disabled="task.roundModeEnabled" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
               </label>
+              <label class="table-field number-field" data-label="重复">
+                <input
+                  v-if="task.trackingMode === 'count_only' && !task.roundModeEnabled"
+                  type="number"
+                  min="1"
+                  max="99"
+                  :value="task.repeatCount"
+                  title="全题库重复遍数，不进行错题筛选"
+                  @input="updateTask(task.id, { repeatCount: Number(($event.target as HTMLInputElement).value) })"
+                >
+                <span v-else class="round-mode-unavailable">—</span>
+              </label>
               <div class="table-field round-mode-control" data-label="轮刷">
                 <span v-if="task.trackingMode === 'itemized'" class="round-mode-unavailable">背诵不适用</span>
                 <button v-else-if="!task.roundModeEnabled" class="round-mode-enable" type="button" @click="openRoundSetup(task)">手动开启</button>
@@ -5950,7 +6000,7 @@ function taskLastStudyDate(task: Task) {
             </div>
             <section v-for="task in group.tasks.filter((item) => item.roundModeEnabled)" :key="`${task.id}-rounds`" class="round-plan-detail">
               <div class="round-plan-summary">
-                <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题</span><p>{{ roundInstruction(task) }}</p></div>
+                <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
                 <button v-if="task.roundCompleted >= task.roundTarget" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
               </div>
               <details v-if="task.roundHistory.length" class="round-history-list">
@@ -6050,7 +6100,7 @@ function taskLastStudyDate(task: Task) {
             </article>
           </div>
         </details>
-        <p class="hint">提示：动态均摊 = Math.ceil(当前轮剩余题量 / 总计划剩余有效练习天数)。未开启轮刷的任务继续按普通剩余量计算。</p>
+        <p class="hint">提示：普通任务按全部重复遍数的剩余总量均摊；错题轮刷按时间配额推进：第 1 轮使用剩余时间的 1/2，第 2 轮使用 2/5，第 3 轮使用 1/3，第 4 轮每遍使用 1/2 并为继续清零预留时间。</p>
       </section>
 
       <section class="panel restart-panel">

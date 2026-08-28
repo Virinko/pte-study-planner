@@ -1317,6 +1317,7 @@ input[type="number"]::-webkit-inner-spin-button {
     minmax(0, 1.24fr)
     minmax(0, .68fr)
     minmax(0, .72fr)
+    minmax(0, .58fr)
     minmax(0, .68fr)
     minmax(0, .72fr)
     minmax(0, .54fr)

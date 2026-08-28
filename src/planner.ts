@@ -90,6 +90,27 @@ export function buildSchedule(data: StudyData): PhaseSchedule[] {
 }
 
 export function currentPhase(schedule: PhaseSchedule[], date = todayIso()) { return schedule.find((p) => date >= p.startDate && date <= p.endDate) || schedule.find((p) => date < p.startDate) || schedule[schedule.length - 1]; }
+export function taskRoundStageEndDate(task: Task, phase: PhaseSchedule, date = todayIso()) {
+  const startDate = task.startDate || phase.startDate;
+  const endDate = task.endDate || phase.endDate;
+  const effectiveStart = date < startDate ? startDate : date;
+  const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
+  const remainingDays = Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd));
+  const stageShare = task.roundStage === 1
+    ? 1 / 2
+    : task.roundStage === 2
+      ? 2 / 5
+      : task.roundStage === 3
+        ? 1 / 3
+        : 1 / 2;
+  const futureStageMinimumDays = task.roundStage === 1 ? 3 : task.roundStage === 2 ? 2 : task.roundStage === 3 ? 1 : 0;
+  const stageDayBudget = Math.max(1, Math.min(
+    Math.max(1, remainingDays - futureStageMinimumDays),
+    Math.floor(remainingDays * stageShare),
+  ));
+  return addDays(effectiveStart, stageDayBudget - 1);
+}
+
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
   if (!phase || task.planStatus === 'shelved') return 0;
   const remaining = taskRemaining(task);
@@ -98,6 +119,12 @@ export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIs
   const endDate = task.endDate || phase.endDate;
   const effectiveStart = date < startDate ? startDate : date;
   const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
-  return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd)));
+  const remainingDays = Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd));
+  if (!task.roundModeEnabled) return Math.ceil(remaining / remainingDays);
+  const plannedStageEnd = task.roundStageEndDate || taskRoundStageEndDate(task, phase, date);
+  const stageEnd = plannedStageEnd < effectiveStart
+    ? effectiveStart
+    : plannedStageEnd > effectiveEnd ? effectiveEnd : plannedStageEnd;
+  return Math.ceil(remaining / Math.max(1, daysBetweenInclusive(effectiveStart, stageEnd)));
 }
 export const pct = (done: number, target: number) => target <= 0 ? 0 : clamp(Math.round((done / target) * 100), 0, 100);
