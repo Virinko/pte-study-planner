@@ -3722,7 +3722,7 @@ nav button.active::after {
 .today-table .dashboard-table-head,
 .today-table .dashboard-table-row {
   min-width: 0;
-  grid-template-columns: minmax(116px, .92fr) 92px .48fr minmax(180px, 1fr) minmax(180px, 1fr) minmax(78px, .55fr) minmax(132px, .72fr);
+  grid-template-columns: minmax(230px, 1.15fr) 92px .48fr minmax(180px, 1fr) minmax(180px, 1fr) minmax(78px, .55fr) minmax(132px, .72fr);
 }
 
 .today-table .dashboard-table-head > :last-child {
@@ -4099,6 +4099,11 @@ nav button.active::after {
   font-size: 12px;
 }
 
+.today-table .task-name-cell small {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
 .task-name-cell .today-platform-tag {
   display: inline-flex;
   align-items: center;
@@ -4153,6 +4158,7 @@ nav button.active::after {
   border: 1px solid #f3c7d7;
   border-radius: 999px;
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .today-target-refresh {
