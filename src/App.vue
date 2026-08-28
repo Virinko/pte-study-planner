@@ -309,8 +309,22 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
   const totalTarget = Math.max(0, target * repeatCount);
   const completed = trackingMode === 'itemized' && subItems.length > 0 ? doneCount : Number(task.completed ?? 0);
   const roundStage = isTaskRoundStage(task.roundStage) ? task.roundStage : 1;
+  const roundPass = Math.max(1, Math.floor(Number(task.roundPass ?? 1)));
+  const roundHistory = normalizeTaskRoundHistory(task.roundHistory);
   const roundTarget = roundModeEnabled ? Math.max(0, Math.floor(Number(task.roundTarget ?? target))) : 0;
-  const roundCompleted = roundModeEnabled ? Math.min(roundTarget, Math.max(0, Math.floor(Number(task.roundCompleted ?? 0)))) : 0;
+  const storedRoundCompleted = Math.max(0, Math.floor(Number(task.roundCompleted ?? 0)));
+  const previousRoundProgress = target > 0 && completed > 0
+    ? Math.max(0, Math.floor(completed)) % target || target
+    : 0;
+  const shouldRestoreInitialRoundProgress = roundModeEnabled
+    && roundStage === 1
+    && roundPass === 1
+    && roundHistory.length === 0
+    && storedRoundCompleted === 0
+    && previousRoundProgress > 0;
+  const roundCompleted = roundModeEnabled
+    ? Math.min(roundTarget, shouldRestoreInitialRoundProgress ? previousRoundProgress : storedRoundCompleted)
+    : 0;
   const roundCleared = roundModeEnabled && Boolean(task.roundCleared);
   return {
     id: task.id || crypto.randomUUID(),
@@ -334,13 +348,13 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     roundModeEnabled,
     roundCycle: Math.max(1, Math.floor(Number(task.roundCycle ?? 1))),
     roundStage,
-    roundPass: Math.max(1, Math.floor(Number(task.roundPass ?? 1))),
+    roundPass,
     roundTarget,
     roundCompleted,
     roundStageEndDate: roundModeEnabled && task.roundStageEndDate ? task.roundStageEndDate : undefined,
     roundPracticeTotal: Math.max(0, Math.floor(Number(task.roundPracticeTotal ?? (roundModeEnabled ? completed : 0)))),
     roundCleared,
-    roundHistory: normalizeTaskRoundHistory(task.roundHistory),
+    roundHistory,
   };
 }
 
@@ -3183,6 +3197,9 @@ function submitRoundSetup() {
   }
   const previousCycles = task.roundHistory.map((entry) => entry.cycle);
   const cycle = Math.max(1, task.roundCycle || 1, ...previousCycles);
+  const startingRoundCompleted = roundSetupStage.value === 1
+    ? Math.min(currentTarget, taskRoundCompleted(task))
+    : 0;
   const nextTask = resetRoundStageEndDate(normalizeTask({
     ...task,
     target,
@@ -3192,7 +3209,7 @@ function submitRoundSetup() {
     roundStage: roundSetupStage.value,
     roundPass: 1,
     roundTarget: currentTarget,
-    roundCompleted: 0,
+    roundCompleted: startingRoundCompleted,
     roundPracticeTotal: Math.max(task.roundPracticeTotal || 0, task.completed || 0),
     roundCleared: false,
     completionArchived: true,
@@ -6574,7 +6591,8 @@ function taskLastStudyDate(task: Task) {
         <div class="round-flow-explainer">
           <span>第 1 轮：全量</span><span>第 2 轮：第一轮标记数</span><span>第 3、4 轮：第二轮标记数</span><span>第 4 轮持续到清零</span>
         </div>
-        <p v-if="roundSetupTask.completed > 0" class="round-flow-note">现有 {{ roundSetupTask.completed }} 题进度会保留在累计练习量中，第 {{ roundSetupStage }} 轮从 0 开始。</p>
+        <p v-if="roundSetupTask.completed > 0 && roundSetupStage === 1" class="round-flow-note">现有进度会继承到第 1 轮，开启后从 {{ Math.min(Math.max(0, Number(roundSetupTargetInput) || 0), taskRoundCompleted(roundSetupTask)) }} / {{ Math.max(0, Number(roundSetupTargetInput) || 0) }} 继续。</p>
+        <p v-else-if="roundSetupTask.completed > 0" class="round-flow-note">现有 {{ roundSetupTask.completed }} 题进度会保留在累计练习量中，第 {{ roundSetupStage }} 轮从 0 开始。</p>
         <p v-if="roundSetupStage > 1" class="round-flow-note">完整题库总量用于以后重新全量开始；本次进度按第 {{ roundSetupStage }} 轮当前题量计算。</p>
         <p v-if="roundSetupError" class="correction-error">{{ roundSetupError }}</p>
         <div class="timer-modal-actions correction-actions">
