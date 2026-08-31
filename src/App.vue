@@ -19,9 +19,8 @@ const DIRTY_KEY = 'pte_progress_dirty';
 const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
 const LAST_SYNC_LABEL_KEY = 'pte_progress_last_sync_label';
 const LAST_SYNC_MESSAGE_KEY = 'pte_progress_last_sync_message';
-const LAST_CLOUD_LOAD_DATE_KEY = 'pte_progress_last_cloud_load_date';
-const CLOUD_SAVE_DEBOUNCE_MS = 7000;
-const CLOUD_SAVE_MIN_INTERVAL_MS = 10000;
+const CLOUD_SAVE_DEBOUNCE_MS = 1500;
+const CLOUD_SAVE_MIN_INTERVAL_MS = 2000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -636,14 +635,6 @@ function readStoredLastSyncMessage() {
   }
 }
 
-function readStoredLastCloudLoadDate() {
-  try {
-    return localStorage.getItem(LAST_CLOUD_LOAD_DATE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
 function hasStoredProgressBackup() {
   try {
     return Boolean(localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY));
@@ -807,7 +798,7 @@ const cloudLoadError = ref(false);
 const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
 const lastCloudSyncLabel = ref(readStoredLastSyncLabel());
 const lastCloudSyncMessage = ref(readStoredLastSyncMessage());
-const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV || readStoredLastCloudLoadDate() === todayIso());
+const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
 let lastCloudSaveAttemptAt = 0;
@@ -1833,10 +1824,7 @@ onMounted(() => {
   window.addEventListener('pagehide', handlePageHide);
   window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
-  if (!IS_LOCAL_DEV) {
-    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-    void loadCloudProgress(navigation?.type === 'reload');
-  }
+  if (!IS_LOCAL_DEV) void loadCloudProgress();
 });
 
 onBeforeUnmount(() => {
@@ -1885,7 +1873,7 @@ watch([phaseProgress, phase], () => {
 watch([todayDynamicTargetSignature, todayProgressSignature, hasTodayTargetSnapshot], () => {
   refreshUnstartedTodayTargets(hasTodayTargetSnapshot.value
     ? {}
-    : { markDirty: false, scheduleSync: false, preserveUpdatedAt: true });
+    : { markDirty: false, scheduleSync: false });
 }, { immediate: true });
 
 function persistProgressBackup(next: StudyData) {
@@ -1906,13 +1894,12 @@ function persistLastCloudSyncState(label: string, message: string) {
   localStorage.setItem(LAST_SYNC_MESSAGE_KEY, message);
 }
 
-function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
-  const { markDirty = true, scheduleSync = true, preserveUpdatedAt = false } = options;
+function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+  const { markDirty = true, scheduleSync = true } = options;
   const normalized = normalizeData(next);
-  const nextUpdatedAt = preserveUpdatedAt ? (normalized.updatedAt || data.value.updatedAt || '') : new Date().toISOString();
   const stamped = {
     ...normalized,
-    updatedAt: nextUpdatedAt,
+    updatedAt: normalized.updatedAt || data.value.updatedAt || '',
   };
   data.value = stamped;
   persistProgressBackup(stamped);
@@ -1967,7 +1954,7 @@ function submitPassword() {
   localStorage.setItem(APP_PASSWORD_KEY, nextPassword);
   passwordInput.value = '';
   passwordError.value = '';
-  void loadCloudProgress(true);
+  void loadCloudProgress();
 }
 
 async function fetchCloudProgress() {
@@ -1984,33 +1971,16 @@ async function fetchCloudProgress() {
   return normalizeData(await res.json() as Partial<StudyData>);
 }
 
-async function loadCloudProgress(force = false) {
+async function loadCloudProgress() {
   if (IS_LOCAL_DEV || !appPassword.value) return;
   if (isCloudLoading.value) return;
-  if (!force && readStoredLastCloudLoadDate() === todayIso()) {
-    hasCheckedCloudBaseline.value = true;
-    return;
-  }
   isCloudLoading.value = true;
   cloudLoadError.value = false;
   try {
     const remote = await fetchCloudProgress();
     if (!remote) return;
     hasCheckedCloudBaseline.value = true;
-    const remoteUpdatedAt = remote.updatedAt || '';
-    const shouldUseRemote = !hasLocalProgressBackup.value
-      || !data.value.updatedAt
-      || (Boolean(remoteUpdatedAt) && remoteUpdatedAt > data.value.updatedAt);
-    if (shouldUseRemote) applyRemoteProgress(remote);
-    else {
-      cloudLoadError.value = false;
-      if (!isDirty.value && remoteUpdatedAt) {
-        lastCloudSyncedAt.value = remoteUpdatedAt;
-        localStorage.setItem(LAST_SYNCED_KEY, remoteUpdatedAt);
-      }
-    }
-    if (isDirty.value) scheduleCloudSave(1200);
-    localStorage.setItem(LAST_CLOUD_LOAD_DATE_KEY, todayIso());
+    applyRemoteProgress(remote);
   } catch {
     cloudLoadError.value = true;
   } finally {
@@ -2035,9 +2005,7 @@ async function syncCloudProgress() {
   isCloudSaving.value = true;
   cloudSaveError.value = false;
   try {
-    const payload = { ...normalizeData(data.value), updatedAt: data.value.updatedAt || new Date().toISOString() };
-    data.value = payload;
-    persistProgressBackup(payload);
+    const { updatedAt: _updatedAt, ...payload } = normalizeData(data.value);
     const res = await fetch('/api/progress', {
       method: 'POST',
       headers: {
@@ -2066,7 +2034,7 @@ async function syncCloudProgress() {
     persistDirty(false);
     cloudSaveError.value = false;
     cloudLoadError.value = false;
-    lastCloudSyncedAt.value = saved.updatedAt || payload.updatedAt;
+    lastCloudSyncedAt.value = saved.updatedAt || '';
     localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
     persistLastCloudSyncState(
       '已保存并同步云端',
@@ -2096,18 +2064,23 @@ function handleVisibilityChange() {
   finishPomodoroIfNeeded();
   if (document.visibilityState === 'visible') {
     stopPomodoroTitleFlash();
-    void loadCloudProgress();
+    void refreshCloudProgress();
   } else {
     tryImmediateCloudSave();
   }
 }
 
 function handleWindowFocus() {
-  if (document.visibilityState === 'visible') void loadCloudProgress();
+  if (document.visibilityState === 'visible') void refreshCloudProgress();
 }
 
 function handleWindowOnline() {
-  if (document.visibilityState === 'visible') void loadCloudProgress();
+  if (document.visibilityState === 'visible') void refreshCloudProgress();
+}
+
+async function refreshCloudProgress() {
+  if (isDirty.value && !await syncCloudProgress()) return;
+  await loadCloudProgress();
 }
 
 function handlePageHide() {
@@ -4746,7 +4719,7 @@ function sameTargetSnapshot(a: Record<string, number> = {}, b: Record<string, nu
   return [...keys].every((key) => Number(a[key] || 0) === Number(b[key] || 0));
 }
 
-function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
+function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
   const date = todayIso();
   const nextTargets = buildTodayTargetSnapshot();
   const currentTargets = data.value.dailyTargets?.[date] || {};
@@ -4760,7 +4733,7 @@ function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: bool
   }, options);
 }
 
-function refreshUnstartedTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean; preserveUpdatedAt?: boolean } = {}) {
+function refreshUnstartedTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
   const date = todayIso();
   const latestTargets = buildTodayTargetSnapshot();
   const currentTargets = data.value.dailyTargets?.[date] || {};

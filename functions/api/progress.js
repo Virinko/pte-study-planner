@@ -49,7 +49,7 @@ export async function onRequestPost({ request, env }) {
   const stored = await env.PROGRESS_KV.get(PROGRESS_KEY, 'json');
   const storedUpdatedAt = stored?.updatedAt || '';
   const baseUpdatedAt = request.headers.get('x-progress-base-updated-at') || '';
-  if (storedUpdatedAt && (!baseUpdatedAt || storedUpdatedAt > baseUpdatedAt)) {
+  if (storedUpdatedAt && storedUpdatedAt !== baseUpdatedAt) {
     return json({
       ok: false,
       error: 'Conflict',
@@ -58,8 +58,8 @@ export async function onRequestPost({ request, env }) {
     }, 409);
   }
 
-  const nextUpdatedAt = typeof progress?.updatedAt === 'string' ? progress.updatedAt : '';
-  const stamped = { ...progress, updatedAt: nextUpdatedAt };
+  const updatedAt = new Date().toISOString();
+  const stamped = { ...progress, updatedAt };
   await env.PROGRESS_KV.put(PROGRESS_KEY, JSON.stringify(stamped));
-  return json({ ok: true, updatedAt: nextUpdatedAt, progress: stamped });
+  return json({ ok: true, updatedAt, progress: stamped });
 }
