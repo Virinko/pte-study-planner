@@ -152,9 +152,17 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     days: daysBetweenInclusive(settings.startDate, settings.deadline),
     totalWork: 0,
   };
-  const tasks = normalizedTasks.map((task) => task.roundModeEnabled && !task.roundCleared && !task.roundStageEndDate
-    ? { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase) }
-    : task);
+  const isLegacyRoundDeadline = Number(source?.version || 0) < 5;
+  const tasks = normalizedTasks.map((task) => {
+    if (!task.roundModeEnabled || task.roundCleared) return task;
+    if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase) };
+    const completedFirstRound = task.roundHistory.some((entry) => entry.cycle === task.roundCycle && entry.stage === 1);
+    if (isLegacyRoundDeadline && task.roundStage === 2 && completedFirstRound) {
+      const plannedSecondRoundStart = addDays(task.roundStageEndDate, 1);
+      return { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase, plannedSecondRoundStart) };
+    }
+    return task;
+  });
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
   const reviewPlans = normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks);
   const reviewLogs = normalizeReviewLogs(source?.reviewLogs, reviewPlans, studyTimeEntries);

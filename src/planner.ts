@@ -15,7 +15,7 @@ export function defaultData(): StudyData {
   const today = todayIso();
   const deadline = addDays(today, 60);
   return {
-    version: 4,
+    version: 5,
     updatedAt: '',
     settings: { startDate: today, deadline },
     phases: [{ id: crypto.randomUUID(), name: '备考总计划', order: 1, startDate: today, endDate: deadline }],
