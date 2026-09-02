@@ -1826,7 +1826,6 @@ onMounted(() => {
     finishPomodoroIfNeeded();
   }, 1000);
   window.addEventListener('resize', resizeProgressCharts);
-  window.addEventListener('focus', handleWindowFocus);
   window.addEventListener('online', handleWindowOnline);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('pagehide', handlePageHide);
@@ -1840,7 +1839,6 @@ onBeforeUnmount(() => {
   if (pomodoroAudioContext) void pomodoroAudioContext.close();
   stopPomodoroTitleFlash();
   window.removeEventListener('resize', resizeProgressCharts);
-  window.removeEventListener('focus', handleWindowFocus);
   window.removeEventListener('online', handleWindowOnline);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   window.removeEventListener('pagehide', handlePageHide);
@@ -1933,8 +1931,6 @@ function applyRemoteProgress(remote: StudyData) {
     '已拉取云端最新进度',
     normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录',
   );
-  selectedNoteDate.value = todayIso();
-  resetNoteDraft();
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
 }
 
@@ -2072,14 +2068,9 @@ function handleVisibilityChange() {
   finishPomodoroIfNeeded();
   if (document.visibilityState === 'visible') {
     stopPomodoroTitleFlash();
-    void refreshCloudProgress();
   } else {
     tryImmediateCloudSave();
   }
-}
-
-function handleWindowFocus() {
-  if (document.visibilityState === 'visible') void refreshCloudProgress();
 }
 
 function handleWindowOnline() {
