@@ -3094,11 +3094,11 @@ function updateTask(id: string, patch: Partial<Task>) {
   });
 }
 
-function resetRoundStageEndDate(task: Task, targetSchedule = schedule.value): Task {
+function resetRoundStageEndDate(task: Task, targetSchedule = schedule.value, planningStartDate = todayIso()): Task {
   if (!task.roundModeEnabled || task.roundCleared) return { ...task, roundStageEndDate: undefined };
   const targetPhase = targetSchedule.find((item) => item.id === task.phaseId) || targetSchedule[0];
   return targetPhase
-    ? { ...task, roundStageEndDate: taskRoundStageEndDate(task, targetPhase, todayIso()) }
+    ? { ...task, roundStageEndDate: taskRoundStageEndDate(task, targetPhase, planningStartDate) }
     : task;
 }
 
@@ -3246,7 +3246,8 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
     patch = { roundStage: 4, roundPass: task.roundPass + 1, roundTarget: remainingMarked || 0, roundCompleted: 0 };
   }
   const normalizedNextTask = normalizeTask({ ...task, ...patch, roundHistory: [...task.roundHistory, historyEntry] }, data.value.phases[0]?.id || '');
-  const nextTask = cleared ? normalizedNextTask : resetRoundStageEndDate(normalizedNextTask);
+  const nextStageStartDate = task.roundStageEndDate ? addDays(task.roundStageEndDate, 1) : todayIso();
+  const nextTask = cleared ? normalizedNextTask : resetRoundStageEndDate(normalizedNextTask, schedule.value, nextStageStartDate);
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
 }
 
