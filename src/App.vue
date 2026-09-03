@@ -5,7 +5,7 @@ import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echart
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
@@ -845,6 +845,7 @@ let studyTypeChartInstance: ECharts | null = null;
 let copiedCheckInTimer: number | undefined;
 
 const activePlanTasks = computed(() => data.value.tasks.filter((task) => task.planStatus === 'active'));
+const activeRoundTaskCount = computed(() => activePlanTasks.value.filter((task) => task.roundModeEnabled && !task.roundCleared).length);
 const shelvedTasks = computed(() => data.value.tasks
   .filter((task) => task.planStatus === 'shelved')
   .sort((a, b) => (b.shelvedAt || '').localeCompare(a.shelvedAt || '')));
@@ -2988,10 +2989,7 @@ function formatClockTime(value: string) {
 function updateSettings(patch: Partial<StudyData['settings']>) {
   const settings = { ...data.value.settings, ...patch };
   const phases = syncPhaseBoundaries(data.value.phases, settings);
-  const nextData = { ...data.value, settings, phases };
-  const nextSchedule = buildSchedule(nextData);
-  const tasks = nextData.tasks.map((task) => resetRoundStageEndDate(task, nextSchedule));
-  saveLocal({ ...nextData, tasks });
+  saveLocal({ ...data.value, settings, phases });
 }
 
 function updatePhase(id: string, patch: Partial<Phase>) {
@@ -3007,10 +3005,7 @@ function updatePhase(id: string, patch: Partial<Phase>) {
     data.value.phases.map((item) => item.id === id ? { ...item, ...patch } : item),
     settings,
   );
-  const nextData = { ...data.value, settings, phases };
-  const nextSchedule = buildSchedule(nextData);
-  const tasks = nextData.tasks.map((task) => resetRoundStageEndDate(task, nextSchedule));
-  saveLocal({ ...nextData, tasks });
+  saveLocal({ ...data.value, settings, phases });
 }
 
 function addMockExam(phase: PhaseSchedule) {
@@ -3081,16 +3076,25 @@ function updateTask(id: string, patch: Partial<Task>) {
     updateTaskCompleted(task, Number(patch.completed ?? 0), patch);
     return;
   }
-  const shouldResetRoundDeadline = Boolean(task?.roundModeEnabled)
-    && (Object.prototype.hasOwnProperty.call(patch, 'startDate') || Object.prototype.hasOwnProperty.call(patch, 'endDate'));
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((item) => {
       if (item.id !== id) return item;
-      const nextTask = normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
-      return shouldResetRoundDeadline ? resetRoundStageEndDate(nextTask) : nextTask;
+      return normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
     }),
   });
+}
+
+function recalculateRoundPlanDates() {
+  const targetSchedule = buildSchedule(data.value);
+  const tasks = data.value.tasks.map((task) => {
+    if (!task.roundModeEnabled || task.roundCleared) return task;
+    const targetPhase = targetSchedule.find((item) => item.id === task.phaseId) || targetSchedule[0];
+    return targetPhase
+      ? { ...task, roundStageEndDate: taskRoundPlanEndDate(task, targetPhase, todayIso()) }
+      : task;
+  });
+  saveLocal({ ...data.value, tasks });
 }
 
 function resetRoundStageEndDate(task: Task, targetSchedule = schedule.value, planningStartDate = todayIso()): Task {
@@ -5833,6 +5837,13 @@ function taskLastStudyDate(task: Task) {
             <span class="settings-progress-track"><i :style="{ width: `${planTimePercent}%` }" /></span>
             <p><span>已学习 {{ planElapsedDays }} 天</span><span>剩余 {{ planRemainingDays }} 天</span></p>
           </div>
+        </div>
+        <div v-if="activeRoundTaskCount" class="today-target-refresh round-plan-recalculate">
+          <div>
+            <strong>轮刷日期需要手动重算</strong>
+            <p>修改计划周期、任务日期等数据后，点击按钮按今天至最新截止日重新排列完整轮次；当前第 2 轮会排在新的第 1 轮节点之后。</p>
+          </div>
+          <button type="button" @click="recalculateRoundPlanDates">重新计算轮刷日期</button>
         </div>
 
         <div class="section-heading settings-phase-heading">

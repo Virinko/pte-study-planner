@@ -1,4 +1,4 @@
-import type { Phase, PhaseSchedule, StudyData, Task } from './types';
+import type { Phase, PhaseSchedule, StudyData, Task, TaskRoundStage } from './types';
 
 const formatLocalDate = (date: Date) => {
   const year = date.getFullYear();
@@ -109,6 +109,23 @@ export function taskRoundStageEndDate(task: Task, phase: PhaseSchedule, date = t
     Math.floor(remainingDays * stageShare),
   ));
   return addDays(effectiveStart, stageDayBudget - 1);
+}
+
+export function taskRoundPlanEndDate(task: Task, phase: PhaseSchedule, date = todayIso()) {
+  const stages: TaskRoundStage[] = [];
+  for (let stage = 1; stage <= Math.min(task.roundStage, 3); stage += 1) stages.push(stage as TaskRoundStage);
+  if (task.roundStage === 4) {
+    for (let pass = 0; pass < task.roundPass; pass += 1) stages.push(4);
+  }
+  let stageStart = date;
+  let stageEnd = date;
+  const taskEnd = task.endDate || phase.endDate;
+  for (const roundStage of stages) {
+    stageEnd = taskRoundStageEndDate({ ...task, roundStage }, phase, stageStart);
+    if (stageEnd >= taskEnd) return stageEnd;
+    stageStart = addDays(stageEnd, 1);
+  }
+  return stageEnd;
 }
 
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
