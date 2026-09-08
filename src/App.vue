@@ -3076,12 +3076,22 @@ function updateTask(id: string, patch: Partial<Task>) {
     updateTaskCompleted(task, Number(patch.completed ?? 0), patch);
     return;
   }
+  const shouldRecalculateRoundPlan = Boolean(task?.roundModeEnabled && !task.roundCleared)
+    && (Object.prototype.hasOwnProperty.call(patch, 'startDate') || Object.prototype.hasOwnProperty.call(patch, 'endDate'));
+  const targetPhase = shouldRecalculateRoundPlan
+    ? schedule.value.find((item) => item.id === task?.phaseId) || schedule.value[0]
+    : undefined;
+  const tasks = data.value.tasks.map((item) => {
+    if (item.id !== id) return item;
+    const nextTask = normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
+    return shouldRecalculateRoundPlan && targetPhase
+      ? { ...nextTask, roundStageEndDate: taskRoundPlanEndDate(nextTask, targetPhase, todayIso()) }
+      : nextTask;
+  });
   saveLocal({
     ...data.value,
-    tasks: data.value.tasks.map((item) => {
-      if (item.id !== id) return item;
-      return normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
-    }),
+    tasks,
+    ...(shouldRecalculateRoundPlan ? { dailyTargets: dailyTargetsWithoutTaskToday(id) } : {}),
   });
 }
 
