@@ -3070,6 +3070,31 @@ function syncPhaseBoundaries(phases: Phase[], settings: StudyData['settings']) {
   });
 }
 
+function updateTaskTarget(task: Task, event: Event) {
+  const input = event.target as HTMLInputElement;
+  const target = Math.max(0, Math.floor(Number(input.value) || 0));
+  if (!task.roundModeEnabled) {
+    updateTask(task.id, { target });
+    return;
+  }
+  const minimumTarget = task.roundStage === 1 ? task.roundCompleted : task.roundTarget;
+  if (target < minimumTarget) {
+    alert(`题库总数不能小于${task.roundStage === 1 ? '本轮已完成量' : '当前轮题量'} ${minimumTarget}。`);
+    input.value = String(task.target);
+    return;
+  }
+  const nextTask = normalizeTask({
+    ...task,
+    target,
+    ...(task.roundStage === 1 ? { roundTarget: target } : {}),
+  }, data.value.phases[0]?.id || '');
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item),
+    dailyTargets: dailyTargetsWithoutTaskToday(task.id),
+  });
+}
+
 function updateTask(id: string, patch: Partial<Task>) {
   const task = data.value.tasks.find((item) => item.id === id);
   if (task && Object.prototype.hasOwnProperty.call(patch, 'completed')) {
@@ -5974,7 +5999,13 @@ function taskLastStudyDate(task: Task) {
                 开启
               </label>
               <label class="table-field number-field" data-label="题库量">
-                <input type="number" :value="task.target || ''" :disabled="task.roundModeEnabled" @input="updateTask(task.id, { target: Number(($event.target as HTMLInputElement).value) })">
+                <input
+                  type="number"
+                  min="0"
+                  :value="task.target || ''"
+                  :title="task.roundModeEnabled ? task.roundStage === 1 ? '修改完整题库总数，并同步更新第一轮题量' : '修改完整题库总数；当前错题轮题量保持不变' : '修改题库总数'"
+                  @change="updateTaskTarget(task, $event)"
+                >
               </label>
               <label class="table-field number-field" data-label="重复">
                 <input
