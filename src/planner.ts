@@ -96,13 +96,15 @@ export function taskRoundStageEndDate(task: Task, phase: PhaseSchedule, date = t
   const effectiveStart = date < startDate ? startDate : date;
   const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
   const remainingDays = Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd));
+  // 40% / 25% / 20% / 15% of the full window, expressed as a share of the
+  // time still available when each stage begins.
   const stageShare = task.roundStage === 1
-    ? 1 / 2
+    ? 2 / 5
     : task.roundStage === 2
-      ? 2 / 5
+      ? 5 / 12
       : task.roundStage === 3
-        ? 1 / 3
-        : 1 / 2;
+        ? 4 / 7
+        : 1;
   const futureStageMinimumDays = task.roundStage === 1 ? 3 : task.roundStage === 2 ? 2 : task.roundStage === 3 ? 1 : 0;
   const stageDayBudget = Math.max(1, Math.min(
     Math.max(1, remainingDays - futureStageMinimumDays),

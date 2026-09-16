@@ -155,7 +155,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   const isLegacyRoundDeadline = Number(source?.version || 0) < 5;
   const tasks = normalizedTasks.map((task) => {
     if (!task.roundModeEnabled || task.roundCleared) return task;
-    if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase) };
+    if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundPlanEndDate(task, planPhase) };
     const completedFirstRound = task.roundHistory.some((entry) => entry.cycle === task.roundCycle && entry.stage === 1);
     if (isLegacyRoundDeadline && task.roundStage === 2 && completedFirstRound) {
       const plannedSecondRoundStart = addDays(task.roundStageEndDate, 1);
@@ -3211,7 +3211,7 @@ function submitRoundSetup() {
   const startingRoundCompleted = roundSetupStage.value === 1
     ? Math.min(currentTarget, taskRoundCompleted(task))
     : 0;
-  const nextTask = resetRoundStageEndDate(normalizeTask({
+  const normalizedNextTask = normalizeTask({
     ...task,
     target,
     repeatCount: 1,
@@ -3224,7 +3224,11 @@ function submitRoundSetup() {
     roundPracticeTotal: Math.max(task.roundPracticeTotal || 0, task.completed || 0),
     roundCleared: false,
     completionArchived: true,
-  }, data.value.phases[0]?.id || ''));
+  }, data.value.phases[0]?.id || '');
+  const targetPhase = schedule.value.find((item) => item.id === normalizedNextTask.phaseId) || schedule.value[0];
+  const nextTask = targetPhase
+    ? { ...normalizedNextTask, roundStageEndDate: taskRoundPlanEndDate(normalizedNextTask, targetPhase, todayIso()) }
+    : normalizedNextTask;
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
   closeRoundSetup();
 }
@@ -3285,7 +3289,9 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
   }
   const normalizedNextTask = normalizeTask({ ...task, ...patch, roundHistory: [...task.roundHistory, historyEntry] }, data.value.phases[0]?.id || '');
   const nextStageStartDate = task.roundStageEndDate ? addDays(task.roundStageEndDate, 1) : todayIso();
-  const nextTask = cleared ? normalizedNextTask : resetRoundStageEndDate(normalizedNextTask, schedule.value, nextStageStartDate);
+  const nextTask = cleared || (task.roundStage === 4 && task.roundStageEndDate)
+    ? normalizedNextTask
+    : resetRoundStageEndDate(normalizedNextTask, schedule.value, nextStageStartDate);
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
 }
 
@@ -6142,7 +6148,7 @@ function taskLastStudyDate(task: Task) {
             </article>
           </div>
         </details>
-        <p class="hint">提示：普通任务按全部重复遍数的剩余总量均摊；错题轮刷按时间配额推进：第 1 轮使用剩余时间的 1/2，第 2 轮使用 2/5，第 3 轮使用 1/3，第 4 轮每遍使用 1/2 并为继续清零预留时间。</p>
+        <p class="hint">提示：普通任务按全部重复遍数的剩余总量均摊；错题轮刷按完整可用时间分配：第 1 轮 40%、第 2 轮 25%、第 3 轮 20%、第 4 轮 15%。第 4 轮如需继续巩固，沿用同一截止日期直至清零。</p>
       </section>
 
       <section class="panel restart-panel">
