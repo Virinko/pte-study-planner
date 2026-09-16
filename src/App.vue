@@ -155,7 +155,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   const isLegacyRoundDeadline = Number(source?.version || 0) < 5;
   const tasks = normalizedTasks.map((task) => {
     if (!task.roundModeEnabled || task.roundCleared) return task;
-    if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundPlanEndDate(task, planPhase) };
+    if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundPlanEndDate(task, planPhase, task.startDate || planPhase.startDate) };
     const completedFirstRound = task.roundHistory.some((entry) => entry.cycle === task.roundCycle && entry.stage === 1);
     if (isLegacyRoundDeadline && task.roundStage === 2 && completedFirstRound) {
       const plannedSecondRoundStart = addDays(task.roundStageEndDate, 1);
@@ -3110,7 +3110,7 @@ function updateTask(id: string, patch: Partial<Task>) {
     if (item.id !== id) return item;
     const nextTask = normalizeTask({ ...item, ...patch }, data.value.phases[0]?.id || '');
     return shouldRecalculateRoundPlan && targetPhase
-      ? { ...nextTask, roundStageEndDate: taskRoundPlanEndDate(nextTask, targetPhase, todayIso()) }
+      ? { ...nextTask, roundStageEndDate: taskRoundPlanEndDate(nextTask, targetPhase, nextTask.startDate || targetPhase.startDate) }
       : nextTask;
   });
   saveLocal({
@@ -3126,7 +3126,7 @@ function recalculateRoundPlanDates() {
     if (!task.roundModeEnabled || task.roundCleared) return task;
     const targetPhase = targetSchedule.find((item) => item.id === task.phaseId) || targetSchedule[0];
     return targetPhase
-      ? { ...task, roundStageEndDate: taskRoundPlanEndDate(task, targetPhase, todayIso()) }
+      ? { ...task, roundStageEndDate: taskRoundPlanEndDate(task, targetPhase, task.startDate || targetPhase.startDate) }
       : task;
   });
   saveLocal({ ...data.value, tasks });
@@ -3227,7 +3227,7 @@ function submitRoundSetup() {
   }, data.value.phases[0]?.id || '');
   const targetPhase = schedule.value.find((item) => item.id === normalizedNextTask.phaseId) || schedule.value[0];
   const nextTask = targetPhase
-    ? { ...normalizedNextTask, roundStageEndDate: taskRoundPlanEndDate(normalizedNextTask, targetPhase, todayIso()) }
+    ? { ...normalizedNextTask, roundStageEndDate: taskRoundPlanEndDate(normalizedNextTask, targetPhase, normalizedNextTask.startDate || targetPhase.startDate) }
     : normalizedNextTask;
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
   closeRoundSetup();
@@ -5882,7 +5882,7 @@ function taskLastStudyDate(task: Task) {
         <div v-if="activeRoundTaskCount" class="today-target-refresh round-plan-recalculate">
           <div>
             <strong>轮刷日期需要手动重算</strong>
-            <p>修改计划周期、任务日期等数据后，点击按钮按今天至最新截止日重新排列完整轮次；当前第 2 轮会排在新的第 1 轮节点之后。</p>
+            <p>修改计划周期、任务日期等数据后，点击按钮按计划开始日至最新截止日重新排列完整轮次；当前第 2 轮会排在新的第 1 轮节点之后。</p>
           </div>
           <button type="button" @click="recalculateRoundPlanDates">重新计算轮刷日期</button>
         </div>
