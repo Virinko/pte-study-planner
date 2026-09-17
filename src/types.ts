@@ -71,7 +71,7 @@ export interface Task {
   roundHistory: TaskRoundHistoryEntry[];
 }
 
-export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; roundCycle?: number; roundStage?: TaskRoundStage; roundPass?: number; }
+export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; quickAction?: 'complete_today_target'; roundCycle?: number; roundStage?: TaskRoundStage; roundPass?: number; }
 export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyTargets { [date: string]: Record<string, number>; }
 export interface DailyNoteEntry {

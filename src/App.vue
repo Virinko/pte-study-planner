@@ -6,7 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { AnswerEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
@@ -1062,6 +1062,7 @@ function todayTargetRefreshSummaryForPhase(phaseId: string) {
 const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
   const todayCompleted = todayLogByTask.value[task.id] || 0;
   const dailyTarget = todayFrozenTargetByTask.value[task.id] ?? todayDynamicTargetByTask.value[task.id] ?? 0;
+  const todayCompletionUndoAmount = todayTargetCompletionUndoAmount(task);
   const remainingToday = Math.max(0, dailyTarget - todayCompleted);
   const progressCompleted = taskProgressCompleted(task);
   const completedOverall = isTaskCompletedOverall(task);
@@ -1102,13 +1103,15 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
           : 'status-warn',
     remainingToday,
     doneToday,
+    todayCompletionUndoAmount,
+    canUndoTodayCompletion: todayCompletionUndoAmount > 0,
     priorityScore: taskPriorityScore(task.name),
     priorityRank: taskPriorityRank(task.name),
     sourceIndex: index,
   };
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
-const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => isTaskCompletedOverall(task)));
-const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !isTaskCompletedOverall(task)));
+const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => isTaskCompletedOverall(task) && !task.canUndoTodayCompletion));
+const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !isTaskCompletedOverall(task) || task.canUndoTodayCompletion));
 const todayPomodoroTasks = computed(() => activeTodayTaskRows.value.filter((task) => task.target > 0));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
 const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
@@ -3147,6 +3150,11 @@ function roundStageLabel(task: Task) {
   return `第 ${task.roundCycle} 个大轮次 · 第 ${task.roundStage} 轮`;
 }
 
+function roundStageClass(task: Task) {
+  if (!task.roundModeEnabled) return '';
+  return task.roundCleared ? 'round-stage-cleared' : `round-stage-${task.roundStage}`;
+}
+
 function roundHistoryLabel(entry: TaskRoundHistoryEntry) {
   const stage = entry.stage === 4 && entry.pass > 1 ? `第 4 轮巩固第 ${entry.pass} 遍` : `第 ${entry.stage} 轮`;
   return `大轮次 ${entry.cycle} · ${stage}`;
@@ -3671,7 +3679,7 @@ function generateSubItems(task: Task) {
   })));
 }
 
-function addAmount(task: Task, amount: number) {
+function addAmount(task: Task, amount: number, quickAction?: DailyLogEntry['quickAction']) {
   const date = todayIso();
   const log = data.value.dailyLogs[date] || [];
   const todayCompleted = log.filter((entry) => entry.taskId === task.id).reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
@@ -3683,7 +3691,10 @@ function addAmount(task: Task, amount: number) {
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((item) => item.id === task.id ? taskWithProgressDelta(item, delta) : item),
-    dailyLogs: { ...data.value.dailyLogs, [date]: [...log, { taskId: task.id, count: delta, ...roundLogMetadata(task) }] },
+    dailyLogs: {
+      ...data.value.dailyLogs,
+      [date]: [...log, { taskId: task.id, count: delta, ...(quickAction ? { quickAction } : {}), ...roundLogMetadata(task) }],
+    },
   });
 }
 
@@ -3701,6 +3712,48 @@ function setManualAmountValue(id: string, value: number) {
 
 function applyManualAmount(task: Task, direction: 1 | -1) {
   addAmount(task, manualAmount(task.id) * direction);
+}
+
+function completeTodayTarget(task: Task) {
+  const dailyTarget = todayFrozenTargetByTask.value[task.id] ?? todayDynamicTargetByTask.value[task.id] ?? 0;
+  const todayCompleted = todayLogByTask.value[task.id] || 0;
+  addAmount(task, Math.max(0, dailyTarget - todayCompleted), 'complete_today_target');
+}
+
+function todayTargetCompletionLogIndex(task: Task) {
+  const logs = data.value.dailyLogs[todayIso()] || [];
+  for (let index = logs.length - 1; index >= 0; index -= 1) {
+    const entry = logs[index];
+    const belongsToTask = entry.taskId === task.id && (!task.roundModeEnabled
+      || (entry.roundCycle === task.roundCycle && entry.roundStage === task.roundStage && entry.roundPass === task.roundPass));
+    if (!belongsToTask) continue;
+    return entry.quickAction === 'complete_today_target' && (entry.count ?? entry.amount ?? 0) > 0 ? index : -1;
+  }
+  return -1;
+}
+
+function todayTargetCompletionUndoAmount(task: Task) {
+  const logs = data.value.dailyLogs[todayIso()] || [];
+  const index = todayTargetCompletionLogIndex(task);
+  return index < 0 ? 0 : Math.max(0, logs[index].count ?? logs[index].amount ?? 0);
+}
+
+function undoTodayTargetCompletion(task: Task) {
+  const date = todayIso();
+  const logs = data.value.dailyLogs[date] || [];
+  const index = todayTargetCompletionLogIndex(task);
+  if (index < 0) return;
+  const undoAmount = Math.max(0, logs[index].count ?? logs[index].amount ?? 0);
+  if (undoAmount <= 0) return;
+  const nextLogs = logs.filter((_, logIndex) => logIndex !== index);
+  const dailyLogs = { ...data.value.dailyLogs };
+  if (nextLogs.length > 0) dailyLogs[date] = nextLogs;
+  else delete dailyLogs[date];
+  saveLocal({
+    ...data.value,
+    tasks: data.value.tasks.map((item) => item.id === task.id ? taskWithProgressDelta(item, -undoAmount) : item),
+    dailyLogs,
+  });
 }
 
 function deleteTodayPracticeItem(itemId: string) {
@@ -5124,7 +5177,7 @@ function taskLastStudyDate(task: Task) {
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
               <strong class="task-name-cell">
                 <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
               </strong>
               <span class="timer-entry-cell">
                 <button class="timer-entry-button" :class="{ 'is-running': isTimerRunning('task', task.id), 'is-paused': isTimerPaused('task', task.id) }" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
@@ -5168,7 +5221,18 @@ function taskLastStudyDate(task: Task) {
                   <span class="manual-quick-buttons">
                     <button type="button" @click="setManualAmountValue(task.id, 1)">1</button>
                     <button type="button" @click="setManualAmountValue(task.id, 2)">2</button>
-                    <button type="button" @click="setManualAmountValue(task.id, task.dailyTarget)">{{ task.dailyTarget }}</button>
+                    <button
+                      class="complete-today-button"
+                      :class="{ 'is-undo': task.canUndoTodayCompletion }"
+                      type="button"
+                      :disabled="!task.canUndoTodayCompletion && (task.doneToday || task.dailyTarget <= 0)"
+                      :title="task.canUndoTodayCompletion ? `恢复到一键完成前（撤销 ${task.todayCompletionUndoAmount}）` : task.doneToday ? '今日目标已完成' : `一键完成今日目标（补 ${task.remainingToday}）`"
+                      :aria-label="task.canUndoTodayCompletion ? `恢复到一键完成前，撤销 ${task.todayCompletionUndoAmount}` : task.doneToday ? '今日目标已完成' : `一键完成今日目标，还需完成 ${task.remainingToday}`"
+                      @click="task.canUndoTodayCompletion ? undoTodayTargetCompletion(task) : completeTodayTarget(task)"
+                    >
+                      <RotateCcw v-if="task.canUndoTodayCompletion" :size="15" stroke-width="2.7" aria-hidden="true" />
+                      <Check v-else :size="15" stroke-width="2.8" aria-hidden="true" />
+                    </button>
                   </span>
                   <button v-if="task.roundModeEnabled && task.roundCompleted >= task.roundTarget" class="round-complete-button" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
                 </span>
@@ -5294,7 +5358,7 @@ function taskLastStudyDate(task: Task) {
               <article class="completed-task-row">
                 <strong class="task-name-cell">
                   <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                  <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                  <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
                 </strong>
                 <span class="completed-task-metrics">
                   <span class="today-progress-cell overall-progress-cell">
@@ -5486,7 +5550,8 @@ function taskLastStudyDate(task: Task) {
             <strong>{{ task.name }}</strong>
             <span>{{ task.priorityScore ? `${task.priorityScore}%` : '-' }}</span>
             <span>{{ task.frequencyType }}</span>
-            <span>{{ task.roundModeEnabled ? roundStageLabel(task) : task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
+            <span v-if="task.roundModeEnabled" class="round-summary-label" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</span>
+            <span v-else>{{ task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
             <span>{{ task.progressCompleted }} / {{ task.totalTarget }}</span>
             <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
             <span>{{ formatDurationCompact(task.totalStudySeconds) }}</span>
@@ -6028,7 +6093,7 @@ function taskLastStudyDate(task: Task) {
               <div class="table-field round-mode-control" data-label="轮刷">
                 <span v-if="task.trackingMode === 'itemized'" class="round-mode-unavailable">背诵不适用</span>
                 <button v-else-if="!task.roundModeEnabled" class="round-mode-enable" type="button" @click="openRoundSetup(task)">手动开启</button>
-                <span v-else class="round-mode-active"><b>第 {{ task.roundStage }} 轮</b><button type="button" @click="disableRoundMode(task)">关闭</button></span>
+                <span v-else class="round-mode-active" :class="roundStageClass(task)"><b>第 {{ task.roundStage }} 轮</b><button type="button" @click="disableRoundMode(task)">关闭</button></span>
               </div>
               <label class="table-field number-field" data-label="完成">
                 <input
@@ -6038,7 +6103,7 @@ function taskLastStudyDate(task: Task) {
                   :disabled="task.trackingMode === 'itemized' && task.subItems.length > 0"
                   @input="updateTask(task.id, { completed: Number(($event.target as HTMLInputElement).value) })"
                 >
-                <span v-else class="round-progress-mini">{{ task.roundCompleted }} / {{ task.roundTarget }}</span>
+                <span v-else class="round-progress-mini" :class="roundStageClass(task)">{{ task.roundCompleted }} / {{ task.roundTarget }}</span>
               </label>
               <strong class="suggestion-cell table-field" data-label="建议">{{ plannedDailyTarget(task, group.phase) }}</strong>
               <div class="action-cell table-field" data-label="操作">
@@ -6046,7 +6111,7 @@ function taskLastStudyDate(task: Task) {
                 <button class="icon-button" type="button" @click="deleteTask(task.id)">删除</button>
               </div>
             </div>
-            <section v-for="task in group.tasks.filter((item) => item.roundModeEnabled)" :key="`${task.id}-rounds`" class="round-plan-detail">
+            <section v-for="task in group.tasks.filter((item) => item.roundModeEnabled)" :key="`${task.id}-rounds`" class="round-plan-detail" :class="roundStageClass(task)">
               <div class="round-plan-summary">
                 <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
                 <button v-if="task.roundCompleted >= task.roundTarget" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
@@ -6054,7 +6119,7 @@ function taskLastStudyDate(task: Task) {
               <details v-if="task.roundHistory.length" class="round-history-list">
                 <summary>查看轮刷历史（{{ task.roundHistory.length }}）</summary>
                 <div v-for="entry in [...task.roundHistory].reverse()" :key="entry.id">
-                  <span>{{ roundHistoryLabel(entry) }}</span>
+                  <span class="round-history-stage" :class="`round-stage-${entry.stage}`">{{ roundHistoryLabel(entry) }}</span>
                   <strong>{{ entry.completed }} / {{ entry.target }}</strong>
                   <b>{{ entry.remainingMarked === undefined ? '题量保持' : `剩余标记 ${entry.remainingMarked}` }}</b>
                   <time>{{ entry.completedAt.slice(0, 10) }}</time>
@@ -6101,7 +6166,7 @@ function taskLastStudyDate(task: Task) {
             <article v-for="task in completedSettingsTasks" :key="task.id" class="shelved-task-row completed-settings-row">
               <div class="shelved-task-name">
                 <strong>{{ task.name }}</strong>
-                <span>{{ task.platform }} · {{ task.frequencyType }}<template v-if="task.roundModeEnabled"> · {{ roundStageLabel(task) }}</template></span>
+                <span>{{ task.platform }} · {{ task.frequencyType }}<template v-if="task.roundModeEnabled"> · <b class="completed-round-label" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b></template></span>
               </div>
               <div class="shelved-task-progress">
                 <span>{{ task.roundModeEnabled ? '累计练习' : '总进度' }}</span>
@@ -6608,7 +6673,7 @@ function taskLastStudyDate(task: Task) {
         <div class="round-stage-picker">
           <span>从第几轮开始</span>
           <div>
-            <button v-for="stage in ([1, 2, 3, 4] as TaskRoundStage[])" :key="stage" type="button" :class="{ active: roundSetupStage === stage }" @click="selectRoundSetupStage(stage)">第 {{ stage }} 轮</button>
+            <button v-for="stage in ([1, 2, 3, 4] as TaskRoundStage[])" :key="stage" type="button" :class="[`round-stage-${stage}`, { active: roundSetupStage === stage }]" @click="selectRoundSetupStage(stage)">第 {{ stage }} 轮</button>
           </div>
         </div>
         <label class="round-flow-field">
