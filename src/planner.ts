@@ -15,7 +15,7 @@ export function defaultData(): StudyData {
   const today = todayIso();
   const deadline = addDays(today, 60);
   return {
-    version: 5,
+    version: 6,
     updatedAt: '',
     settings: { startDate: today, deadline },
     phases: [{ id: crypto.randomUUID(), name: '备考总计划', order: 1, startDate: today, endDate: deadline }],
@@ -96,34 +96,33 @@ export function taskRoundStageEndDate(task: Task, phase: PhaseSchedule, date = t
   const effectiveStart = date < startDate ? startDate : date;
   const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
   const remainingDays = Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd));
-  // 40% / 25% / 20% / 15% of the full window, expressed as a share of the
-  // time still available when each stage begins.
+  // The first four rounds use 80% of the available window: 30% / 20% / 15% / 15%.
+  // These shares are expressed relative to the time left when each round begins.
   const stageShare = task.roundStage === 1
-    ? 2 / 5
+    ? 3 / 10
     : task.roundStage === 2
-      ? 5 / 12
+      ? 2 / 7
       : task.roundStage === 3
-        ? 4 / 7
-        : 1;
-  const futureStageMinimumDays = task.roundStage === 1 ? 3 : task.roundStage === 2 ? 2 : task.roundStage === 3 ? 1 : 0;
+        ? 3 / 10
+        : task.roundPass > 1 ? 1 : 3 / 7;
+  const futureStageMinimumDays = task.roundStage === 1 ? 4 : task.roundStage === 2 ? 3 : task.roundStage === 3 ? 2 : task.roundPass === 1 ? 1 : 0;
   const stageDayBudget = Math.max(1, Math.min(
     Math.max(1, remainingDays - futureStageMinimumDays),
-    Math.floor(remainingDays * stageShare),
+    Math.round(remainingDays * stageShare),
   ));
   return addDays(effectiveStart, stageDayBudget - 1);
 }
 
 export function taskRoundPlanEndDate(task: Task, phase: PhaseSchedule, date = todayIso()) {
+  if (task.roundStage === 4 && task.roundPass > 1) return taskRoundStageEndDate(task, phase, date);
   const stages: TaskRoundStage[] = [];
   for (let stage = 1; stage <= Math.min(task.roundStage, 3); stage += 1) stages.push(stage as TaskRoundStage);
-  if (task.roundStage === 4) {
-    for (let pass = 0; pass < task.roundPass; pass += 1) stages.push(4);
-  }
+  if (task.roundStage === 4) stages.push(4);
   let stageStart = date;
   let stageEnd = date;
   const taskEnd = task.endDate || phase.endDate;
   for (const roundStage of stages) {
-    stageEnd = taskRoundStageEndDate({ ...task, roundStage }, phase, stageStart);
+    stageEnd = taskRoundStageEndDate({ ...task, roundStage, ...(roundStage === 4 ? { roundPass: 1 } : {}) }, phase, stageStart);
     if (stageEnd >= taskEnd) return stageEnd;
     stageStart = addDays(stageEnd, 1);
   }
@@ -140,6 +139,10 @@ export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIs
   const effectiveEnd = endDate < effectiveStart ? effectiveStart : endDate;
   const remainingDays = Math.max(1, daysBetweenInclusive(effectiveStart, effectiveEnd));
   if (!task.roundModeEnabled) return Math.ceil(remaining / remainingDays);
+  if (task.roundStage === 4 && task.roundPass > 1) {
+    const halfRemaining = Math.ceil(remaining / 2);
+    return date > endDate ? halfRemaining : Math.max(halfRemaining, Math.ceil(remaining / remainingDays));
+  }
   const plannedStageEnd = task.roundStageEndDate || taskRoundStageEndDate(task, phase, date);
   const stageEnd = plannedStageEnd < effectiveStart
     ? effectiveStart

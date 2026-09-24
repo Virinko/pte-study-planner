@@ -152,15 +152,11 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     days: daysBetweenInclusive(settings.startDate, settings.deadline),
     totalWork: 0,
   };
-  const isLegacyRoundDeadline = Number(source?.version || 0) < 5;
+  const isLegacyRoundSchedule = Number(source?.version || 0) < 6;
   const tasks = normalizedTasks.map((task) => {
     if (!task.roundModeEnabled || task.roundCleared) return task;
+    if (isLegacyRoundSchedule) return { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase, todayIso()) };
     if (!task.roundStageEndDate) return { ...task, roundStageEndDate: taskRoundPlanEndDate(task, planPhase, task.startDate || planPhase.startDate) };
-    const completedFirstRound = task.roundHistory.some((entry) => entry.cycle === task.roundCycle && entry.stage === 1);
-    if (isLegacyRoundDeadline && task.roundStage === 2 && completedFirstRound) {
-      const plannedSecondRoundStart = addDays(task.roundStageEndDate, 1);
-      return { ...task, roundStageEndDate: taskRoundStageEndDate(task, planPhase, plannedSecondRoundStart) };
-    }
     return task;
   });
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
@@ -654,7 +650,17 @@ function hasStoredProgressBackup() {
 function load(): StudyData {
   try {
     const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
-    return normalizeData(raw ? JSON.parse(raw) as Partial<StudyData> : undefined);
+    const source = raw ? JSON.parse(raw) as Partial<StudyData> : undefined;
+    const normalized = normalizeData(source);
+    if (source && Number(source.version || 0) < normalized.version) {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(normalized));
+        localStorage.setItem(LEGACY_KEY, JSON.stringify(normalized));
+      } catch {
+        // Keep the migrated in-memory data if the browser cannot update its backup.
+      }
+    }
+    return normalized;
   } catch {
     return defaultData();
   }
@@ -963,8 +969,10 @@ const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, pla
 const todayReviewPlanDone = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.completed, 0));
 const todayReviewDone = computed(() => todayReviewLogs.value.reduce((sum, log) => sum + log.amount, 0));
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
-const overallDone = computed(() => activePlanTasks.value.reduce((sum, task) => sum + taskProgressCompleted(task), 0));
-const overallTarget = computed(() => activePlanTasks.value.reduce((sum, task) => sum + taskTotalTarget(task), 0));
+// Overall progress measures unique question-bank coverage; repeatCount only affects
+// the task's study workload and should not multiply the plan-level total.
+const overallDone = computed(() => activePlanTasks.value.reduce((sum, task) => sum + Math.min(taskProgressCompleted(task), Math.max(0, task.target)), 0));
+const overallTarget = computed(() => activePlanTasks.value.reduce((sum, task) => sum + Math.max(0, task.target), 0));
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
@@ -1922,7 +1930,7 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
   }
 }
 
-function applyRemoteProgress(remote: StudyData) {
+function applyRemoteProgress(remote: StudyData, needsUpgrade = false) {
   const normalized = normalizeData(remote);
   data.value = normalized;
   persistProgressBackup(normalized);
@@ -1936,6 +1944,7 @@ function applyRemoteProgress(remote: StudyData) {
     normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录',
   );
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
+  if (needsUpgrade) saveLocal(normalized);
 }
 
 function clearAppPassword() {
@@ -1965,7 +1974,7 @@ function submitPassword() {
   void loadCloudProgress();
 }
 
-async function fetchCloudProgress() {
+async function fetchCloudProgress(): Promise<{ progress: StudyData; needsUpgrade: boolean } | null> {
   if (IS_LOCAL_DEV) return null;
   const res = await fetch('/api/progress', {
     headers: { 'x-app-password': appPassword.value },
@@ -1976,7 +1985,8 @@ async function fetchCloudProgress() {
     return null;
   }
   if (!res.ok) throw new Error(`Cloudflare 读取失败：HTTP ${res.status}`);
-  return normalizeData(await res.json() as Partial<StudyData>);
+  const source = await res.json() as Partial<StudyData>;
+  return { progress: normalizeData(source), needsUpgrade: Number(source.version || 0) < 6 };
 }
 
 async function loadCloudProgress() {
@@ -1985,10 +1995,10 @@ async function loadCloudProgress() {
   isCloudLoading.value = true;
   cloudLoadError.value = false;
   try {
-    const remote = await fetchCloudProgress();
-    if (!remote) return;
+    const result = await fetchCloudProgress();
+    if (!result) return;
     hasCheckedCloudBaseline.value = true;
-    applyRemoteProgress(remote);
+    applyRemoteProgress(result.progress, result.needsUpgrade);
   } catch {
     cloudLoadError.value = true;
   } finally {
@@ -2031,7 +2041,7 @@ async function syncCloudProgress() {
     if (res.status === 409) {
       const result = await res.json() as { remote?: Partial<StudyData>; progress?: Partial<StudyData> };
       const remote = result.remote || result.progress;
-      if (remote) applyRemoteProgress(normalizeData(remote));
+      if (remote) applyRemoteProgress(normalizeData(remote), Number(remote.version || 0) < 6);
       return false;
     }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
@@ -3146,7 +3156,7 @@ function resetRoundStageEndDate(task: Task, targetSchedule = schedule.value, pla
 function roundStageLabel(task: Task) {
   if (!task.roundModeEnabled) return '未开启轮刷';
   if (task.roundCleared) return `第 ${task.roundCycle} 个大轮次已清零`;
-  if (task.roundStage === 4 && task.roundPass > 1) return `第 ${task.roundCycle} 个大轮次 · 第 4 轮巩固第 ${task.roundPass} 遍`;
+  if (task.roundStage === 4 && task.roundPass > 1) return `第 ${task.roundCycle} 个大轮次 · 错题缓冲第 ${task.roundPass - 1} 遍`;
   return `第 ${task.roundCycle} 个大轮次 · 第 ${task.roundStage} 轮`;
 }
 
@@ -3156,7 +3166,7 @@ function roundStageClass(task: Task) {
 }
 
 function roundHistoryLabel(entry: TaskRoundHistoryEntry) {
-  const stage = entry.stage === 4 && entry.pass > 1 ? `第 4 轮巩固第 ${entry.pass} 遍` : `第 ${entry.stage} 轮`;
+  const stage = entry.stage === 4 && entry.pass > 1 ? `错题缓冲第 ${entry.pass - 1} 遍` : `第 ${entry.stage} 轮`;
   return `大轮次 ${entry.cycle} · ${stage}`;
 }
 
@@ -3164,7 +3174,8 @@ function roundInstruction(task: Task) {
   if (task.roundStage === 1) return '刷全量；完成后填写平台剩余标记数。';
   if (task.roundStage === 2) return '只刷第一轮留下的标记题；完成后填写新的剩余标记数。';
   if (task.roundStage === 3) return '刷第二轮留下的标记题；完成后直接进入题量相同的第四轮。';
-  return '继续刷平台标记题；每遍结束填写剩余数量，直到清零。';
+  if (task.roundPass === 1) return '按计划完成第四轮；仍有错题时会进入后 20% 的错题缓冲期。';
+  return '错题缓冲期：每天至少建议刷剩余题量的一半；若剩余天数不足，会提高推荐量，直到清零。';
 }
 
 function dailyTargetsWithoutTaskToday(taskId: string): StudyData['dailyTargets'] {
@@ -3235,7 +3246,7 @@ function submitRoundSetup() {
   }, data.value.phases[0]?.id || '');
   const targetPhase = schedule.value.find((item) => item.id === normalizedNextTask.phaseId) || schedule.value[0];
   const nextTask = targetPhase
-    ? { ...normalizedNextTask, roundStageEndDate: taskRoundPlanEndDate(normalizedNextTask, targetPhase, normalizedNextTask.startDate || targetPhase.startDate) }
+    ? { ...normalizedNextTask, roundStageEndDate: taskRoundStageEndDate(normalizedNextTask, targetPhase, todayIso()) }
     : normalizedNextTask;
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
   closeRoundSetup();
@@ -3296,8 +3307,9 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
     patch = { roundStage: 4, roundPass: task.roundPass + 1, roundTarget: remainingMarked || 0, roundCompleted: 0 };
   }
   const normalizedNextTask = normalizeTask({ ...task, ...patch, roundHistory: [...task.roundHistory, historyEntry] }, data.value.phases[0]?.id || '');
-  const nextStageStartDate = task.roundStageEndDate ? addDays(task.roundStageEndDate, 1) : todayIso();
-  const nextTask = cleared || (task.roundStage === 4 && task.roundStageEndDate)
+  const plannedNextStageStartDate = task.roundStageEndDate ? addDays(task.roundStageEndDate, 1) : todayIso();
+  const nextStageStartDate = plannedNextStageStartDate < todayIso() ? todayIso() : plannedNextStageStartDate;
+  const nextTask = cleared
     ? normalizedNextTask
     : resetRoundStageEndDate(normalizedNextTask, schedule.value, nextStageStartDate);
   saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
@@ -5947,7 +5959,7 @@ function taskLastStudyDate(task: Task) {
         <div v-if="activeRoundTaskCount" class="today-target-refresh round-plan-recalculate">
           <div>
             <strong>轮刷日期需要手动重算</strong>
-            <p>修改计划周期、任务日期等数据后，点击按钮按计划开始日至最新截止日重新排列完整轮次；当前第 2 轮会排在新的第 1 轮节点之后。</p>
+            <p>按 30% / 20% / 15% / 15% 重新安排前四轮，并把最后 20% 留给错题缓冲；修改计划周期后可重新计算日期。</p>
           </div>
           <button type="button" @click="recalculateRoundPlanDates">重新计算轮刷日期</button>
         </div>
@@ -6213,7 +6225,7 @@ function taskLastStudyDate(task: Task) {
             </article>
           </div>
         </details>
-        <p class="hint">提示：普通任务按全部重复遍数的剩余总量均摊；错题轮刷按完整可用时间分配：第 1 轮 40%、第 2 轮 25%、第 3 轮 20%、第 4 轮 15%。第 4 轮如需继续巩固，沿用同一截止日期直至清零。</p>
+        <p class="hint">提示：普通任务按全部重复遍数的剩余总量均摊；错题轮刷前四轮分别使用 30%、20%、15%、15% 的计划时间，最后 20% 留给错题缓冲。缓冲期每天建议刷剩余题量的一半；时间不足时会提高推荐量，直到清零。</p>
       </section>
 
       <section class="panel restart-panel">
@@ -6685,7 +6697,7 @@ function taskLastStudyDate(task: Task) {
           <input v-model="roundSetupCurrentTargetInput" type="number" min="1" :max="roundSetupTargetInput || undefined" inputmode="numeric" placeholder="填写平台当前标记数" @input="roundSetupError = ''">
         </label>
         <div class="round-flow-explainer">
-          <span>第 1 轮：全量</span><span>第 2 轮：第一轮标记数</span><span>第 3、4 轮：第二轮标记数</span><span>第 4 轮持续到清零</span>
+          <span>第 1 轮：全量（30%）</span><span>第 2 轮：第一轮标记数（20%）</span><span>第 3、4 轮：第二轮标记数（各 15%）</span><span>最后 20%：错题缓冲</span>
         </div>
         <p v-if="roundSetupTask.completed > 0 && roundSetupStage === 1" class="round-flow-note">现有进度会继承到第 1 轮，开启后从 {{ Math.min(Math.max(0, Number(roundSetupTargetInput) || 0), taskRoundCompleted(roundSetupTask)) }} / {{ Math.max(0, Number(roundSetupTargetInput) || 0) }} 继续。</p>
         <p v-else-if="roundSetupTask.completed > 0" class="round-flow-note">现有 {{ roundSetupTask.completed }} 题进度会保留在累计练习量中，第 {{ roundSetupStage }} 轮从 0 开始。</p>
@@ -6710,7 +6722,7 @@ function taskLastStudyDate(task: Task) {
           <span>平台剩余标记数</span>
           <input v-model="roundRemainingInput" type="number" min="0" :max="roundAdvanceTask.roundTarget" inputmode="numeric" placeholder="输入 0 表示清零" @input="roundAdvanceError = ''">
         </label>
-        <p class="round-flow-note">{{ roundAdvanceTask.roundStage === 4 ? '大于 0 将继续第 4 轮；等于 0 后停止，等待你决定是否重新全量开始。' : '系统会把这个数字作为下一轮的目标题量。' }}</p>
+        <p class="round-flow-note">{{ roundAdvanceTask.roundStage === 4 ? '大于 0 将进入错题缓冲，每天建议刷剩余题量的一半；若剩余天数不足，会提高推荐量。等于 0 后停止。' : '系统会把这个数字作为下一轮的目标题量。' }}</p>
         <p v-if="roundAdvanceError" class="correction-error">{{ roundAdvanceError }}</p>
         <div class="timer-modal-actions correction-actions">
           <button class="ghost" type="button" @click="closeRoundAdvance">取消</button>
