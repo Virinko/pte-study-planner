@@ -36,6 +36,9 @@ export const taskRepeatCount = (task: Task) => Math.max(1, Math.floor(Number(tas
 export const taskProgressCompleted = (task: Task) => task.roundModeEnabled
   ? task.roundCleared ? Math.max(0, Number(task.target || 0)) : Math.max(0, Number(task.roundCompleted || 0))
   : Math.max(0, Number(task.completed || 0));
+export const taskCoverageTarget = (task: Task) => Math.max(0, Number(task.target || 0));
+export const taskCoverageCompleted = (task: Task) => Math.min(taskProgressCompleted(task), taskCoverageTarget(task));
+export const taskCoverageRemaining = (task: Task) => Math.max(0, taskCoverageTarget(task) - taskCoverageCompleted(task));
 export const taskTotalTarget = (task: Task) => task.roundModeEnabled
   ? task.roundCleared ? Math.max(0, Number(task.target || 0)) : Math.max(0, Number(task.roundTarget || 0))
   : Math.max(0, Number(task.target || 0) * taskRepeatCount(task));

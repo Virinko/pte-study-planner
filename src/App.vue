@@ -5,7 +5,7 @@ import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echart
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
@@ -359,6 +359,20 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     roundCleared,
     roundHistory,
   };
+}
+
+function taskSummaryTarget(task: Task) {
+  return task.roundModeEnabled ? taskTotalTarget(task) : taskCoverageTarget(task);
+}
+
+function taskSummaryCompleted(task: Task) {
+  return task.roundModeEnabled
+    ? Math.min(taskProgressCompleted(task), taskTotalTarget(task))
+    : taskCoverageCompleted(task);
+}
+
+function taskSummaryRemaining(task: Task) {
+  return task.roundModeEnabled ? taskRemaining(task) : taskCoverageRemaining(task);
 }
 
 function normalizeTaskRoundHistory(source: unknown): TaskRoundHistoryEntry[] {
@@ -971,8 +985,8 @@ const todayReviewDone = computed(() => todayReviewLogs.value.reduce((sum, log) =
 const tomorrowReviewTarget = computed(() => tomorrowReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
 // Overall progress measures unique question-bank coverage; repeatCount only affects
 // the task's study workload and should not multiply the plan-level total.
-const overallDone = computed(() => activePlanTasks.value.reduce((sum, task) => sum + Math.min(taskProgressCompleted(task), Math.max(0, task.target)), 0));
-const overallTarget = computed(() => activePlanTasks.value.reduce((sum, task) => sum + Math.max(0, task.target), 0));
+const overallDone = computed(() => activePlanTasks.value.reduce((sum, task) => sum + taskCoverageCompleted(task), 0));
+const overallTarget = computed(() => activePlanTasks.value.reduce((sum, task) => sum + taskCoverageTarget(task), 0));
 const overallPercent = computed(() => pct(overallDone.value, overallTarget.value));
 const totalRemaining = computed(() => Math.max(0, overallTarget.value - overallDone.value));
 const daysLeft = computed(() => daysBetweenInclusive(todayIso(), data.value.settings.deadline));
@@ -1093,6 +1107,10 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
     softColor: taskSoftColor(task.name, index),
     totalTarget: taskTotalTarget(task),
     progressCompleted,
+    summaryTarget: taskSummaryTarget(task),
+    summaryCompleted: taskSummaryCompleted(task),
+    summaryPercent: pct(taskSummaryCompleted(task), taskSummaryTarget(task)),
+    summaryRemaining: taskSummaryRemaining(task),
     completedDate: taskCompletionDate(task),
     percent: pct(progressCompleted, taskTotalTarget(task)),
     remaining: taskRemaining(task),
@@ -1168,8 +1186,8 @@ function taskIsOverdue(task: Task, date = todayIso()) {
 
 const phaseProgress = computed(() => schedule.value.map((item, index) => {
   const tasks = activePlanTasks.value.filter((task) => task.phaseId === item.id);
-  const done = tasks.reduce((sum, task) => sum + taskProgressCompleted(task), 0);
-  const target = tasks.reduce((sum, task) => sum + taskTotalTarget(task), 0);
+  const done = tasks.reduce((sum, task) => sum + taskCoverageCompleted(task), 0);
+  const target = tasks.reduce((sum, task) => sum + taskCoverageTarget(task), 0);
   const today = todayIso();
   const allTasksCompleted = tasks.length > 0 && tasks.every((task) => isTaskCompletedOverall(task));
   const status = allTasksCompleted ? '已完成' : today < item.startDate ? '未开始' : today > item.endDate ? '已结束' : '进行中';
@@ -1193,6 +1211,8 @@ const completedSettingsTasks = computed(() => activePlanTasks.value
     phaseName: phaseProgress.value.find((phase) => phase.id === task.phaseId)?.name || '未分配阶段',
     totalTarget: taskTotalTarget(task),
     progressCompleted: taskProgressCompleted(task),
+    summaryTarget: taskSummaryTarget(task),
+    summaryCompleted: taskSummaryCompleted(task),
     completedDate: taskCompletionDate(task),
   }))
   .sort((a, b) => (b.completedDate || '').localeCompare(a.completedDate || '')));
@@ -1229,6 +1249,10 @@ const taskProgressRows = computed(() => data.value.tasks.map((task, index) => {
     softColor: taskSoftColor(task.name, index),
     totalTarget: taskTotalTarget(task),
     progressCompleted,
+    summaryTarget: taskSummaryTarget(task),
+    summaryCompleted: taskSummaryCompleted(task),
+    summaryPercent: pct(taskSummaryCompleted(task), taskSummaryTarget(task)),
+    summaryRemaining: taskSummaryRemaining(task),
     percent: pct(progressCompleted, taskTotalTarget(task)),
     remaining: taskRemaining(task),
     currentRound: taskCurrentRound(task),
@@ -5209,11 +5233,11 @@ function taskLastStudyDate(task: Task) {
               </span>
               <span class="today-progress-cell overall-progress-cell">
                 <span class="progress-meta">
-                  <strong>{{ task.progressCompleted }} / {{ task.totalTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
-                  <b>{{ task.percent }}%</b>
+                  <strong>{{ task.summaryCompleted }} / {{ task.summaryTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                  <b>{{ task.summaryPercent }}%</b>
                 </span>
-                <span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span>
-                <small class="progress-support-text">{{ task.roundModeEnabled ? `累计练习 ${task.roundPracticeTotal} 题` : `总剩余 ${Math.max(0, task.totalTarget - task.progressCompleted)} ${task.trackingMode === 'itemized' ? '篇' : '题'}` }}</small>
+                <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
+                <small class="progress-support-text">{{ task.roundModeEnabled ? `累计练习 ${task.roundPracticeTotal} 题` : `总剩余 ${task.summaryRemaining} ${task.trackingMode === 'itemized' ? '篇' : '题'}` }}</small>
               </span>
               <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
               <span class="row-actions">
@@ -5376,10 +5400,10 @@ function taskLastStudyDate(task: Task) {
                   <span class="today-progress-cell overall-progress-cell">
                     <span class="progress-meta">
                       <strong v-if="task.roundModeEnabled">累计练习 {{ task.roundPracticeTotal }} 题</strong>
-                      <strong v-else>{{ task.progressCompleted }} / {{ task.totalTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
-                      <b>{{ task.percent }}%</b>
+                      <strong v-else>{{ task.summaryCompleted }} / {{ task.summaryTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                      <b>{{ task.summaryPercent }}%</b>
                     </span>
-                    <span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span>
+                    <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
                     <span v-if="task.todayCompleted > 0" class="completed-task-today">
                       <small>今日完成</small>
                       <strong>{{ task.todayCompleted }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
@@ -5564,10 +5588,10 @@ function taskLastStudyDate(task: Task) {
             <span>{{ task.frequencyType }}</span>
             <span v-if="task.roundModeEnabled" class="round-summary-label" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</span>
             <span v-else>{{ task.repeatCount > 1 ? `第 ${task.currentRound} / ${task.repeatCount} 遍` : '-' }}</span>
-            <span>{{ task.progressCompleted }} / {{ task.totalTarget }}</span>
-            <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.percent}%`, background: task.accent }" /></span><b>{{ task.percent }}%</b></span>
+            <span>{{ task.summaryCompleted }} / {{ task.summaryTarget }}</span>
+            <span class="inline-progress"><span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span><b>{{ task.summaryPercent }}%</b></span>
             <span>{{ formatDurationCompact(task.totalStudySeconds) }}</span>
-            <span>{{ task.remaining }} 题</span>
+            <span>{{ task.summaryRemaining }} 题</span>
             <em class="detail-progress-status" :class="task.statusClass">{{ task.status }}</em>
           </div>
           <details v-for="task in filteredTaskProgressRows.filter((item) => item.trackingMode === 'itemized' && item.subItems.length > 0)" :key="`${task.id}-detail`" class="subitem-progress">
@@ -6182,7 +6206,7 @@ function taskLastStudyDate(task: Task) {
               </div>
               <div class="shelved-task-progress">
                 <span>{{ task.roundModeEnabled ? '累计练习' : '总进度' }}</span>
-                <strong>{{ task.roundModeEnabled ? `${task.roundPracticeTotal} 题` : `${task.progressCompleted} / ${task.totalTarget}` }}</strong>
+                <strong>{{ task.roundModeEnabled ? `${task.roundPracticeTotal} 题` : `${task.summaryCompleted} / ${task.summaryTarget}` }}</strong>
                 <span class="progress-track"><i style="width: 100%" /></span>
               </div>
               <div class="shelved-task-last-study">
@@ -6211,8 +6235,8 @@ function taskLastStudyDate(task: Task) {
               </div>
               <div class="shelved-task-progress">
                 <span>已完成</span>
-                <strong>{{ taskProgressCompleted(task) }} / {{ taskTotalTarget(task) }}</strong>
-                <span class="progress-track"><i :style="{ width: `${pct(taskProgressCompleted(task), taskTotalTarget(task))}%` }" /></span>
+                <strong>{{ taskSummaryCompleted(task) }} / {{ taskSummaryTarget(task) }}</strong>
+                <span class="progress-track"><i :style="{ width: `${pct(taskSummaryCompleted(task), taskSummaryTarget(task))}%` }" /></span>
               </div>
               <div class="shelved-task-last-study">
                 <span>最近学习</span>
