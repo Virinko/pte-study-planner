@@ -1202,6 +1202,42 @@ const phaseProgress = computed(() => schedule.value.map((item, index) => {
       : `共 ${item.days} 天，剩余 ${remainingDays} 天（含今天）`;
   return { ...item, done, target, percent: pct(done, target), accent: phaseAccent(index), status, remainingDays, timingSummary };
 }));
+const previousCompletedPlan = computed(() => {
+  const restarts = data.value.progressRestarts || [];
+  const restart = restarts[restarts.length - 1];
+  if (!restart?.planStartDate || !restart.planEndDate || (restart.restartDate || restart.restartedAt.slice(0, 10)) < restart.planEndDate) return null;
+  const tasks = restart.tasks.filter((task) => task.planStatus === 'active');
+  if (!tasks.length || !tasks.every(isTaskCompletedOverall)) return null;
+  const done = tasks.reduce((sum, task) => sum + taskCoverageCompleted(task), 0);
+  const target = tasks.reduce((sum, task) => sum + taskCoverageTarget(task), 0);
+  if (!target || done < target) return null;
+  return {
+    id: `previous-${restart.id}`,
+    name: '上一轮计划',
+    startDate: restart.planStartDate,
+    endDate: restart.planEndDate,
+    done,
+    target,
+    percent: pct(done, target),
+    accent: '#9ca3ad',
+    status: '已完成',
+    remainingDays: 0,
+    isPreviousCycle: true,
+  };
+});
+const planOverviewItems = computed(() => [
+  ...(previousCompletedPlan.value ? [previousCompletedPlan.value] : []),
+  ...phaseProgress.value.map((item) => ({ ...item, isPreviousCycle: false })),
+]);
+const overviewMockExams = computed(() => phaseProgress.value
+  .flatMap((item) => (item.mockExams || []).map((exam) => ({ ...exam, phaseId: item.id })))
+  .sort((a, b) => a.date.localeCompare(b.date)));
+const featuredMockExam = computed(() => {
+  const pending = overviewMockExams.value.filter((exam) => !exam.completed);
+  return pending.find((exam) => exam.date >= todayIso())
+    || pending[pending.length - 1]
+    || overviewMockExams.value[overviewMockExams.value.length - 1];
+});
 
 const taskGroups = computed(() => phaseProgress.value.map((phase) => ({
   phase,
@@ -3329,6 +3365,17 @@ function roundStageLabel(task: Task) {
   return `第 ${task.roundCycle} 个大轮次 · 第 ${task.roundStage} 轮`;
 }
 
+function currentTaskRoundDeadline(task: Task) {
+  if (!task.roundModeEnabled) return task.endDate ? `任务截止 ${task.endDate}` : '';
+  if (task.roundCleared) return '';
+  const phase = schedule.value.find((item) => item.id === task.phaseId) || schedule.value[0];
+  const deadline = phase ? taskRoundDeadlines(task, phase).find((item) => item.current) : undefined;
+  if (deadline) return `${deadline.label} ${deadline.date}`;
+  if (!task.roundStageEndDate) return '';
+  const label = task.roundStage === 4 && task.roundPass > 1 ? '错题缓冲截止' : `第 ${task.roundStage} 轮截止`;
+  return `${label} ${task.roundStageEndDate}`;
+}
+
 function roundStageClass(task: Task) {
   if (!task.roundModeEnabled) return '';
   return task.roundCleared ? 'round-stage-cleared' : `round-stage-${task.roundStage}`;
@@ -5271,27 +5318,49 @@ function taskLastStudyDate(task: Task) {
 
       <section class="dashboard-card phase-overview">
         <h2>总计划进度</h2>
-        <div class="phase-overview-grid phase-overview-flow">
-          <article
-            v-for="(item, index) in phaseProgress"
-            :key="item.id"
-            class="phase-step-card"
-            :class="{ current: item.id === activePhaseProgress?.id }"
-            :style="{ '--phase-color': item.accent }"
-          >
-            <span class="phase-index">{{ index + 1 }}</span>
-            <b class="phase-status-corner" :class="{ active: item.status === '进行中' }">{{ item.status }}</b>
-            <strong>{{ item.name }}</strong>
-            <small>{{ item.startDate.slice(5).replace('-', '.') }} - {{ item.endDate.slice(5).replace('-', '.') }}</small>
-            <div class="phase-step-progress">
-              <span class="progress-track"><i :style="{ width: `${item.percent}%`, background: item.accent }" /></span>
-              <b>{{ item.percent }}%</b>
-            </div>
-            <span class="phase-count">{{ item.done }} / {{ item.target }}</span>
-            <span class="phase-extra-info">
-              <em>剩余 {{ item.remainingDays }} 天</em>
-            </span>
-          </article>
+        <div class="phase-overview-layout">
+          <div class="phase-overview-grid phase-overview-flow">
+            <article
+              v-for="item in planOverviewItems"
+              :key="item.id"
+              class="phase-step-card"
+              :class="{ current: !item.isPreviousCycle && item.id === activePhaseProgress?.id, completed: item.isPreviousCycle || item.status === '已完成' }"
+              :style="{ '--phase-color': item.isPreviousCycle || item.status === '已完成' ? '#8eaa98' : item.accent }"
+            >
+              <span class="phase-step-icon" aria-hidden="true">
+                <Check v-if="item.isPreviousCycle || item.status === '已完成'" :size="18" stroke-width="2" />
+                <Flag v-else-if="item.id === activePhaseProgress?.id" :size="18" stroke-width="2" />
+                <ClipboardList v-else :size="18" stroke-width="2" />
+              </span>
+              <b class="phase-status-corner" :class="{ active: !item.isPreviousCycle && item.status === '进行中', completed: item.isPreviousCycle || item.status === '已完成' }">{{ item.status }}</b>
+              <strong>{{ item.id === activePhaseProgress?.id && !item.isPreviousCycle ? '当前计划' : item.name }}</strong>
+              <small>{{ item.startDate.slice(5).replace('-', '.') }} - <em>{{ item.endDate.slice(5).replace('-', '.') }}</em></small>
+              <div class="phase-step-progress">
+                <span class="progress-track"><i :style="{ width: `${item.percent}%`, background: item.isPreviousCycle || item.status === '已完成' ? 'linear-gradient(90deg, #b8bec6, #959da8)' : item.accent }" /></span>
+                <b>{{ item.percent }}%</b>
+              </div>
+              <span class="phase-count">{{ item.isPreviousCycle ? `${item.done} 题` : `${item.done} / ${item.target}` }}</span>
+              <span class="phase-extra-info">
+                <em v-if="item.isPreviousCycle">计划已结束</em>
+                <em v-else-if="item.status === '已完成'">计划已完成</em>
+                <em v-else>剩余 <b>{{ item.remainingDays }} 天</b></em>
+              </span>
+            </article>
+          </div>
+          <section class="phase-mock-overview" aria-label="模考日安排">
+            <button
+              class="phase-mock-overview-card"
+              type="button"
+              :aria-label="featuredMockExam ? `查看模考日安排：${featuredMockExam.name} ${featuredMockExam.date}，共 ${overviewMockExams.length} 场` : '去添加模考日'"
+              @click="tab = 'settings'"
+            >
+              <span class="phase-mock-overview-icon"><CalendarDays :size="24" stroke-width="1.8" aria-hidden="true" /></span>
+              <strong>模考日</strong>
+              <time v-if="featuredMockExam" :datetime="featuredMockExam.date">{{ featuredMockExam.date.slice(5).replace('-', '.') }}</time>
+              <span v-else class="phase-mock-overview-placeholder">尚未安排</span>
+              <small>{{ overviewMockExams.length > 1 ? `共 ${overviewMockExams.length} 场` : featuredMockExam ? '查看安排' : '去添加' }}</small>
+            </button>
+          </section>
         </div>
       </section>
 
@@ -5376,7 +5445,7 @@ function taskLastStudyDate(task: Task) {
                   <b>{{ task.summaryPercent }}%</b>
                 </span>
                 <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
-                <small class="progress-support-text">{{ task.roundModeEnabled ? `累计练习 ${task.roundPracticeTotal} 题` : `总剩余 ${task.summaryRemaining} ${task.trackingMode === 'itemized' ? '篇' : '题'}` }}</small>
+                <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text">{{ currentTaskRoundDeadline(task) }}</small>
               </span>
               <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
               <span class="row-actions">
@@ -6284,7 +6353,7 @@ function taskLastStudyDate(task: Task) {
             </div>
             <section v-for="task in group.tasks.filter((item) => item.roundModeEnabled)" :key="`${task.id}-rounds`" class="round-plan-detail" :class="roundStageClass(task)">
               <div class="round-plan-summary">
-                <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
+                <div class="round-plan-copy"><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
                 <div class="round-deadlines" aria-label="各轮截止日期">
                   <div v-for="deadline in taskRoundDeadlines(task, group.phase)" :key="deadline.label" class="round-deadline" :class="{ current: deadline.current }">
                     <span>{{ deadline.label }}<b v-if="deadline.current">当前</b></span>

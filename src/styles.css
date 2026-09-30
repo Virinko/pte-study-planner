@@ -9475,77 +9475,177 @@ nav button.active {
   align-items: stretch;
 }
 
+.phase-overview-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: 100%;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.phase-overview-layout .phase-overview-flow {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 14px;
+  align-items: stretch;
+}
+
+.phase-mock-overview {
+  flex: 0 0 176px;
+  width: 176px;
+}
+
+.phase-mock-overview-card {
+  width: 100%;
+  height: 164px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 12px;
+  color: #845b6b;
+  font: inherit;
+  text-align: center;
+  background: #fff0f4;
+  border: 1px solid #f1bfd0;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.phase-mock-overview-card:hover {
+  background: #ffeaf0;
+}
+
+.phase-mock-overview-card:focus-visible {
+  outline: 2px solid #c86383;
+  outline-offset: 2px;
+}
+
+.phase-mock-overview-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 3px;
+  color: #c86383;
+  background: #ffe1e9;
+  border-radius: 50%;
+}
+
+.phase-mock-overview-card > strong {
+  color: #765e69;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.phase-mock-overview-card time {
+  color: #bb5879;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.phase-mock-overview-placeholder,
+.phase-mock-overview-card small {
+  color: #a8818e;
+  font-size: 11px;
+  font-weight: 500;
+}
+
 .phase-overview-grid.phase-overview-flow article.phase-step-card {
   position: relative;
-  min-height: 124px;
-  justify-items: center;
+  flex: 0 0 254px;
+  width: 254px;
+  height: 164px;
+  justify-items: start;
   align-content: center;
-  gap: 8px;
-  padding: 24px 22px 18px;
-  background: #FFFFFF;
-  border: 1px solid color-mix(in srgb, var(--phase-color) 38%, #e9dfdf);
-  border-radius: 8px;
+  gap: 6px;
+  padding: 36px 22px 12px;
+  background: #fff;
+  border: 1px solid #ddd7f2;
+  border-radius: 12px;
   box-shadow: none;
 }
 
 .phase-overview-grid.phase-overview-flow article.phase-step-card.current {
+  background: #fff;
+  border-color: #d8d0f1;
   box-shadow: none;
 }
 
-.phase-step-card:not(:last-child)::after {
-  position: absolute;
-  top: 50%;
-  right: -40px;
-  width: 36px;
-  content: "";
-  border-top: 2px dashed color-mix(in srgb, var(--phase-color) 62%, #d6cccc);
+.phase-overview-grid.phase-overview-flow article.phase-step-card.completed {
+  color: #626a74;
+  background: #f1f3f5;
+  border-color: #cfe4d5;
 }
 
-.phase-index {
+.phase-step-icon {
   position: absolute;
-  top: -1px;
-  left: -1px;
-  width: 28px;
-  height: 28px;
+  top: 14px;
+  left: 16px;
+  width: 22px;
+  height: 22px;
   display: grid;
   place-items: center;
-  color: #fff;
-  background: var(--phase-color);
-  border-radius: 8px 999px 999px 999px;
-  font-size: 15px;
-  font-weight: 900;
+  color: #7565c8;
+}
+
+.phase-step-card.completed .phase-step-icon {
+  color: #57916a;
 }
 
 .phase-status-corner {
   position: absolute;
-  top: -1px;
-  right: -1px;
-  min-height: 28px;
+  top: 12px;
+  right: 14px;
+  min-height: 25px;
   display: inline-flex;
   align-items: center;
-  padding: 4px 12px;
-  color: #fff;
-  background: var(--phase-color);
-  border-radius: 999px 8px 999px 999px;
+  padding: 3px 10px;
+  color: #6757b3;
+  background: #f0edff;
+  border-radius: 999px;
   font-size: 12px;
-  font-weight: 900;
+  font-weight: 600;
 }
 
 .phase-status-corner.active {
-  box-shadow:
-    0 8px 18px color-mix(in srgb, var(--phase-color) 38%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--phase-color) 14%, transparent);
-  filter: brightness(1.04);
+  color: #6757b3;
+  background: #f0edff;
+}
+
+.phase-status-corner.completed {
+  color: #44845a;
+  background: #e5f2e8;
 }
 
 .phase-overview-grid .phase-step-card strong {
-  color: var(--phase-color);
+  color: #6757b3;
   font-size: 17px;
+  font-weight: 600;
 }
 
 .phase-overview-grid .phase-step-card small {
-  color: #5f5966;
+  color: #656b76;
   font-size: 13px;
+  font-weight: 500;
+}
+
+.phase-overview-grid .phase-step-card small em {
+  font-style: normal;
+}
+
+.phase-overview-grid .phase-step-card.current small em {
+  color: #6757b3;
+  font-weight: 600;
+}
+
+.phase-overview-grid .phase-step-card.completed strong,
+.phase-overview-grid .phase-step-card.completed small {
+  color: #626a74;
 }
 
 .phase-step-progress {
@@ -9554,7 +9654,7 @@ nav button.active {
   grid-template-columns: minmax(72px, 1fr) auto;
   gap: 12px;
   align-items: center;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .phase-step-progress .progress-track,
@@ -9562,27 +9662,47 @@ nav button.active {
   background: #e5dedf;
 }
 
+.phase-step-card.completed .phase-step-progress .progress-track {
+  background: #dfe3e7;
+}
+
 .phase-step-progress b {
-  color: var(--pte-ink);
+  color: #394150;
   font-size: 13px;
+  font-weight: 600;
+}
+
+.phase-step-card.completed .phase-step-progress b {
+  color: #626a74;
 }
 
 .phase-count {
-  color: var(--pte-muted);
+  justify-self: center;
+  color: #747985;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 500;
+}
+
+.phase-step-card.completed .phase-count {
+  color: #69717b;
 }
 
 .phase-extra-info {
   display: inline-flex;
   align-items: center;
+  justify-self: center;
   color: var(--pte-muted);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 500;
 }
 
 .phase-extra-info em {
   font-style: normal;
+}
+
+.phase-extra-info b {
+  color: #6757b3;
+  font-weight: 600;
 }
 
 .phase-banner {
@@ -9761,14 +9881,6 @@ textarea:focus {
 }
 
 @media (max-width: 1180px) {
-  .phase-overview-flow {
-    grid-template-columns: repeat(2, minmax(150px, 1fr));
-  }
-
-  .phase-step-card:not(:last-child)::after {
-    display: none;
-  }
-
   .completed-task-list {
     grid-template-columns: 1fr;
   }
@@ -9798,7 +9910,6 @@ textarea:focus {
     overflow-x: hidden;
   }
 
-  .phase-overview-flow,
   .plan-strip {
     grid-template-columns: 1fr;
   }
@@ -10443,7 +10554,7 @@ textarea:focus {
   gap: 12px;
 }
 
-.round-plan-summary > div {
+.round-plan-copy {
   min-width: 0;
   display: grid;
   gap: 4px;

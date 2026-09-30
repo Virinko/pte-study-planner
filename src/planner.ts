@@ -189,6 +189,9 @@ export function restartTaskProgress(data: StudyData, restartedAt = new Date().to
       restartedAt,
       tasks: JSON.parse(JSON.stringify(data.tasks)) as Task[],
       dailyTargets: { ...(data.dailyTargets[date] || {}) },
+      restartDate: date,
+      planStartDate: data.settings.startDate,
+      planEndDate: data.settings.deadline,
     }],
   };
 }
