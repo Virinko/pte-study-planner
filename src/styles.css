@@ -9706,9 +9706,31 @@ nav button.active {
 }
 
 .phase-banner {
-  grid-template-columns: 1.2fr 1fr .8fr .72fr;
+  grid-template-columns: minmax(350px, 1.45fr) minmax(125px, 1fr) minmax(100px, .65fr) minmax(90px, .5fr);
+  gap: 16px;
+  padding: 16px 20px;
   background: linear-gradient(135deg, rgba(189, 157, 234, .12), rgba(255, 255, 255, .8));
   border-color: rgba(189, 157, 234, .4);
+}
+
+.phase-banner > div + div {
+  padding-left: 16px;
+}
+
+.phase-banner-plan-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.phase-banner-plan-line strong {
+  flex: 0 0 auto;
+}
+
+.phase-banner .phase-banner-dates {
+  color: var(--pte-ink);
+  font-size: 16px;
+  white-space: nowrap;
 }
 
 .phase-banner strong {

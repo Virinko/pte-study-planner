@@ -5390,8 +5390,10 @@ function taskLastStudyDate(task: Task) {
         <div v-if="activePhaseProgress" class="phase-banner">
           <div>
             <span>当前计划</span>
-            <strong>{{ activePhaseProgress.name }}</strong>
-            <p>{{ activePhaseProgress.startDate }} 至 {{ activePhaseProgress.endDate }}</p>
+            <div class="phase-banner-plan-line">
+              <strong>{{ activePhaseProgress.name }}</strong>
+              <span class="phase-banner-dates">{{ activePhaseProgress.startDate }} 至 {{ activePhaseProgress.endDate }}</span>
+            </div>
           </div>
           <div>
             <span>任务进度</span>
