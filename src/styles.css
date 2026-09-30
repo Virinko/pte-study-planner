@@ -7582,6 +7582,14 @@ nav button.active::after {
   font-size: 29px;
 }
 
+.overall-progress-chart {
+  display: block;
+  width: 124px;
+  height: 124px;
+  background: none;
+  box-shadow: none;
+}
+
 .overview-numbers {
   gap: 12px;
 }
@@ -10425,16 +10433,18 @@ textarea:focus {
   border: 1px solid var(--round-border, #e3daf8);
   border-left: 4px solid var(--round-color, #7453d6);
   border-radius: 9px;
+  container-type: inline-size;
 }
 
 .round-plan-summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(220px, .85fr) minmax(0, 1.8fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
 }
 
 .round-plan-summary > div {
+  min-width: 0;
   display: grid;
   gap: 4px;
 }
@@ -10471,14 +10481,15 @@ textarea:focus {
 
 .round-deadlines {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .round-deadline {
+  min-width: 0;
   display: grid;
-  gap: 6px;
-  padding: 10px 12px;
+  gap: 3px;
+  padding: 7px 8px;
   background: rgba(255, 255, 255, .7);
   border: 1px solid var(--round-border, #e3daf8);
   border-radius: 7px;
@@ -10490,14 +10501,17 @@ textarea:focus {
   justify-content: space-between;
   gap: 4px;
   color: #746d86;
-  font-size: 12px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .round-deadline time {
+  min-width: 0;
   color: #514960;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .round-deadline.current {
@@ -10624,7 +10638,11 @@ textarea:focus {
 @media (max-width: 760px) {
   .round-plan-summary {
     align-items: stretch;
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .round-plan-summary > .round-deadlines {
+    grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   }
 
   .round-history-list > div {
@@ -10638,6 +10656,16 @@ textarea:focus {
 
   .round-stage-picker > div {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 860px) {
+  .round-plan-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .round-plan-summary > .round-deadlines {
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   }
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { BarChart, LineChart, PieChart } from 'echarts/charts';
+import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
@@ -8,7 +8,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
-use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
+use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
 
 // Change to 'bar' to restore the original study-time bar chart.
 const STUDY_TYPE_CHART_STYLE = 'bar' as 'pie' | 'bar';
@@ -857,6 +857,7 @@ const todayMotto = computed(() => {
   return dailyMottos[Math.floor(localMidnight / 86400000) % dailyMottos.length];
 });
 const reviewTrendChartEl = ref<HTMLDivElement | null>(null);
+const overallProgressChartEl = ref<HTMLDivElement | null>(null);
 const timeTrendChartEl = ref<HTMLDivElement | null>(null);
 const studyTypeChartEl = ref<HTMLDivElement | null>(null);
 let timerInterval: number | undefined;
@@ -864,6 +865,7 @@ let pomodoroAudioContext: AudioContext | null = null;
 let pomodoroTitleFlashTimer: number | undefined;
 let pomodoroOriginalTitle = '';
 let reviewTrendChartInstance: ECharts | null = null;
+let overallProgressChartInstance: ECharts | null = null;
 let timeTrendChartInstance: ECharts | null = null;
 let studyTypeChartInstance: ECharts | null = null;
 let copiedCheckInTimer: number | undefined;
@@ -1889,6 +1891,57 @@ function buildStudyTypeChartOption(): EChartsCoreOption {
   return STUDY_TYPE_CHART_STYLE === 'pie' ? buildStudyTypePieChartOption() : buildStudyTypeBarChartOption();
 }
 
+function buildOverallProgressChartOption(): EChartsCoreOption {
+  const percent = overallPercent.value;
+  return {
+    animationDuration: 450,
+    title: {
+      text: `${percent}%`,
+      left: 'center',
+      top: 'center',
+      textStyle: { color: '#172033', fontSize: 30, fontWeight: 800 },
+    },
+    tooltip: { show: false },
+    series: [{
+      type: 'gauge',
+      startAngle: 90,
+      endAngle: -270,
+      min: 0,
+      max: 100,
+      radius: '100%',
+      clockwise: true,
+      silent: true,
+      axisLine: { lineStyle: { width: 21, color: [[1, '#e9eef7']] } },
+      progress: {
+        show: percent > 0,
+        overlap: true,
+        width: 21,
+        roundCap: percent > 0 && percent < 100,
+        itemStyle: { color: '#6366f1' },
+      },
+      pointer: { show: false },
+      axisTick: { show: false },
+      splitLine: { show: false },
+      axisLabel: { show: false },
+      title: { show: false },
+      detail: { show: false },
+      data: [{ value: percent }],
+    }],
+  };
+}
+
+async function renderOverallProgressChart() {
+  if (tab.value !== 'progress') return;
+  await nextTick();
+  const el = overallProgressChartEl.value;
+  if (!el) return;
+  if (!overallProgressChartInstance || overallProgressChartInstance.isDisposed()) {
+    overallProgressChartInstance = init(el);
+  }
+  overallProgressChartInstance.setOption(buildOverallProgressChartOption(), true);
+  overallProgressChartInstance.resize();
+}
+
 async function renderTimeTrendChart() {
   if (tab.value !== 'progress') return;
   await nextTick();
@@ -1934,12 +1987,14 @@ async function renderReviewTrendChart() {
 }
 
 function renderProgressCharts() {
+  void renderOverallProgressChart();
   void renderReviewTrendChart();
   void renderTimeTrendChart();
   void renderStudyTypeChart();
 }
 
 function resizeProgressCharts() {
+  overallProgressChartInstance?.resize();
   reviewTrendChartInstance?.resize();
   timeTrendChartInstance?.resize();
   studyTypeChartInstance?.resize();
@@ -1947,6 +2002,8 @@ function resizeProgressCharts() {
 }
 
 function disposeProgressCharts() {
+  overallProgressChartInstance?.dispose();
+  overallProgressChartInstance = null;
   reviewTrendChartInstance?.dispose();
   reviewTrendChartInstance = null;
   timeTrendChartInstance?.dispose();
@@ -1998,6 +2055,10 @@ watch(timeTrendRows, () => {
 watch(trackedStudyTypeRows, () => {
   void renderStudyTypeChart();
 }, { deep: true });
+
+watch(overallPercent, () => {
+  void renderOverallProgressChart();
+});
 
 watch([() => data.value.settings.startDate, () => data.value.settings.deadline], () => {
   selectedStudyWeekNumber.value = currentPlanStudyWeekNumber.value;
@@ -5704,9 +5765,7 @@ function taskLastStudyDate(task: Task) {
         <section class="panel hero-progress warm-card">
           <div class="hero-progress-overview">
             <div class="overview-ring-block">
-              <div class="ring warm-ring" :style="{ '--percent': `${overallPercent}%` }">
-                <strong>{{ overallPercent }}%</strong>
-              </div>
+              <div ref="overallProgressChartEl" class="warm-ring overall-progress-chart" role="img" :aria-label="`总进度 ${overallPercent}%`" />
               <div>
                 <strong>总进度</strong>
                 <span>总体完成率</span>
@@ -6226,13 +6285,13 @@ function taskLastStudyDate(task: Task) {
             <section v-for="task in group.tasks.filter((item) => item.roundModeEnabled)" :key="`${task.id}-rounds`" class="round-plan-detail" :class="roundStageClass(task)">
               <div class="round-plan-summary">
                 <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
-                <button v-if="task.roundCompleted >= task.roundTarget" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
-              </div>
-              <div class="round-deadlines" aria-label="各轮截止日期">
-                <div v-for="deadline in taskRoundDeadlines(task, group.phase)" :key="deadline.label" class="round-deadline" :class="{ current: deadline.current }">
-                  <span>{{ deadline.label }}<b v-if="deadline.current">当前</b></span>
-                  <time :datetime="deadline.date">{{ deadline.date }}</time>
+                <div class="round-deadlines" aria-label="各轮截止日期">
+                  <div v-for="deadline in taskRoundDeadlines(task, group.phase)" :key="deadline.label" class="round-deadline" :class="{ current: deadline.current }">
+                    <span>{{ deadline.label }}<b v-if="deadline.current">当前</b></span>
+                    <time :datetime="deadline.date">{{ deadline.date }}</time>
+                  </div>
                 </div>
+                <button v-if="task.roundCompleted >= task.roundTarget" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
               </div>
               <details v-if="task.roundHistory.length" class="round-history-list">
                 <summary>查看轮刷历史（{{ task.roundHistory.length }}）</summary>
