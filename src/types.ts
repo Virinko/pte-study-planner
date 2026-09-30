@@ -58,6 +58,7 @@ export interface Task {
   target: number;
   repeatCount: number;
   completed: number;
+  progressCycle?: number;
   completionArchived?: boolean;
   roundModeEnabled: boolean;
   roundCycle: number;
@@ -71,7 +72,7 @@ export interface Task {
   roundHistory: TaskRoundHistoryEntry[];
 }
 
-export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; quickAction?: 'complete_today_target'; roundCycle?: number; roundStage?: TaskRoundStage; roundPass?: number; }
+export interface DailyLogEntry { taskId: string; amount?: number; count?: number; subItemIds?: string[]; note?: string; quickAction?: 'complete_today_target'; progressCycle?: number; roundCycle?: number; roundStage?: TaskRoundStage; roundPass?: number; }
 export interface DailyLogs { [date: string]: DailyLogEntry[]; }
 export interface DailyTargets { [date: string]: Record<string, number>; }
 export interface DailyNoteEntry {
@@ -151,5 +152,6 @@ export interface StudyTimeEntry {
   endAt?: string;
   createdAt: string;
 }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; answerEntries: AnswerEntry[]; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; }
+export interface ProgressRestart { id: string; restartedAt: string; tasks: Task[]; dailyTargets: Record<string, number>; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; answerEntries: AnswerEntry[]; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; progressRestarts?: ProgressRestart[]; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }

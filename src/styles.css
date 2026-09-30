@@ -1262,6 +1262,32 @@ input[type="number"]::-webkit-inner-spin-button {
   line-height: 1.65;
 }
 
+.restart-history {
+  margin-top: 14px;
+  color: #7b4651;
+  font-size: 13px;
+}
+
+.restart-history summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.restart-history > details {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #ffd5d8;
+  border-radius: 8px;
+}
+
+.restart-history > details > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-top: 8px;
+}
+
 .danger-restart-button {
   min-height: 42px;
   padding: 0 18px;
@@ -8530,27 +8556,28 @@ nav button:focus-visible {
 }
 
 .progress-page .time-progress-card .time-type-grid article {
-  min-height: 42px;
+  min-height: 40px;
   gap: 12px;
-  padding: 5px 14px 5px 6px;
+  padding: 5px 5px 5px 6px;
   background: color-mix(in srgb, var(--type-color, #7A77B9) 10%, #ffffff) !important;
   border: 1px solid color-mix(in srgb, var(--type-color, #7A77B9) 24%, #ffffff) !important;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .55);
 }
 
 .progress-page .time-progress-card .time-type-grid span {
-  min-width: 46px;
-  height: 32px;
-  padding: 0 12px;
+  min-width: 40px;
+  height: 24px;
+  padding: 0 10px;
   color: #ffffff !important;
   background: var(--type-color, #7A77B9);
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   box-shadow: 0 6px 12px color-mix(in srgb, var(--type-color, #7A77B9) 22%, transparent);
 }
 
 .progress-page .time-progress-card .time-type-grid strong {
   font-size: 15px;
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .progress-page .time-progress-card .copy-time-type-button {
@@ -10068,8 +10095,8 @@ textarea:focus {
 }
 
 .progress-page .study-type-range-switch button {
-  min-width: 56px;
-  padding: 6px 12px;
+  min-width: 46px;
+  padding: 6px 8px;
 }
 
 .study-week-picker {
@@ -10160,6 +10187,64 @@ textarea:focus {
   font-weight: 800;
 }
 
+.study-type-echarts.study-type-pie {
+  height: 330px;
+}
+
+.progress-page .study-type-pie-view {
+  min-width: 0;
+  grid-template-rows: auto auto;
+}
+
+.study-type-time-head {
+  grid-template-columns: minmax(120px, .95fr) minmax(178px, 1.4fr) auto;
+  gap: 6px;
+}
+
+.study-type-time-head-all {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.study-week-picker {
+  grid-column: 2;
+  grid-row: 1;
+  justify-content: stretch;
+  gap: 4px;
+}
+
+.study-week-picker > button {
+  width: 26px;
+  height: 30px;
+}
+
+.study-week-select select {
+  padding-right: 24px;
+  padding-left: 8px;
+  font-size: 11px;
+}
+
+.study-week-select svg {
+  right: 6px;
+}
+
+.progress-page .study-type-range-switch {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.study-type-time-head-all .study-type-range-switch {
+  grid-column: 2;
+}
+
+.study-type-time-title > span {
+  font-size: 13px;
+}
+
+.study-type-time-title strong {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 @media (max-width: 1180px) {
   .progress-page .hero-progress {
     grid-template-columns: 1fr;
@@ -10193,6 +10278,11 @@ textarea:focus {
     justify-content: stretch;
   }
 
+  .progress-page .study-type-range-switch {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
   .study-week-picker.all-time {
     justify-content: flex-start;
   }
@@ -10201,6 +10291,7 @@ textarea:focus {
     width: auto;
     flex: 1;
   }
+
 }
 
 .progress-detail-filters {
@@ -10375,6 +10466,52 @@ textarea:focus {
   border: 1px solid #7453d6;
   border-radius: 7px;
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.round-deadlines {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.round-deadline {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, .7);
+  border: 1px solid var(--round-border, #e3daf8);
+  border-radius: 7px;
+}
+
+.round-deadline > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  color: #746d86;
+  font-size: 12px;
+}
+
+.round-deadline time {
+  color: #514960;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.round-deadline.current {
+  background: var(--round-bg, #fbf9ff);
+  border-color: var(--round-color, #7453d6);
+}
+
+.round-deadline.current time {
+  color: var(--round-color, #7453d6);
+}
+
+.round-deadline b {
+  color: var(--round-color, #7453d6);
+  font-size: 10px;
   white-space: nowrap;
 }
 

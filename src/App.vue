@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { BarChart, LineChart } from 'echarts/charts';
-import { GridComponent, TooltipComponent } from 'echarts/components';
+import { BarChart, LineChart, PieChart } from 'echarts/charts';
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import { buildSchedule, currentPhase, isCurrentTaskProgressLog, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
-use([BarChart, LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
+use([BarChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
+
+// Change to 'bar' to restore the original study-time bar chart.
+const STUDY_TYPE_CHART_STYLE = 'bar' as 'pie' | 'bar';
 
 const KEY = 'pte_progress_backup';
 const LEGACY_KEY = 'pte-study-planner-data';
@@ -345,6 +348,7 @@ function normalizeTask(task: Partial<Task>, fallbackPhaseId: string): Task {
     target,
     repeatCount,
     completed: Math.max(0, completed),
+    progressCycle: Math.max(0, Math.floor(Number(task.progressCycle || 0))),
     completionArchived: roundModeEnabled
       ? roundCleared ? task.completionArchived !== false : true
       : totalTarget > 0 && completed >= totalTarget ? task.completionArchived !== false : true,
@@ -951,10 +955,7 @@ const pomodoroProgressPreview = computed(() => {
 const todayLogByTask = computed(() => {
   const result = todayLogs.value.reduce<Record<string, number>>((acc, log) => {
     const task = data.value.tasks.find((item) => item.id === log.taskId);
-    if (task?.roundModeEnabled) {
-      const belongsToCurrentRound = log.roundCycle === task.roundCycle && log.roundStage === task.roundStage && log.roundPass === task.roundPass;
-      if (!belongsToCurrentRound) return acc;
-    }
+    if (task && !isCurrentTaskProgressLog(task, log)) return acc;
     acc[log.taskId] = (acc[log.taskId] || 0) + (log.count ?? log.amount ?? 0);
     return acc;
   }, {});
@@ -1163,7 +1164,7 @@ function taskCompletionDate(task: Task) {
   let latestProgressDate = '';
   for (const [date, logs] of Object.entries(data.value.dailyLogs).sort(([a], [b]) => a.localeCompare(b))) {
     const count = (logs || [])
-      .filter((log) => log.taskId === task.id)
+      .filter((log) => isCurrentTaskProgressLog(task, log))
       .reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0);
     if (count <= 0) continue;
     cumulative += count;
@@ -1327,6 +1328,9 @@ const trackedStudyTypeRows = computed(() => {
     softColor: taskTypeSoftColor(type, index),
   }));
 });
+const studyTypePieRows = computed(() => trackedStudyTypeRows.value
+  .filter((row) => row.seconds > 0)
+  .sort((a, b) => b.seconds - a.seconds));
 const peakStudyDay = computed(() => {
   const rows = Object.entries(studyTimeEntries.value.reduce<Record<string, number>>((acc, log) => {
     acc[log.date] = (acc[log.date] || 0) + log.durationSeconds;
@@ -1717,7 +1721,7 @@ function buildTimeTrendChartOption(): EChartsCoreOption {
   };
 }
 
-function buildStudyTypeChartOption(): EChartsCoreOption {
+function buildStudyTypeBarChartOption(): EChartsCoreOption {
   const rows = trackedStudyTypeRows.value;
   const rowByType = new Map(rows.map((row) => [row.type, row]));
   const maxSeconds = Math.max(1, ...rows.map((row) => row.seconds));
@@ -1791,6 +1795,100 @@ function buildStudyTypeChartOption(): EChartsCoreOption {
   };
 }
 
+function buildStudyTypePieChartOption(): EChartsCoreOption {
+  const rows = studyTypePieRows.value;
+  const compact = (studyTypeChartEl.value?.clientWidth || 600) < 440;
+  const dense = rows.length > 8;
+  return {
+    animationDuration: 650,
+    animationEasing: 'cubicOut',
+    title: {
+      show: !dense,
+      text: rows.length ? formatDuration(displayedStudyTypeTotalSeconds.value) : '暂无计时',
+      subtext: rows.length ? `${studyTypeTimeRange.value === 'week' ? '本周' : '全部'}时长 · ${rows.length} 个题型` : '记录学习时长后显示分布',
+      left: 'center',
+      top: '42%',
+      textStyle: { color: '#51446f', fontSize: compact ? 15 : 18, fontWeight: 800 },
+      subtextStyle: { color: '#9186a6', fontSize: compact ? 10 : 12 },
+      itemGap: 8,
+    },
+    legend: dense ? {
+      type: 'plain',
+      orient: 'vertical',
+      right: '3%',
+      top: 'middle',
+      width: '60%',
+      itemWidth: 8,
+      itemHeight: 8,
+      itemGap: rows.length > 13 ? 7 : 10,
+      selectedMode: false,
+      data: rows.map((row) => ({ name: row.type, icon: 'circle', itemStyle: { color: row.color } })),
+      formatter(name: string) {
+        const row = rows.find((item) => item.type === name);
+        return `{topic|${name}}{duration|${row ? `  ${formatDurationCompact(row.seconds)}` : ''}}`;
+      },
+      textStyle: {
+        rich: {
+          topic: { width: 66, color: '#51446f', fontSize: 12, fontWeight: 700 },
+          duration: { color: '#9186a6', fontSize: 11 },
+        },
+      },
+    } : undefined,
+    tooltip: {
+      trigger: 'item',
+      confine: true,
+      backgroundColor: '#ffffff',
+      borderColor: '#e9e2f5',
+      textStyle: { color: '#51446f', fontSize: 13 },
+      extraCssText: 'box-shadow:0 8px 24px rgba(81,68,111,.12);border-radius:12px;',
+      formatter(params: unknown) {
+        const item = params as { name: string; value: number; percent: number };
+        return `${item.name}<br/>${formatDurationCompact(item.value)} · ${item.percent}%`;
+      },
+    },
+    series: [{
+      name: '题型学习时长',
+      type: 'pie',
+      radius: dense ? (compact ? ['34%', '48%'] : ['38%', '53%']) : compact ? ['38%', '55%'] : ['44%', '65%'],
+      center: dense ? ['26%', '50%'] : ['50%', '48%'],
+      padAngle: dense ? .5 : 2,
+      percentPrecision: 1,
+      minShowLabelAngle: 0,
+      stillShowZeroSum: false,
+      avoidLabelOverlap: true,
+      emptyCircleStyle: { color: '#ede8f5' },
+      itemStyle: { borderRadius: dense ? 3 : 7 },
+      label: {
+        show: !dense,
+        position: 'outside',
+        alignTo: 'edge',
+        edgeDistance: compact ? 2 : 16,
+        distanceToLabelLine: 5,
+        formatter: '{name|{b}}',
+        rich: {
+          name: { fontSize: compact ? 11 : 12, fontWeight: 800, lineHeight: 18 },
+        },
+      },
+      labelLine: { length: compact ? 8 : 15, length2: 8, smooth: .2, lineStyle: { width: 1.3 } },
+      labelLayout: { moveOverlap: 'shiftY', hideOverlap: false },
+      emphasis: {
+        scaleSize: 6,
+        itemStyle: { shadowBlur: 16, shadowColor: 'rgba(81,68,111,.18)' },
+      },
+      data: rows.map((row) => ({
+        name: row.type,
+        value: row.seconds,
+        itemStyle: { color: row.color },
+        label: { color: row.color },
+      })),
+    }],
+  };
+}
+
+function buildStudyTypeChartOption(): EChartsCoreOption {
+  return STUDY_TYPE_CHART_STYLE === 'pie' ? buildStudyTypePieChartOption() : buildStudyTypeBarChartOption();
+}
+
 async function renderTimeTrendChart() {
   if (tab.value !== 'progress') return;
   await nextTick();
@@ -1845,6 +1943,7 @@ function resizeProgressCharts() {
   reviewTrendChartInstance?.resize();
   timeTrendChartInstance?.resize();
   studyTypeChartInstance?.resize();
+  if (studyTypeChartInstance) studyTypeChartInstance.setOption(buildStudyTypeChartOption(), true);
 }
 
 function disposeProgressCharts() {
@@ -2129,27 +2228,11 @@ function handleBeforeUnload() {
 }
 
 function restartStudyPlan() {
-  const confirmed = window.confirm('确定清除本地总计划、任务、进度、复习、计时和备注数据，并重新开始吗？云端数据会在下次自动保存时更新。');
+  if (!data.value.tasks.length) return;
+  const confirmed = window.confirm('确定将所有题型的当前进度归零并重新开始吗？轮刷将进入新的大轮次第 1 轮，之前的练习记录、学习时长、复习和备注都会保留。');
   if (!confirmed) return;
-  const fresh = defaultData();
-  const phases = syncPhaseBoundaries(fresh.phases, fresh.settings);
-  runningTimer.value = null;
-  runningPomodoro.value = null;
-  stopPomodoroTitleFlash();
-  showTimerModal.value = false;
-  showPomodoroModal.value = false;
-  clearTimerEditDraft();
-  clearPomodoroProgressDraft();
-  timerEditDirty.value = false;
-  persistRunningTimer();
-  persistRunningPomodoro();
-  selectedProgressPhaseId.value = phases[0]?.id || '';
-  selectedNoteDate.value = todayIso();
-  noteDraft.value = '';
-  reviewAddTaskId.value = '';
-  manualAmounts.value = {};
-  reviewAmounts.value = {};
-  saveLocal({ ...fresh, phases });
+  saveLocal(restartTaskProgress(data.value));
+  refreshTodayTargets();
 }
 
 function timerIdentity(type: TimeLogType, id: string) {
@@ -2327,9 +2410,10 @@ function taskWithProgressDelta(task: Task, delta: number): Task {
 }
 
 function roundLogMetadata(task: Task) {
-  return task.roundModeEnabled
-    ? { roundCycle: task.roundCycle, roundStage: task.roundStage, roundPass: task.roundPass }
-    : {};
+  return {
+    progressCycle: task.progressCycle || 0,
+    ...(task.roundModeEnabled ? { roundCycle: task.roundCycle, roundStage: task.roundStage, roundPass: task.roundPass } : {}),
+  };
 }
 
 function durationParts(seconds: number) {
@@ -3538,8 +3622,7 @@ function applyTaskProgressCorrectionToDailyLogs(task: Task, delta: number) {
     const logs = nextLogs[date];
     for (let index = logs.length - 1; index >= 0 && remaining > 0; index -= 1) {
       const log = logs[index];
-      if (log.taskId !== task.id) continue;
-      if (task.roundModeEnabled && (log.roundCycle !== task.roundCycle || log.roundStage !== task.roundStage || log.roundPass !== task.roundPass)) continue;
+      if (!isCurrentTaskProgressLog(task, log)) continue;
       const count = log.count ?? log.amount ?? 0;
       if (count <= 0) continue;
       const removed = Math.min(count, remaining);
@@ -3583,8 +3666,8 @@ function submitCorrection() {
     affectedDates.forEach((date) => {
       const logs = dailyLogs[date] || [];
       const selectedIds = nextSubItems.filter((item) => item.completedDate === date).map((item) => item.id);
-      const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
-      dailyLogs[date] = selectedIds.length > 0 ? [...otherLogs, { taskId: task.id, count: selectedIds.length, subItemIds: selectedIds }] : otherLogs;
+      const otherLogs = logs.filter((entry) => !isCurrentTaskProgressLog(task, entry));
+      dailyLogs[date] = selectedIds.length > 0 ? [...otherLogs, { taskId: task.id, count: selectedIds.length, subItemIds: selectedIds, ...roundLogMetadata(task) }] : otherLogs;
     });
     saveLocal({
       ...data.value,
@@ -3718,7 +3801,7 @@ function generateSubItems(task: Task) {
 function addAmount(task: Task, amount: number, quickAction?: DailyLogEntry['quickAction']) {
   const date = todayIso();
   const log = data.value.dailyLogs[date] || [];
-  const todayCompleted = log.filter((entry) => entry.taskId === task.id).reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
+  const todayCompleted = log.filter((entry) => isCurrentTaskProgressLog(task, entry)).reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
   const progressCompleted = taskProgressCompleted(task);
   const delta = amount < 0
     ? -Math.min(Math.abs(amount), progressCompleted, Math.max(0, todayCompleted))
@@ -3760,8 +3843,7 @@ function todayTargetCompletionLogIndex(task: Task) {
   const logs = data.value.dailyLogs[todayIso()] || [];
   for (let index = logs.length - 1; index >= 0; index -= 1) {
     const entry = logs[index];
-    const belongsToTask = entry.taskId === task.id && (!task.roundModeEnabled
-      || (entry.roundCycle === task.roundCycle && entry.roundStage === task.roundStage && entry.roundPass === task.roundPass));
+    const belongsToTask = isCurrentTaskProgressLog(task, entry);
     if (!belongsToTask) continue;
     return entry.quickAction === 'complete_today_target' && (entry.count ?? entry.amount ?? 0) > 0 ? index : -1;
   }
@@ -3798,8 +3880,7 @@ function deleteTodayPracticeItem(itemId: string) {
     const task = data.value.tasks.find((entry) => entry.id === itemId.slice('task-'.length));
     if (!task) return;
     const logs = data.value.dailyLogs[date] || [];
-    const isCurrentTaskLog = (entry: StudyData['dailyLogs'][string][number]) => entry.taskId === task.id && (!task.roundModeEnabled
-      || (entry.roundCycle === task.roundCycle && entry.roundStage === task.roundStage && entry.roundPass === task.roundPass));
+    const isCurrentTaskLog = (entry: DailyLogEntry) => isCurrentTaskProgressLog(task, entry);
     const todayCompleted = logs
       .filter(isCurrentTaskLog)
       .reduce((sum, entry) => sum + (entry.count ?? entry.amount ?? 0), 0);
@@ -4179,8 +4260,8 @@ function setSubItemCompletion(task: Task, itemId: string, checked: boolean, date
   });
   const nextTask = normalizeTask({ ...task, subItems: nextSubItems }, data.value.phases[0]?.id || '');
   const selectedIds = nextSubItems.filter((item) => item.completedDate === date).map((item) => item.id);
-  const otherLogs = logs.filter((entry) => entry.taskId !== task.id);
-  const taskLogs = selectedIds.length > 0 ? [{ taskId: task.id, count: selectedIds.length, subItemIds: selectedIds }] : [];
+  const otherLogs = logs.filter((entry) => !isCurrentTaskProgressLog(task, entry));
+  const taskLogs = selectedIds.length > 0 ? [{ taskId: task.id, count: selectedIds.length, subItemIds: selectedIds, ...roundLogMetadata(task) }] : [];
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((entry) => entry.id === task.id ? nextTask : entry),
@@ -4910,12 +4991,9 @@ function addDays(iso: string, days: number) {
   return `${year}-${month}-${day}`;
 }
 
-function formatStudyWeekRange(startDate: string, endDate: string) {
-  const startMonth = Number(startDate.slice(5, 7));
-  const startDay = Number(startDate.slice(8, 10));
-  const endMonth = Number(endDate.slice(5, 7));
-  const endDay = Number(endDate.slice(8, 10));
-  return `${startMonth}月${startDay}日–${endMonth}月${endDay}日`;
+function formatStudyWeekRangeShort(startDate: string, endDate: string) {
+  const formatDate = (date: string) => `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+  return `${formatDate(startDate)}–${formatDate(endDate)}`;
 }
 
 function shiftStudyWeek(offset: number) {
@@ -5658,48 +5736,46 @@ function taskLastStudyDate(task: Task) {
               </div>
             </div>
           </div>
-          <div class="study-type-time-block">
-            <div class="study-type-time-head">
+          <div class="study-type-time-block" :class="{ 'study-type-pie-view': STUDY_TYPE_CHART_STYLE === 'pie' }">
+            <div class="study-type-time-head" :class="{ 'study-type-time-head-all': studyTypeTimeRange === 'all' }">
               <div class="study-type-time-title">
                 <span>{{ studyTypeTimeRange === 'week' && selectedStudyWeek ? `计划第 ${selectedStudyWeek.number} 周题型计时` : '已学习的题型总计时' }}</span>
-                <strong>{{ studyTypeTimeRange === 'week' ? '本周总计' : '总计' }} {{ formatDurationCompact(displayedStudyTypeTotalSeconds) }}</strong>
+                <strong>{{ studyTypeTimeRange === 'week' ? '本周总计' : '总计' }} {{ formatDuration(displayedStudyTypeTotalSeconds) }}</strong>
               </div>
-              <div class="study-week-picker" :class="{ 'all-time': studyTypeTimeRange === 'all' }">
-                <template v-if="studyTypeTimeRange === 'week' && selectedStudyWeek">
-                  <button
-                    type="button"
-                    title="上一周"
-                    aria-label="查看上一周"
-                    :disabled="selectedStudyWeek.number <= 1"
-                    @click="shiftStudyWeek(-1)"
-                  >
-                    <ChevronLeft :size="18" stroke-width="2.5" aria-hidden="true" />
-                  </button>
-                  <label class="study-week-select">
+              <div v-if="studyTypeTimeRange === 'week' && selectedStudyWeek" class="study-week-picker">
+                <button
+                  type="button"
+                  title="上一周"
+                  aria-label="查看上一周"
+                  :disabled="selectedStudyWeek.number <= 1"
+                  @click="shiftStudyWeek(-1)"
+                >
+                  <ChevronLeft :size="18" stroke-width="2.5" aria-hidden="true" />
+                </button>
+                <label class="study-week-select">
                     <select v-model.number="selectedStudyWeekNumber" aria-label="选择计划周">
                       <option v-for="week in planStudyWeekOptions" :key="week.number" :value="week.number">
-                        计划第 {{ week.number }} 周（{{ formatStudyWeekRange(week.startDate, week.endDate) }}）
+                        第{{ week.number }}周 · {{ formatStudyWeekRangeShort(week.startDate, week.endDate) }}
                       </option>
-                    </select>
-                    <ChevronDown :size="16" stroke-width="2.4" aria-hidden="true" />
-                  </label>
-                  <button
-                    type="button"
-                    title="下一周"
-                    aria-label="查看下一周"
-                    :disabled="selectedStudyWeek.number >= planStudyWeekOptions.length"
-                    @click="shiftStudyWeek(1)"
-                  >
-                    <ChevronRight :size="18" stroke-width="2.5" aria-hidden="true" />
-                  </button>
-                </template>
+                  </select>
+                  <ChevronDown :size="16" stroke-width="2.4" aria-hidden="true" />
+                </label>
+                <button
+                  type="button"
+                  title="下一周"
+                  aria-label="查看下一周"
+                  :disabled="selectedStudyWeek.number >= planStudyWeekOptions.length"
+                  @click="shiftStudyWeek(1)"
+                >
+                  <ChevronRight :size="18" stroke-width="2.5" aria-hidden="true" />
+                </button>
               </div>
               <div class="segmented compact study-type-range-switch">
                 <button type="button" :class="{ active: studyTypeTimeRange === 'week' }" @click="studyTypeTimeRange = 'week'">按周</button>
                 <button type="button" :class="{ active: studyTypeTimeRange === 'all' }" @click="studyTypeTimeRange = 'all'">全部</button>
               </div>
             </div>
-            <div ref="studyTypeChartEl" class="study-type-echarts" role="img" aria-label="各题型学习时长柱状图" />
+            <div ref="studyTypeChartEl" class="study-type-echarts" :class="{ 'study-type-pie': STUDY_TYPE_CHART_STYLE === 'pie' }" :style="STUDY_TYPE_CHART_STYLE === 'pie' ? { height: `${studyTypePieRows.length > 8 ? Math.max(380, studyTypePieRows.length * 25) : 330}px` } : undefined" role="img" :aria-label="STUDY_TYPE_CHART_STYLE === 'pie' ? '各题型学习时长环形饼图' : '各题型学习时长柱状图'" />
           </div>
         </section>
 
@@ -6152,6 +6228,12 @@ function taskLastStudyDate(task: Task) {
                 <div><strong>{{ task.name }} · {{ roundStageLabel(task) }}</strong><span>本轮 {{ task.roundCompleted }} / {{ task.roundTarget }} 题 · 累计练习 {{ task.roundPracticeTotal }} 题<template v-if="task.roundStageEndDate"> · 计划 {{ task.roundStageEndDate }} 前完成</template></span><p>{{ roundInstruction(task) }}</p></div>
                 <button v-if="task.roundCompleted >= task.roundTarget" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
               </div>
+              <div class="round-deadlines" aria-label="各轮截止日期">
+                <div v-for="deadline in taskRoundDeadlines(task, group.phase)" :key="deadline.label" class="round-deadline" :class="{ current: deadline.current }">
+                  <span>{{ deadline.label }}<b v-if="deadline.current">当前</b></span>
+                  <time :datetime="deadline.date">{{ deadline.date }}</time>
+                </div>
+              </div>
               <details v-if="task.roundHistory.length" class="round-history-list">
                 <summary>查看轮刷历史（{{ task.roundHistory.length }}）</summary>
                 <div v-for="entry in [...task.roundHistory].reverse()" :key="entry.id">
@@ -6255,9 +6337,20 @@ function taskLastStudyDate(task: Task) {
       <section class="panel restart-panel">
         <div>
           <h2>重新开始</h2>
-          <p>清空本地总计划、任务、每日进度、复习计划、学习时长和备注，重新生成一个新的默认计划。云端数据会在下次自动保存时更新。</p>
+          <p>将所有题型的当前进度归零，轮刷从新的大轮次第 1 轮开始。保留计划、题型配置、历史练习、复习记录、学习时长和备注，归零前的进度会保存到下方历史中。</p>
+          <details v-if="data.progressRestarts?.length" class="restart-history">
+            <summary>查看重新开始前的进度（{{ data.progressRestarts.length }}）</summary>
+            <details v-for="restart in [...data.progressRestarts].reverse()" :key="restart.id">
+              <summary>{{ new Date(restart.restartedAt).toLocaleString('zh-CN') }} · {{ restart.tasks.length }} 个题型</summary>
+              <div v-for="task in restart.tasks" :key="task.id">
+                <span>{{ task.name }} · {{ task.platform }} · {{ task.frequencyType }}</span>
+                <strong>{{ taskProgressCompleted(task) }} / {{ taskTotalTarget(task) }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                <small v-if="task.roundModeEnabled">{{ roundStageLabel(task) }}</small>
+              </div>
+            </details>
+          </details>
         </div>
-        <button class="danger-restart-button" type="button" @click="restartStudyPlan">清除所有数据并重新开始</button>
+        <button class="danger-restart-button" type="button" :disabled="!data.tasks.length" @click="restartStudyPlan">进度归零并重新开始</button>
       </section>
     </section>
 

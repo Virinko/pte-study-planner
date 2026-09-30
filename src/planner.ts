@@ -1,4 +1,4 @@
-import type { Phase, PhaseSchedule, StudyData, Task, TaskRoundStage } from './types';
+import type { DailyLogEntry, Phase, PhaseSchedule, StudyData, Task, TaskRoundStage } from './types';
 
 const formatLocalDate = (date: Date) => {
   const year = date.getFullYear();
@@ -43,6 +43,9 @@ export const taskTotalTarget = (task: Task) => task.roundModeEnabled
   ? task.roundCleared ? Math.max(0, Number(task.target || 0)) : Math.max(0, Number(task.roundTarget || 0))
   : Math.max(0, Number(task.target || 0) * taskRepeatCount(task));
 export const taskRemaining = (task: Task) => Math.max(0, taskTotalTarget(task) - taskProgressCompleted(task));
+export const isCurrentTaskProgressLog = (task: Task, log: DailyLogEntry) => log.taskId === task.id
+  && (log.progressCycle || 0) === (task.progressCycle || 0)
+  && (!task.roundModeEnabled || (log.roundCycle === task.roundCycle && log.roundStage === task.roundStage && log.roundPass === task.roundPass));
 export const taskCurrentRound = (task: Task) => {
   if (task.roundModeEnabled) return task.roundStage;
   const target = Math.max(1, Number(task.target || 0));
@@ -130,6 +133,64 @@ export function taskRoundPlanEndDate(task: Task, phase: PhaseSchedule, date = to
     stageStart = addDays(stageEnd, 1);
   }
   return stageEnd;
+}
+
+export function taskRoundDeadlines(task: Task, phase: PhaseSchedule) {
+  let stageStart = task.startDate || phase.startDate;
+  const taskEnd = task.endDate || phase.endDate;
+  const deadlines: { label: string; date: string; current: boolean }[] = [];
+  const inBuffer = task.roundStage === 4 && task.roundPass > 1;
+  for (const roundStage of [1, 2, 3, 4] as const) {
+    const current = roundStage === task.roundStage && !inBuffer;
+    const date = current && task.roundStageEndDate
+      ? task.roundStageEndDate
+      : stageStart >= taskEnd ? taskEnd : taskRoundStageEndDate({ ...task, roundStage, roundPass: 1 }, phase, stageStart);
+    deadlines.push({ label: `第 ${roundStage} 轮截止`, date, current });
+    stageStart = addDays(date, 1);
+  }
+  deadlines.push({
+    label: '错题缓冲截止',
+    date: inBuffer && task.roundStageEndDate ? task.roundStageEndDate : taskEnd,
+    current: inBuffer,
+  });
+  return deadlines;
+}
+
+export function restartTaskProgress(data: StudyData, restartedAt = new Date().toISOString()): StudyData {
+  const date = formatLocalDate(new Date(restartedAt));
+  const schedule = buildSchedule(data);
+  const tasks = data.tasks.map((task): Task => {
+    const nextTask: Task = {
+      ...task,
+      progressCycle: (task.progressCycle || 0) + 1,
+      completed: 0,
+      completionArchived: true,
+      subItems: task.subItems.map((item) => ({ ...item, status: 'not_started', completedDate: '', round: 0 })),
+      roundCycle: task.roundModeEnabled ? task.roundCycle + 1 : task.roundCycle,
+      roundStage: 1,
+      roundPass: 1,
+      roundTarget: task.roundModeEnabled ? task.target : 0,
+      roundCompleted: 0,
+      roundCleared: false,
+      roundStageEndDate: undefined,
+    };
+    const phase = schedule.find((item) => item.id === task.phaseId);
+    if (task.roundModeEnabled && phase) nextTask.roundStageEndDate = taskRoundStageEndDate(nextTask, phase, date);
+    return nextTask;
+  });
+  const dailyTargets = { ...data.dailyTargets };
+  delete dailyTargets[date];
+  return {
+    ...data,
+    tasks,
+    dailyTargets,
+    progressRestarts: [...(data.progressRestarts || []), {
+      id: crypto.randomUUID(),
+      restartedAt,
+      tasks: JSON.parse(JSON.stringify(data.tasks)) as Task[],
+      dailyTargets: { ...(data.dailyTargets[date] || {}) },
+    }],
+  };
 }
 
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {
