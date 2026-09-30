@@ -4236,6 +4236,10 @@ nav button.active::after {
   --round-border: #bce3c9;
 }
 
+.today-progress-cell .progress-support-text.round-deadline-text {
+  color: var(--round-color);
+}
+
 .round-summary-label,
 .completed-round-label,
 .round-history-stage {

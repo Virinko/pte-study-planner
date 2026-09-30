@@ -5447,7 +5447,7 @@ function taskLastStudyDate(task: Task) {
                   <b>{{ task.summaryPercent }}%</b>
                 </span>
                 <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
-                <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text">{{ currentTaskRoundDeadline(task) }}</small>
+                <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text" :class="task.roundModeEnabled ? ['round-deadline-text', roundStageClass(task)] : undefined">{{ currentTaskRoundDeadline(task) }}</small>
               </span>
               <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
               <span class="row-actions">
