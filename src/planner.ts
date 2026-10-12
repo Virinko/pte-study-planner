@@ -15,7 +15,7 @@ export function defaultData(): StudyData {
   const today = todayIso();
   const deadline = addDays(today, 60);
   return {
-    version: 6,
+    version: 7,
     updatedAt: '',
     settings: { startDate: today, deadline },
     phases: [{ id: crypto.randomUUID(), name: '备考总计划', order: 1, startDate: today, endDate: deadline }],
@@ -166,7 +166,7 @@ export function restartTaskProgress(data: StudyData, restartedAt = new Date().to
       completed: 0,
       completionArchived: true,
       subItems: task.subItems.map((item) => ({ ...item, status: 'not_started', completedDate: '', round: 0 })),
-      roundCycle: task.roundModeEnabled ? task.roundCycle + 1 : task.roundCycle,
+      roundCycle: task.roundModeEnabled ? 1 : task.roundCycle,
       roundStage: 1,
       roundPass: 1,
       roundTarget: task.roundModeEnabled ? task.target : 0,
@@ -194,6 +194,36 @@ export function restartTaskProgress(data: StudyData, restartedAt = new Date().to
       planEndDate: data.settings.deadline,
     }],
   };
+}
+
+export function repairRestartedRoundCycles(data: StudyData): StudyData {
+  const restart = data.progressRestarts?.[data.progressRestarts.length - 1];
+  if (!restart) return data;
+  const previousTasks = new Map(restart.tasks.map((task) => [task.id, task]));
+  const repairedCycles = new Map<string, { oldCycle: number; progressCycle: number }>();
+  const tasks = data.tasks.map((task) => {
+    const previous = previousTasks.get(task.id);
+    if (!previous || !task.roundModeEnabled
+      || task.roundCycle !== previous.roundCycle + 1
+      || (task.progressCycle || 0) !== (previous.progressCycle || 0) + 1
+      || task.roundHistory.length < previous.roundHistory.length
+      || previous.roundHistory.some((entry, index) => task.roundHistory[index]?.id !== entry.id)
+      || task.roundHistory.slice(previous.roundHistory.length).some((entry) => entry.cycle !== task.roundCycle)) return task;
+    repairedCycles.set(task.id, { oldCycle: task.roundCycle, progressCycle: task.progressCycle || 0 });
+    return {
+      ...task,
+      roundCycle: 1,
+      roundHistory: task.roundHistory.map((entry, index) => index < previous.roundHistory.length ? entry : { ...entry, cycle: 1 }),
+    };
+  });
+  if (!repairedCycles.size) return data;
+  const dailyLogs = Object.fromEntries(Object.entries(data.dailyLogs).map(([date, logs]) => [date, logs.map((log) => {
+    const repair = repairedCycles.get(log.taskId);
+    return repair && log.progressCycle === repair.progressCycle && log.roundCycle === repair.oldCycle
+      ? { ...log, roundCycle: 1 }
+      : log;
+  })]));
+  return { ...data, tasks, dailyLogs };
 }
 
 export function taskSuggestion(task: Task, phase?: PhaseSchedule, date = todayIso()) {

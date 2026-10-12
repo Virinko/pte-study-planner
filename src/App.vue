@@ -5,7 +5,7 @@ import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echart
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, isCurrentTaskProgressLog, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
@@ -165,7 +165,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
   const studyTimeEntries = normalizeStudyTimeEntries(source?.studyTimeEntries, source?.timeLogs ?? base.timeLogs);
   const reviewPlans = normalizeReviewPlans(source?.reviewPlans ?? base.reviewPlans, tasks);
   const reviewLogs = normalizeReviewLogs(source?.reviewLogs, reviewPlans, studyTimeEntries);
-  return {
+  return repairRestartedRoundCycles({
     ...base,
     ...source,
     version: base.version,
@@ -181,7 +181,7 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
     timeLogs: entriesToTimeLogs(studyTimeEntries),
     studyTimeEntries,
-  };
+  });
 }
 
 function normalizePhases(source: unknown, settings: StudyData['settings']): Phase[] {
@@ -2206,7 +2206,7 @@ async function fetchCloudProgress(): Promise<{ progress: StudyData; needsUpgrade
   }
   if (!res.ok) throw new Error(`Cloudflare 读取失败：HTTP ${res.status}`);
   const source = await res.json() as Partial<StudyData>;
-  return { progress: normalizeData(source), needsUpgrade: Number(source.version || 0) < 6 };
+  return { progress: normalizeData(source), needsUpgrade: Number(source.version || 0) < 7 };
 }
 
 async function loadCloudProgress() {
@@ -2261,7 +2261,7 @@ async function syncCloudProgress() {
     if (res.status === 409) {
       const result = await res.json() as { remote?: Partial<StudyData>; progress?: Partial<StudyData> };
       const remote = result.remote || result.progress;
-      if (remote) applyRemoteProgress(normalizeData(remote), Number(remote.version || 0) < 6);
+      if (remote) applyRemoteProgress(normalizeData(remote), Number(remote.version || 0) < 7);
       return false;
     }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
@@ -2326,7 +2326,7 @@ function handleBeforeUnload() {
 
 function restartStudyPlan() {
   if (!data.value.tasks.length) return;
-  const confirmed = window.confirm('确定将所有题型的当前进度归零并重新开始吗？轮刷将进入新的大轮次第 1 轮，之前的练习记录、学习时长、复习和备注都会保留。');
+  const confirmed = window.confirm('确定将所有题型的当前进度归零并重新开始吗？轮刷将从第一大轮第 1 轮开始，之前的练习记录、学习时长、复习和备注都会保留。');
   if (!confirmed) return;
   saveLocal(restartTaskProgress(data.value));
   refreshTodayTargets();
@@ -3441,8 +3441,7 @@ function submitRoundSetup() {
     roundSetupError.value = `当前轮题量需为 1 到 ${target} 之间的整数。`;
     return;
   }
-  const previousCycles = task.roundHistory.map((entry) => entry.cycle);
-  const cycle = Math.max(1, task.roundCycle || 1, ...previousCycles);
+  const cycle = Math.max(1, task.roundCycle || 1);
   const startingRoundCompleted = roundSetupStage.value === 1
     ? Math.min(currentTarget, taskRoundCompleted(task))
     : 0;
@@ -6467,7 +6466,7 @@ function taskLastStudyDate(task: Task) {
       <section class="panel restart-panel">
         <div>
           <h2>重新开始</h2>
-          <p>将所有题型的当前进度归零，轮刷从新的大轮次第 1 轮开始。保留计划、题型配置、历史练习、复习记录、学习时长和备注，归零前的进度会保存到下方历史中。</p>
+          <p>将所有题型的当前进度归零，轮刷从第一大轮第 1 轮开始。保留计划、题型配置、历史练习、复习记录、学习时长和备注，归零前的进度会保存到下方历史中。</p>
           <details v-if="data.progressRestarts?.length" class="restart-history">
             <summary>查看重新开始前的进度（{{ data.progressRestarts.length }}）</summary>
             <details v-for="restart in [...data.progressRestarts].reverse()" :key="restart.id">
