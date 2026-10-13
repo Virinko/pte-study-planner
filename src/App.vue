@@ -5,7 +5,8 @@ import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echart
 import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageRemaining, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import RecallPage from './RecallPage.vue';
+import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
@@ -80,6 +81,7 @@ const tabs = [
   ['settings', '计划设置'],
   ['notes', '每日备注'],
   ['answers', '答案库'],
+  ['recall', '默写检查'],
 ] as const;
 const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string }[] = [
   { key: 'today', label: '今日任务', icon: '📌' },
@@ -87,6 +89,7 @@ const sidebarItems: { key: (typeof tabs)[number][0]; label: string; icon: string
   { key: 'progress', label: '进度统计', icon: '📊' },
   { key: 'notes', label: '每日备注', icon: '📝' },
   { key: 'answers', label: '答案库', icon: '📚' },
+  { key: 'recall', label: '默写检查', icon: '✍️' },
 ];
 type TrendRange = '7' | '30' | 'all';
 type StudyTypeTimeRange = 'week' | 'all';
@@ -275,6 +278,7 @@ function normalizeAnswerEntries(source: unknown): AnswerEntry[] {
         examType: answer.examType?.trim() || 'DI',
         platformRefs,
         title: answer.title?.trim() || '未命名答案',
+        question: typeof answer.question === 'string' ? answer.question.trim() : undefined,
         answer: answer.answer || '',
         createdAt,
         updatedAt: answer.updatedAt,
@@ -372,11 +376,13 @@ function taskSummaryTarget(task: Task) {
 function taskSummaryCompleted(task: Task) {
   return task.roundModeEnabled
     ? Math.min(taskProgressCompleted(task), taskTotalTarget(task))
-    : taskCoverageCompleted(task);
+    : task.repeatCount > 1 ? taskRoundCompleted(task) : taskCoverageCompleted(task);
 }
 
 function taskSummaryRemaining(task: Task) {
-  return task.roundModeEnabled ? taskRemaining(task) : taskCoverageRemaining(task);
+  return task.roundModeEnabled
+    ? taskRemaining(task)
+    : Math.max(0, taskSummaryTarget(task) - taskSummaryCompleted(task));
 }
 
 function normalizeTaskRoundHistory(source: unknown): TaskRoundHistoryEntry[] {
@@ -785,6 +791,7 @@ const noteEditorRef = ref<HTMLDivElement | null>(null);
 const answerExamType = ref('DI');
 const answerPlatformRefs = ref<PlatformQuestionRef[]>(fixedAnswerPlatformRefs());
 const answerTitle = ref('');
+const answerQuestion = ref('');
 const answerContent = ref('');
 const editingAnswerId = ref('');
 const answerSearch = ref('');
@@ -1034,7 +1041,7 @@ const answerRows = computed(() => {
   const rows = [...(data.value.answerEntries || [])]
     .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
     .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
-    .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)));
+    .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.question || '', entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)));
   if (answerManualSortMode.value) {
     return rows.sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
   }
@@ -4703,6 +4710,7 @@ function resetAnswerDraft(preserveExamType = false) {
   if (!preserveExamType) answerExamType.value = 'DI';
   answerPlatformRefs.value = fixedAnswerPlatformRefs();
   answerTitle.value = '';
+  answerQuestion.value = '';
   answerContent.value = '';
   editingAnswerId.value = '';
 }
@@ -4790,9 +4798,12 @@ function saveAnswer() {
     .map((ref) => ({ platform: ref.platform, questionNumber: ref.questionNumber.trim() }))
     .filter((ref) => ref.questionNumber);
   const title = answerTitle.value.trim();
+  const question = answerQuestion.value.trim();
   const answer = answerContent.value.trim();
-  if (!platformRefs.length || !title || !answer) {
-    alert('请至少填写一个平台题号、答案标题和答案内容。');
+  if (!platformRefs.length || !title || !answer || (answerExamType.value.trim().toUpperCase() === 'WE' && !question)) {
+    alert(answerExamType.value.trim().toUpperCase() === 'WE'
+      ? '请填写WE题目、至少一个平台题号、答案标题和答案内容。'
+      : '请至少填写一个平台题号、答案标题和答案内容。');
     return;
   }
   const now = new Date().toISOString();
@@ -4801,6 +4812,7 @@ function saveAnswer() {
     examType: answerExamType.value.trim() || 'DI',
     platformRefs,
     title,
+    question: answerExamType.value.trim().toUpperCase() === 'WE' ? question : undefined,
     answer,
     createdAt: now,
     updatedAt: now,
@@ -4817,6 +4829,7 @@ function editAnswer(entry: AnswerEntry) {
   answerExamType.value = entry.examType;
   answerPlatformRefs.value = fixedAnswerPlatformRefs(entry.platformRefs);
   answerTitle.value = entry.title;
+  answerQuestion.value = entry.question || '';
   answerContent.value = entry.answer;
   editingAnswerId.value = entry.id;
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -4870,6 +4883,7 @@ async function exportAnswersToPdf() {
         <span class="number">${String(index + 1).padStart(2, '0')}</span>
       </div>
       <h2>${escapePrintHtml(entry.title)}</h2>
+      ${entry.question ? `<div class="prompt"><strong>题目：</strong>${escapePrintHtml(entry.question)}</div>` : ''}
       <div class="body">${answerPrintHtml(entry.answer)}</div>
     </article>`).join('');
 
@@ -4904,6 +4918,7 @@ async function exportAnswersToPdf() {
     .answer-pdf-document .platform-tag { color: #375081; background: #e7eefc; }
     .answer-pdf-document .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
     .answer-pdf-document h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
+    .answer-pdf-document .prompt { margin: 0 0 10px; color: #536486; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
     .answer-pdf-document .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
     .answer-pdf-document .body p { margin: 0; break-inside: avoid; page-break-inside: avoid; }
     .answer-pdf-document .body-gap { min-height: 1.65em; }
@@ -5295,6 +5310,8 @@ function taskLastStudyDate(task: Task) {
       </div>
     </div>
 
+    <RecallPage v-show="tab === 'recall'" :data="data" :active="tab === 'recall'" :today-task-ids="activeTodayTaskRows.map(task => task.id)" :save-progress="saveLocal" />
+
     <section v-if="tab === 'today'" class="page dashboard-page">
       <section class="plan-strip">
         <div>
@@ -5416,7 +5433,7 @@ function taskLastStudyDate(task: Task) {
 
         <div class="dashboard-table today-table">
           <div class="dashboard-table-head">
-            <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>总体进度</span><span>状态</span><span>操作</span>
+            <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>当前进度</span><span>状态</span><span>操作</span>
           </div>
           <template v-for="task in activeTodayTaskRows" :key="task.id">
             <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
@@ -6604,7 +6621,7 @@ function taskLastStudyDate(task: Task) {
             <span class="answers-title-icon"><BookOpen :size="30" /></span>
             <div>
               <h2>{{ editingAnswerId ? '编辑答案' : '录入答案' }}</h2>
-              <p>保存平台、题号、标题和完整答案，资料会随现有进度自动同步。</p>
+              <p>保存平台、题号、标题和完整答案；WE 题型还需录入题目。</p>
             </div>
           </div>
         </div>
@@ -6629,6 +6646,10 @@ function taskLastStudyDate(task: Task) {
           </label>
         </div>
 
+        <label v-if="answerExamType.trim().toUpperCase() === 'WE'" class="answer-content-field answer-question-field">
+          <span>WE 题目</span>
+          <textarea v-model="answerQuestion" placeholder="输入本篇 WE 的题目" required></textarea>
+        </label>
         <label class="answer-content-field">
           <span>答案内容</span>
           <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 中保留。"></textarea>
@@ -6663,7 +6684,7 @@ function taskLastStudyDate(task: Task) {
           </div>
         </div>
         <div class="answer-filters">
-          <input v-model="answerSearch" :disabled="answerManualSortMode" type="search" placeholder="搜索题号、标题或答案内容">
+          <input v-model="answerSearch" :disabled="answerManualSortMode" type="search" placeholder="搜索题号、标题、WE题目或答案内容">
           <span class="answer-select-control">
             <select v-model="answerTypeFilter" :disabled="answerManualSortMode">
               <option value="全部">全部题型</option>
@@ -6693,6 +6714,7 @@ function taskLastStudyDate(task: Task) {
                 </template>
               </div>
               <h3>{{ entry.title }}</h3>
+              <p v-if="entry.question" class="answer-question-preview">题目：{{ entry.question }}</p>
               <p>{{ entry.answer }}</p>
               <time v-if="entry.updatedAt">更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
             </div>

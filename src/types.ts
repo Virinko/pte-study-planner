@@ -95,6 +95,7 @@ export interface AnswerEntry {
   examType: string;
   platformRefs: PlatformQuestionRef[];
   title: string;
+  question?: string;
   answer: string;
   createdAt: string;
   updatedAt?: string;
