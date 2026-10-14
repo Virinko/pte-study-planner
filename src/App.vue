@@ -4858,12 +4858,47 @@ function answerPrintHtml(value: string) {
     .join('');
 }
 
-function answerPdfFilename(title: string) {
+function answerExportFilename(title: string, extension: 'pdf' | 'txt') {
   const safeTitle = title
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
     .replace(/[. ]+$/g, '')
     .trim();
-  return `${safeTitle || 'PTE 答案'}.pdf`;
+  return `${safeTitle || 'PTE 答案'}.${extension}`;
+}
+
+function exportAnswersToTxt() {
+  const entries = exportAnswerRows.value;
+  if (!entries.length) {
+    alert(`还没有 ${exportAnswerType.value} 题型的答案可导出。`);
+    return;
+  }
+
+  const exportTitle = `${exportAnswerType.value} 答案`;
+  const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
+  const content = [
+    `${exportTitle}（共 ${entries.length} 条）`,
+    `导出时间：${generatedAt}`,
+    '',
+    ...entries.flatMap((entry, index) => [
+      `【${index + 1}】${entry.examType}｜${entry.title}`,
+      `平台题号：${entry.platformRefs.map((ref) => `${ref.platform} #${ref.questionNumber}`).join('；')}`,
+      ...(entry.question ? [`题目：${entry.question.replace(/\r\n?/g, '\n')}`] : []),
+      '答案：',
+      entry.answer.replace(/\r\n?/g, '\n'),
+      '',
+      '----------------------------------------',
+      '',
+    ]),
+  ].join('\n');
+  const blob = new Blob([`\uFEFF${content}`], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = answerExportFilename(exportTitle, 'txt');
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function exportAnswersToPdf() {
@@ -4938,7 +4973,7 @@ async function exportAnswersToPdf() {
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     const options = {
       margin: [14, 15, 14, 15] as [number, number, number, number],
-      filename: answerPdfFilename(exportTitle),
+      filename: answerExportFilename(exportTitle, 'pdf'),
       image: { type: 'jpeg' as const, quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' as const },
@@ -6652,7 +6687,7 @@ function taskLastStudyDate(task: Task) {
         </label>
         <label class="answer-content-field">
           <span>答案内容</span>
-          <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 中保留。"></textarea>
+          <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 和 TXT 中保留。"></textarea>
         </label>
         <div class="answer-compose-foot">
           <p><Sparkles :size="18" /> 小贴士：三个平台固定，只需填写各自对应题号。</p>
@@ -6681,6 +6716,7 @@ function taskLastStudyDate(task: Task) {
               </span>
             </label>
             <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0 || isExportingAnswersPdf" @click="exportAnswersToPdf"><FileDown :size="18" />{{ isExportingAnswersPdf ? '正在生成 PDF…' : `下载 ${exportAnswerType} 答案 PDF` }}</button>
+            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0" @click="exportAnswersToTxt"><FileDown :size="18" />下载 {{ exportAnswerType }} 答案 TXT</button>
           </div>
         </div>
         <div class="answer-filters">
