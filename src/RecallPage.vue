@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { todayIso } from './planner';
+import { extractTemplateSlots } from './recallTemplate';
 import type { AnswerEntry, Familiarity, StudyData, StudyTimeEntry } from './types';
 
 type ExamType = 'WE' | 'SST';
@@ -9,12 +10,14 @@ type Mark = '' | 'missing' | 'wrong' | 'extra';
 type Detail = { kind: Exclude<Mark, ''>; text: string };
 type Token = { text: string; index: number };
 type Segment = { text: string; mark: Mark };
+type ResultPart = { label: string; referenceSegments: Segment[]; writtenSegments: Segment[] };
 type LocalAnswer = Pick<AnswerEntry, 'id' | 'examType' | 'title' | 'answer' | 'createdAt'>;
 type RecallEntry = { key: string; id: string; source: 'own' | 'library'; examType: ExamType; title: string; question?: string; answer: string; platformRefs: AnswerEntry['platformRefs'] };
 type SavedFamiliarity = Record<string, { level: Familiarity; linkedKey?: string; taskId?: string; updatedAt: string }>;
 
 const OWN_KEY = 'pte_recall_answers_v1';
 const FAMILIARITY_KEY = 'pte_recall_familiarity_v1';
+const TEMPLATE_KEY = 'pte_recall_templates_v1';
 const levels: Familiarity[] = ['生', '半熟', '熟', '可默写'];
 const props = defineProps<{ data: StudyData; active: boolean; todayTaskIds: string[]; saveProgress: (next: StudyData) => void }>();
 
@@ -25,14 +28,22 @@ function readJson<T>(key: string, fallback: T): T {
 
 const storedAnswers = readJson<unknown>(OWN_KEY, []);
 const storedFamiliarity = readJson<unknown>(FAMILIARITY_KEY, {});
+const storedTemplates = readJson<unknown>(TEMPLATE_KEY, {});
 const ownAnswers = ref<LocalAnswer[]>(Array.isArray(storedAnswers) ? storedAnswers : []);
 const familiarity = ref<SavedFamiliarity>(storedFamiliarity && typeof storedFamiliarity === 'object' && !Array.isArray(storedFamiliarity) ? storedFamiliarity as SavedFamiliarity : {});
+const savedTemplates = ref<Record<string, string>>(storedTemplates && typeof storedTemplates === 'object' && !Array.isArray(storedTemplates) ? storedTemplates as Record<string, string> : {});
+const weTemplateDraft = ref(typeof savedTemplates.value['type:WE'] === 'string' ? savedTemplates.value['type:WE'] : '');
+const editingTemplateKey = ref('');
+const entryTemplateDraft = ref('');
 const type = ref<ExamType>('WE');
 const view = ref<View>('choose');
 const search = ref('');
 const current = ref<RecallEntry | null>(null);
 const written = ref('');
 const checkCase = ref(true);
+const compareNonTemplate = ref(false);
+const resultMode = ref<'full' | 'slots'>('full');
+const slotDrafts = ref<string[]>([]);
 const checkTimer = ref(true);
 const timerAccumulated = ref(0);
 const timerStartedAt = ref<number | null>(null);
@@ -48,8 +59,7 @@ const saveStatus = ref('');
 const saveError = ref(false);
 const assignmentDraft = reactive<Record<string, string>>({});
 const assignmentStatus = ref('');
-const referenceSegments = ref<Segment[]>([]);
-const writtenSegments = ref<Segment[]>([]);
+const resultParts = ref<ResultPart[]>([]);
 const details = ref<Detail[]>([]);
 let interval: number | undefined;
 
@@ -67,6 +77,17 @@ const entries = computed<RecallEntry[]>(() => {
 const visibleEntries = computed(() => entries.value.filter((entry) => entry.examType === type.value)
   .filter((entry) => !search.value.trim() || `${entry.title} ${entry.question || ''} ${entry.answer}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
 const wordCount = computed(() => written.value.trim().match(/\S+/g)?.length || 0);
+function templateFor(entry: RecallEntry) {
+  const saved = savedTemplates.value[`entry:${entry.key}`];
+  if (typeof saved === 'string' && saved.trim()) return saved;
+  const common = savedTemplates.value['type:WE'];
+  return entry.examType === 'WE' && typeof common === 'string' ? common : '';
+}
+const activeTemplate = computed(() => current.value ? templateFor(current.value) : '');
+const templatePreview = computed(() => activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1'));
+const templateMatch = computed(() => extractTemplateSlots(activeTemplate.value, current.value?.answer || ''));
+const editingEntry = computed(() => entries.value.find((entry) => entry.key === editingTemplateKey.value));
+const editingTemplateMatch = computed(() => editingEntry.value ? extractTemplateSlots(templateFor(editingEntry.value), editingEntry.value.answer) : null);
 const elapsedMs = computed(() => timerAccumulated.value + (timerStartedAt.value === null ? 0 : Math.max(0, clock.value - timerStartedAt.value)));
 const timerText = computed(() => checkTimer.value ? formatDuration(Math.floor(elapsedMs.value / 1000)) : '已关闭');
 const countByKind = computed(() => ({
@@ -120,6 +141,8 @@ function goTo(next: View) {
 function startPractice(entry: RecallEntry) {
   current.value = entry;
   written.value = '';
+  compareNonTemplate.value = !!templateFor(entry).trim();
+  slotDrafts.value = [];
   resultReady.value = false;
   sessionSaved.value = false;
   durationSeconds.value = 0;
@@ -128,6 +151,32 @@ function startPractice(entry: RecallEntry) {
   clock.value = Date.now();
   goTo('write');
 }
+function rememberTemplate(key: string, value: string) {
+  const next = { ...savedTemplates.value };
+  if (value.trim()) next[key] = value;
+  else delete next[key];
+  savedTemplates.value = next;
+  try { localStorage.setItem(TEMPLATE_KEY, JSON.stringify(next)); } catch { /* Keep the current draft usable. */ }
+}
+function updateWeTemplate() {
+  rememberTemplate('type:WE', weTemplateDraft.value);
+  if (editingEntry.value?.examType === 'WE' && !savedTemplates.value[`entry:${editingEntry.value.key}`]) entryTemplateDraft.value = weTemplateDraft.value;
+  resultReady.value = false;
+}
+function toggleEntryTemplate(entry: RecallEntry) {
+  if (editingTemplateKey.value === entry.key) { editingTemplateKey.value = ''; return; }
+  editingTemplateKey.value = entry.key;
+  entryTemplateDraft.value = templateFor(entry);
+}
+function updateEntryTemplate(entry: RecallEntry) {
+  rememberTemplate(`entry:${entry.key}`, entryTemplateDraft.value);
+  resultReady.value = false;
+}
+function clearEntryTemplate(entry: RecallEntry) {
+  rememberTemplate(`entry:${entry.key}`, '');
+  entryTemplateDraft.value = templateFor(entry);
+  resultReady.value = false;
+}
 function toggleTimer() {
   pauseTimer();
   timerAccumulated.value = 0;
@@ -135,6 +184,11 @@ function toggleTimer() {
   resumeTimer();
 }
 watch(() => props.active, (active) => { if (active) resumeTimer(); else pauseTimer(); });
+watch(activeTemplate, (value) => {
+  slotDrafts.value = [];
+  resultReady.value = false;
+  if (!value.trim()) compareNonTemplate.value = false;
+});
 watch([selectedTaskId, saveDuration], () => {
   if (saveError.value) { saveError.value = false; saveStatus.value = '选择熟练度后，可保存本次练习。'; }
 });
@@ -192,10 +246,26 @@ function submitPractice() {
   const reference = current.value.answer.trim();
   const submitted = written.value.trim();
   try {
-    const result = compare(reference, submitted, checkCase.value);
-    referenceSegments.value = makeSegments(reference, result.left, result.leftMarks);
-    writtenSegments.value = makeSegments(submitted, result.right, result.rightMarks);
-    details.value = result.details;
+    if (compareNonTemplate.value) {
+      const match = templateMatch.value;
+      if (match.error) throw new Error(match.error);
+      const parts = match.slots.map((slot, index) => {
+        const text = (slotDrafts.value[index] || '').trim();
+        const result = compare(slot.reference, text, checkCase.value);
+        return {
+          part: { label: `${index + 1}. ${slot.label}`, referenceSegments: makeSegments(slot.reference, result.left, result.leftMarks), writtenSegments: makeSegments(text, result.right, result.rightMarks) },
+          details: result.details.map((detail) => ({ ...detail, text: `${slot.label}：${detail.text}` })),
+        };
+      });
+      resultParts.value = parts.map((item) => item.part);
+      details.value = parts.flatMap((item) => item.details);
+      resultMode.value = 'slots';
+    } else {
+      const result = compare(reference, submitted, checkCase.value);
+      resultParts.value = [{ label: '', referenceSegments: makeSegments(reference, result.left, result.leftMarks), writtenSegments: makeSegments(submitted, result.right, result.rightMarks) }];
+      details.value = result.details;
+      resultMode.value = 'full';
+    }
   } catch (error) { alert(error instanceof Error ? error.message : '对比失败。'); return; }
   pauseTimer();
   durationSeconds.value = checkTimer.value ? Math.max(1, Math.ceil(timerAccumulated.value / 1000)) : 0;
@@ -286,11 +356,18 @@ function assignExistingTime(entry: StudyTimeEntry) {
         <div><h3>选择一篇答案</h3><p>答案内容统一在答案库维护；旧版本地答案仍可只读默写。</p></div>
         <div class="recall-head-actions"><div class="recall-segmented" aria-label="题型筛选"><button v-for="examType in (['WE', 'SST'] as const)" :key="examType" type="button" :class="{ active: type === examType }" :aria-pressed="type === examType" @click="type = examType">{{ examType }}</button></div></div>
       </div>
+      <div class="recall-template-setup">
+        <h4>默写模板（可选）</h4>
+        <p>保留完整的固定文字，把需要默写的内容写成 <code>【】</code>。例如 <code>Nowadays, the topic of 【】 has become a widely discussed issue.</code>；默写时只填写方括号中的内容。</p>
+        <template v-if="type === 'WE'"><label for="recall-we-template">WE 通用模板</label><textarea id="recall-we-template" v-model="weTemplateDraft" placeholder="粘贴 WE 通用模板；不使用模板可留空" spellcheck="false" @input="updateWeTemplate"></textarea><small>通用于 WE 文章；某篇有差异，可在下方为该篇单独调整。</small></template>
+        <p v-else>SST 可在每篇文章下单独录入模板；留空的文章按全文默写。</p>
+      </div>
       <div class="recall-toolbar"><input v-model="search" type="search" placeholder="搜索标题、题目或答案内容" aria-label="搜索答案"><span>共 {{ visibleEntries.length }} 篇</span></div>
       <div v-if="visibleEntries.length" class="recall-list">
         <article v-for="entry in visibleEntries" :key="entry.key" class="recall-entry">
-          <div class="recall-entry-main"><div class="recall-entry-title"><span class="recall-badge" :class="{ sst: entry.examType === 'SST' }">{{ entry.examType }}</span><strong>{{ entry.title }}</strong><span v-if="familiarity[entry.key]?.level" class="recall-familiarity-tag">{{ familiarity[entry.key].level }}</span></div><p>{{ entry.source === 'own' ? '旧版本地答案 · 只读' : `答案库${entry.platformRefs.find(item => item.questionNumber) ? ` · ${entry.platformRefs.find(item => item.questionNumber)?.platform} #${entry.platformRefs.find(item => item.questionNumber)?.questionNumber}` : ''}` }}</p><p v-if="entry.question" class="recall-preview">题目：{{ entry.question }}</p><p class="recall-preview">{{ entry.answer.replace(/\s+/g, ' ').slice(0, 125) }}</p></div>
-          <div class="recall-entry-actions"><button class="recall-primary" type="button" @click="startPractice(entry)">开始默写</button></div>
+          <div class="recall-entry-main"><div class="recall-entry-title"><span class="recall-badge" :class="{ sst: entry.examType === 'SST' }">{{ entry.examType }}</span><strong>{{ entry.title }}</strong><span v-if="familiarity[entry.key]?.level" class="recall-familiarity-tag">{{ familiarity[entry.key].level }}</span><span class="recall-template-tag">{{ savedTemplates[`entry:${entry.key}`] ? '本篇模板' : templateFor(entry) ? 'WE 通用模板' : '全文默写' }}</span></div><p>{{ entry.source === 'own' ? '旧版本地答案 · 只读' : `答案库${entry.platformRefs.find(item => item.questionNumber) ? ` · ${entry.platformRefs.find(item => item.questionNumber)?.platform} #${entry.platformRefs.find(item => item.questionNumber)?.questionNumber}` : ''}` }}</p><p v-if="entry.question" class="recall-preview">题目：{{ entry.question }}</p><p class="recall-preview">{{ entry.answer.replace(/\s+/g, ' ').slice(0, 125) }}</p></div>
+          <div class="recall-entry-actions"><button class="recall-secondary" type="button" :aria-expanded="editingTemplateKey === entry.key" @click="toggleEntryTemplate(entry)">{{ editingTemplateKey === entry.key ? '收起模板' : entry.examType === 'SST' ? '录入本篇模板' : '调整本篇模板' }}</button><button class="recall-primary" type="button" @click="startPractice(entry)">开始默写</button></div>
+          <div v-if="editingTemplateKey === entry.key" class="recall-entry-template"><label :for="`recall-entry-template-${entry.id}`">{{ entry.examType }} · {{ entry.title }} 的本篇模板</label><p v-if="entry.examType === 'WE'">仅这篇与 WE 通用模板不同时需要调整；清除后恢复通用模板。</p><p v-else>这篇 SST 不使用模板时留空，提交后会对比全文。</p><textarea :id="`recall-entry-template-${entry.id}`" v-model="entryTemplateDraft" placeholder="粘贴完整模板，用 【】 标出要默写的部分" spellcheck="false" @input="updateEntryTemplate(entry)"></textarea><div class="recall-entry-template-foot"><span :class="{ error: templateFor(entry) && editingTemplateMatch?.error }" role="status">{{ templateFor(entry) ? editingTemplateMatch?.error || `已找到 ${editingTemplateMatch?.slots.length} 处空位` : '未设置模板，将对比全文。' }}</span><button v-if="savedTemplates[`entry:${entry.key}`]" class="recall-text" type="button" @click="clearEntryTemplate(entry)">{{ entry.examType === 'WE' ? '恢复 WE 通用模板' : '清除本篇模板' }}</button></div></div>
         </article>
       </div>
       <div v-else class="recall-empty">还没有符合条件的答案。请先在答案库录入答案。</div>
@@ -314,16 +391,24 @@ function assignExistingTime(entry: StudyTimeEntry) {
 
     <div v-else-if="view === 'write' && current" class="recall-practice-grid">
       <div class="recall-card recall-practice"><div class="recall-practice-title"><span class="recall-badge" :class="{ sst: current.examType === 'SST' }">{{ current.examType }}</span><h3>{{ current.title }}</h3></div><p v-if="current.question" class="recall-prompt">题目：{{ current.question }}</p><p class="recall-muted">标准答案已隐藏</p>
-        <div class="recall-options"><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
-        <div class="recall-editor-head"><label for="recall-written">请默写完整答案</label><span>{{ wordCount }} 词</span></div><textarea id="recall-written" v-model="written" class="recall-editor" placeholder="从记忆中写出这篇文章。提交前不会显示标准答案。" spellcheck="false" @input="resultReady = false"></textarea>
-        <div class="recall-bottom-actions"><button class="recall-text" type="button" @click="goTo('choose')">← 重新选题</button><button class="recall-primary" type="button" @click="submitPractice">提交并对比答案 →</button></div>
+        <div class="recall-options"><label class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? '开启后只默写【】中的内容' : '可在第一步为本篇设置模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
+        <template v-if="compareNonTemplate">
+          <p class="recall-template-status" :class="{ error: templateMatch.error }" role="status">{{ templateMatch.error || `按第一步设置的模板，填写以下 ${templateMatch.slots.length} 处空位。` }}</p>
+          <button v-if="templateMatch.error" class="recall-secondary" type="button" @click="goTo('choose')">返回第一步调整模板</button>
+          <div v-else class="recall-template-preview"><strong>模板提示</strong><p>{{ templatePreview }}</p></div>
+          <div v-if="!templateMatch.error" class="recall-slot-list">
+            <label v-for="(slot, index) in templateMatch.slots" :key="index" class="recall-slot-field"><span>{{ index + 1 }}. {{ slot.label }}</span><textarea v-model="slotDrafts[index]" :aria-label="`默写${slot.label}`" placeholder="只填写这一处的非模板内容" spellcheck="false" @input="resultReady = false"></textarea></label>
+          </div>
+        </template>
+        <template v-else><div class="recall-editor-head"><label for="recall-written">请默写完整答案</label><span>{{ wordCount }} 词</span></div><textarea id="recall-written" v-model="written" class="recall-editor" placeholder="从记忆中写出这篇文章。提交前不会显示标准答案。" spellcheck="false" @input="resultReady = false"></textarea></template>
+        <div class="recall-bottom-actions"><button class="recall-text" type="button" @click="goTo('choose')">← 重新选题</button><button class="recall-primary" type="button" :disabled="compareNonTemplate && !!templateMatch.error" @click="submitPractice">提交并对比答案 →</button></div>
       </div>
-      <aside class="recall-card recall-help"><h3>专注默写</h3><p>这里显示题目和标题，完成后提交，页面会按原文顺序标出遗漏、写错和多写的内容。</p><div>🔒 提交前隐藏标准答案</div></aside>
+      <aside class="recall-card recall-help"><h3>专注默写</h3><p>{{ compareNonTemplate ? '只填写模板占位符中的内容。提交后按每个空位显示遗漏、写错和多写的内容。' : '这里显示题目和标题，完成后提交，页面会按原文顺序标出遗漏、写错和多写的内容。' }}</p><div>🔒 提交前隐藏标准答案</div></aside>
     </div>
 
     <div v-else-if="view === 'result' && current" class="recall-result">
-      <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span v-if="!details.length" class="correct">完全一致</span></div></div>
-      <div class="recall-compare"><div class="recall-card recall-compare-panel"><h3>标准答案</h3><p>橙色：遗漏　红色：写错</p><div class="recall-answer"><span v-for="(segment, index) in referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div><div class="recall-card recall-compare-panel"><h3>我的默写</h3><p>红色：写错　紫色：多写</p><div class="recall-answer"><span v-for="(segment, index) in writtenSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div></div>
+      <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>{{ resultMode === 'slots' ? '仅对比非模板部分；' : '对比完整答案；' }}忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span v-if="!details.length" class="correct">{{ resultMode === 'slots' ? '检查部分完全一致' : '完全一致' }}</span></div></div>
+      <div v-for="(part, partIndex) in resultParts" :key="partIndex" class="recall-result-part"><h3 v-if="part.label">{{ part.label }}</h3><div class="recall-compare"><div class="recall-card recall-compare-panel"><h3>{{ resultMode === 'slots' ? '标准内容' : '标准答案' }}</h3><p>橙色：遗漏　红色：写错</p><div class="recall-answer"><span v-for="(segment, index) in part.referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div><div class="recall-card recall-compare-panel"><h3>我的默写</h3><p>红色：写错　紫色：多写</p><div class="recall-answer"><span v-for="(segment, index) in part.writtenSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div></div></div>
       <div class="recall-card recall-details"><h3>需要回看的地方</h3><div v-if="details.length"><span v-for="(detail, index) in details" :key="index" :class="detail.kind">{{ detail.kind === 'missing' ? '遗漏' : detail.kind === 'wrong' ? '错误' : '多写' }}：{{ detail.text }}</span></div><p v-else>没有发现遗漏或错误。</p></div>
       <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>可选择将用时计入题型学习时长，并记录这篇答案的熟练度。</p></div><span>{{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
         <label v-if="durationSeconds" class="recall-switch recall-save-time"><input v-model="saveDuration" type="checkbox" role="switch" :disabled="sessionSaved"><span class="track"></span><span><strong>将本次用时计入题型学习时长</strong><small>开启后可选择归属的今日任务</small></span></label>
@@ -352,8 +437,12 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-steps{display:flex;gap:9px;margin-bottom:18px}.recall-steps button{display:flex;flex:1;align-items:center;gap:10px;min-height:54px;padding:11px 16px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#8a8490;text-align:left;box-shadow:0 7px 20px rgba(72,62,92,.04)}.recall-steps button.active{border-color:#f1c5d0;background:#fff4f6;color:#c85670}.recall-steps button.done{color:#6d7295}.recall-steps button span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#f4f0f3;font-size:12px}.recall-steps button.active span{background:#ea7186;color:#fff}.recall-steps button.done span{background:#eeebf6}
 .recall-card{min-width:0;border:1px solid rgba(122,119,185,.16);border-radius:12px;background:#fff;box-shadow:0 14px 34px rgba(72,62,92,.07)}.recall-choose{padding:27px 30px}.recall-section-head,.recall-head-actions,.recall-toolbar,.recall-entry,.recall-entry-actions,.recall-bottom-actions,.recall-result-head,.recall-save-head,.recall-save-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.recall-section-head{align-items:flex-start;margin-bottom:20px}.recall-section-head h3{font-size:19px}.recall-section-head p{font-size:12px}.recall-head-actions{gap:10px;flex-wrap:wrap}.recall-page button{border-radius:7px;padding:10px 15px;font-size:13px}.recall-primary{border:1px solid transparent;color:#fff;background:linear-gradient(135deg,#7a77b9,#6f58b9);box-shadow:0 8px 18px rgba(122,119,185,.18)}.recall-primary:hover:not(:disabled){background:linear-gradient(135deg,#6e6aab,#6350a8)}.recall-secondary{border:1px solid #d7c9e8;color:#71649c;background:#fff}.recall-ghost{border:1px solid #e7dee8;color:#605a6b;background:#fff}.recall-text{border:0;color:#7a70a6;background:transparent}.recall-text.danger{color:#c65b71}.recall-segmented{display:flex;gap:2px;padding:3px;border-radius:8px;background:#f4eff5}.recall-segmented button{border:0;padding:8px 16px;color:#817b87;background:transparent;font-size:12px}.recall-segmented button.active{color:#c4536d;background:#fff;box-shadow:0 2px 8px rgba(72,62,92,.1)}
 .recall-form{margin-bottom:17px;padding:21px 22px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-form h3{margin-bottom:16px;font-size:16px}.recall-form-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px}.recall-form-grid label,.recall-link{display:grid;gap:7px;color:#514a59;font-size:12px;font-weight:500}.recall-form-grid .wide{grid-column:1/-1}.recall-form-grid input,.recall-form-grid select,.recall-form-grid textarea,.recall-toolbar input,.recall-link select,.recall-editor{width:100%;border:1px solid #ded7e2;border-radius:7px;padding:10px 12px;color:var(--ink);background:#fff}.recall-form-grid textarea{min-height:135px;resize:vertical;line-height:1.65}.recall-form p{margin-top:12px;color:var(--muted);font-size:12px}.recall-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:15px}.recall-feedback{min-height:16px;margin-bottom:13px!important;color:#54846c;font-size:12px}.recall-feedback.error,.recall-save-foot .error{color:#b8566d}.recall-toolbar{margin-bottom:15px}.recall-toolbar input{width:min(340px,100%);font-size:13px}.recall-toolbar span,.recall-entry p,.recall-muted{color:#817b86;font-size:12px}.recall-list{display:grid;gap:10px}.recall-entry{padding:16px 18px;border:1px solid #ece5e9;border-radius:9px}.recall-entry:hover{border-color:#d9c8df;background:#fffdfd}.recall-entry-main{min-width:0}.recall-entry-title,.recall-practice-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.recall-entry-title strong{font-size:14px}.recall-badge,.recall-familiarity-tag{padding:3px 7px;border-radius:5px;color:#7763a8;background:#f1ecf9;font-size:11px;font-weight:500}.recall-badge.sst{color:#be5e7a;background:#fff0f4}.recall-familiarity-tag{color:#7a648e;background:#f7f1f8}.recall-entry p{margin-top:7px}.recall-preview{overflow:hidden;max-width:690px;text-overflow:ellipsis;white-space:nowrap}.recall-entry-actions{flex-shrink:0;gap:8px}.recall-entry-actions .recall-primary{white-space:nowrap}.recall-empty{padding:32px 20px;border:1px dashed #e8dce5;border-radius:8px;background:#fcfafb;color:var(--muted);font-size:13px;text-align:center}
+.recall-template-setup{display:grid;gap:9px;margin-bottom:18px;padding:16px 18px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-template-setup h4{margin:0;color:#514a59;font-size:14px;font-weight:500}.recall-template-setup p,.recall-template-setup small,.recall-entry-template p{color:var(--muted);font-size:12px;line-height:1.6}.recall-template-setup code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394;white-space:normal}.recall-template-setup label,.recall-entry-template label{color:#514a59;font-size:12px;font-weight:500}.recall-template-setup textarea,.recall-entry-template textarea{width:100%;min-height:100px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-entry{flex-wrap:wrap}.recall-entry-template{display:grid;flex:1 0 100%;gap:8px;padding-top:15px;border-top:1px solid #eee5ed}.recall-entry-title .recall-template-tag{padding:3px 7px;border-radius:5px;background:#eef4f2;color:#56816b;font-size:11px}.recall-entry-template-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}.recall-entry-template-foot span{color:#54846c;font-size:12px}.recall-entry-template-foot span.error{color:#b8566d}
 .recall-practice-grid{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:17px}.recall-practice{padding:28px 30px}.recall-practice-title h3{font-size:20px}.recall-muted{margin:8px 0 17px!important}.recall-options{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:19px}.recall-switch{display:flex;align-items:center;gap:10px;min-height:54px;padding:10px 12px;border:1px solid #e7dfea;border-radius:8px;background:#faf8fc;cursor:pointer}.recall-options .recall-switch:first-child{flex:1 1 290px}.recall-switch input{position:absolute;width:1px;height:1px;opacity:0}.recall-switch .track{position:relative;flex:0 0 39px;width:39px;height:23px;border-radius:99px;background:#bbc7d8}.recall-switch .track:after{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,35,65,.25);content:'';transition:transform .15s}.recall-switch input:checked + .track{background:#7a77b9}.recall-switch input:checked + .track:after{transform:translateX(16px)}.recall-switch input:focus-visible + .track{outline:2px solid #b99ded;outline-offset:2px}.recall-switch>span:last-child{display:grid;gap:2px}.recall-switch strong{color:#4a4356;font-size:13px}.recall-switch small{color:var(--muted);font-size:11px;font-weight:400}.recall-switch.timer b{min-width:58px;color:#71639f;font-size:17px;font-variant-numeric:tabular-nums;text-align:right}.recall-editor-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:9px;color:#453e50;font-size:13px;font-weight:500}.recall-editor-head span{color:var(--muted)}.recall-editor{display:block;min-height:300px;padding:17px;font-size:15px;line-height:1.8;resize:vertical}.recall-bottom-actions{margin-top:18px}.recall-help{align-self:start;padding:20px;background:#fdfbff}.recall-help h3{font-size:15px}.recall-help p{margin-top:10px;color:var(--muted);font-size:13px;line-height:1.7}.recall-help div{margin-top:17px;padding:12px;border-radius:8px;color:#75649e;background:#f4effa;font-size:12px}
+.recall-template-status{margin:0 0 17px!important;color:#54846c;font-size:12px;line-height:1.5}.recall-template-status.error{color:#b8566d}.recall-slot-list{display:grid;gap:14px}.recall-slot-field{display:grid;gap:7px;color:#453e50;font-size:13px;font-weight:500}.recall-slot-field textarea{width:100%;min-height:82px;padding:12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;line-height:1.6;resize:vertical}
+.recall-template-preview{margin:0 0 18px;padding:14px 16px;border:1px solid #e9e0ee;border-radius:8px;background:#fbf9fc}.recall-template-preview strong{color:#665394;font-size:12px}.recall-template-preview p{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere;color:#514a59;font-size:13px;line-height:1.7}
 .recall-result-head{padding:20px 23px;margin-bottom:15px}.recall-result-head h3{font-size:19px}.recall-result-head p{font-size:12px}.recall-counts,.recall-details>div{display:flex;flex-wrap:wrap;gap:7px}.recall-counts span,.recall-details>div span{padding:8px 10px;border-radius:7px;font-size:12px;font-weight:500}.recall-counts .missing,.recall-details .missing,.recall-answer .missing{color:#986126;background:#fff2dd}.recall-counts .wrong,.recall-details .wrong,.recall-answer .wrong{color:#aa4962;background:#ffe9ee}.recall-counts .extra,.recall-details .extra,.recall-answer .extra{color:#705caa;background:#f0ebfa}.recall-counts .correct{color:#518362;background:#eaf5ed}.recall-compare{display:grid;grid-template-columns:1fr 1fr;gap:15px}.recall-compare-panel{padding:22px}.recall-compare-panel h3{font-size:16px}.recall-compare-panel p{margin:5px 0 17px;color:var(--muted);font-size:12px}.recall-answer{min-height:85px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:2}.recall-answer .wrong{text-decoration:underline wavy;text-underline-offset:3px}.recall-details{margin-top:15px;padding:20px 22px}.recall-details h3{margin-bottom:12px;font-size:15px}.recall-details p{color:var(--muted);font-size:13px}.recall-save{margin-top:16px;padding:23px 25px}.recall-save-head{align-items:flex-start;margin-bottom:17px}.recall-save-head h3{font-size:16px}.recall-save-head p{font-size:12px}.recall-save-head>span{padding:8px 12px;border-radius:7px;color:#6f62a0;background:#f1ecfa;font-size:13px;font-weight:500;white-space:nowrap}.recall-save-time{width:100%;margin-bottom:17px}.recall-save-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.recall-field-label{display:block;margin-bottom:8px;color:#514a59;font-size:12px;font-weight:500}.recall-levels{display:flex;flex-wrap:wrap;gap:7px}.recall-levels label{cursor:pointer}.recall-levels input{position:absolute;width:1px;height:1px;opacity:0}.recall-levels span{display:inline-flex;align-items:center;min-height:40px;padding:0 14px;border:1px solid #ded7e2;border-radius:7px;color:#6d6671;font-size:13px;font-weight:500}.recall-levels input:checked + span{border-color:#bfb0dc;color:#6d5f9f;background:#f1ecfa}.recall-levels input:focus-visible + span{outline:2px solid #b99ded;outline-offset:2px}.recall-link select{min-height:40px;font-size:13px}.recall-save-foot{margin-top:17px}.recall-save-foot>span{color:var(--muted);font-size:12px;line-height:1.5}.recall-save-foot .recall-primary{white-space:nowrap}
+.recall-result-part+.recall-result-part{margin-top:18px}.recall-result-part>h3{margin:0 0 9px;color:#665394;font-size:14px}
 .recall-task-choice{display:grid;gap:8px;margin:0 0 18px}.recall-task-choice label{color:#514a59;font-size:12px;font-weight:500}.recall-task-choice select{width:100%;min-height:42px;padding:9px 11px;border:1px solid #ded7e2;border-radius:7px;color:var(--ink);background:#fff;font-size:13px}.recall-task-choice p{color:var(--muted);font-size:12px;line-height:1.5}
 .recall-unassigned{display:grid;gap:10px;margin-top:22px;padding-top:20px;border-top:1px solid var(--line)}.recall-unassigned h3{font-size:15px}.recall-unassigned>p,.recall-unassigned small{color:var(--muted);font-size:12px;line-height:1.5}.recall-unassigned-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px) auto;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:8px}.recall-unassigned-row>span{overflow-wrap:anywhere;font-size:13px}.recall-unassigned-row select{min-width:0;min-height:39px;padding:8px 10px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:12px}.recall-unassigned .recall-assignment-status{color:#54846c}
 .recall-page input:focus,.recall-page textarea:focus,.recall-page select:focus{outline:2px solid rgba(122,119,185,.42);outline-offset:1px}
