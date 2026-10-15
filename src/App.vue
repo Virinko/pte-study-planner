@@ -179,6 +179,10 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
     dailyTargets: source?.dailyTargets ?? base.dailyTargets,
     dailyNotes: normalizeDailyNotes(source?.dailyNotes),
     answerEntries: normalizeAnswerEntries(source?.answerEntries),
+    recallTemplates: {
+      WE: typeof source?.recallTemplates?.WE === 'string' ? source.recallTemplates.WE : '',
+      SST: typeof source?.recallTemplates?.SST === 'string' ? source.recallTemplates.SST : '',
+    },
     reviewPlans,
     reviewLogs,
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),

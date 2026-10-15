@@ -101,6 +101,7 @@ export interface AnswerEntry {
   updatedAt?: string;
   sortOrder?: number;
 }
+export interface RecallTemplates { WE: string; SST: string; }
 export interface ReviewPlan {
   id: string;
   taskId: string;
@@ -154,5 +155,5 @@ export interface StudyTimeEntry {
   createdAt: string;
 }
 export interface ProgressRestart { id: string; restartedAt: string; tasks: Task[]; dailyTargets: Record<string, number>; restartDate?: string; planStartDate?: string; planEndDate?: string; }
-export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; answerEntries: AnswerEntry[]; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; progressRestarts?: ProgressRestart[]; }
+export interface StudyData { version: number; updatedAt: string; settings: Settings; phases: Phase[]; tasks: Task[]; dailyLogs: DailyLogs; dailyTargets: DailyTargets; dailyNotes: DailyNotes; answerEntries: AnswerEntry[]; recallTemplates: RecallTemplates; reviewPlans: ReviewPlans; reviewLogs: ReviewLogs; skippedReviewRegistrations: SkippedReviewRegistrations; timeLogs: TimeLogs; studyTimeEntries: StudyTimeEntry[]; progressRestarts?: ProgressRestart[]; }
 export interface PhaseSchedule extends Phase { startDate: string; endDate: string; days: number; totalWork: number; }

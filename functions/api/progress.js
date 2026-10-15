@@ -17,6 +17,7 @@ const emptyProgress = () => ({
   dailyLogs: {},
   dailyTargets: {},
   dailyNotes: {},
+  recallTemplates: { WE: '', SST: '' },
   reviewPlans: {},
   reviewLogs: {},
   skippedReviewRegistrations: {},
