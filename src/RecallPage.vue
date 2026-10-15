@@ -55,7 +55,7 @@ const written = ref('');
 const checkCase = ref(true);
 const compareNonTemplate = ref(false);
 const resultMode = ref<'full' | 'slots'>('full');
-const slotDrafts = ref<string[]>([]);
+const slotWritten = ref('');
 const checkTimer = ref(true);
 const timerAccumulated = ref(0);
 const timerStartedAt = ref<number | null>(null);
@@ -90,8 +90,14 @@ const visibleEntries = computed(() => entries.value.filter((entry) => entry.exam
   .filter((entry) => !search.value.trim() || `${entry.title} ${entry.question || ''} ${entry.answer}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
 const wordCount = computed(() => written.value.trim().match(/\S+/g)?.length || 0);
 const activeTemplate = computed(() => current.value ? props.data.recallTemplates?.[current.value.examType] || '' : '');
-const templatePreview = computed(() => activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1'));
+const templatePreview = computed(() => {
+  let index = 0;
+  return activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1')
+    .replace(/\{\{[^{}]*\}\}|【[^【】]*】/g, () => `【${++index}】`);
+});
 const templateMatch = computed(() => extractTemplateSlots(activeTemplate.value, current.value?.answer || ''));
+const slotLines = computed(() => slotWritten.value.replace(/\r\n?/g, '\n').split('\n'));
+const filledSlotCount = computed(() => slotLines.value.slice(0, templateMatch.value.slots.length).filter((line) => line.trim()).length);
 const elapsedMs = computed(() => timerAccumulated.value + (timerStartedAt.value === null ? 0 : Math.max(0, clock.value - timerStartedAt.value)));
 const timerText = computed(() => checkTimer.value ? formatDuration(Math.floor(elapsedMs.value / 1000)) : '已关闭');
 const countByKind = computed(() => ({
@@ -146,7 +152,7 @@ function startPractice(entry: RecallEntry) {
   current.value = entry;
   written.value = '';
   compareNonTemplate.value = false;
-  slotDrafts.value = [];
+  slotWritten.value = '';
   resultReady.value = false;
   sessionSaved.value = false;
   durationSeconds.value = 0;
@@ -197,7 +203,7 @@ watch(() => props.data.recallTemplates, (templates) => {
   }
 }, { immediate: true });
 watch(activeTemplate, (value) => {
-  slotDrafts.value = [];
+  slotWritten.value = '';
   resultReady.value = false;
   if (!value.trim()) compareNonTemplate.value = false;
 });
@@ -264,8 +270,11 @@ function submitPractice() {
     if (compareNonTemplate.value) {
       const match = templateMatch.value;
       if (match.error) throw new Error(match.error);
+      if (slotLines.value.slice(match.slots.length).some((line) => line.trim())) {
+        throw new Error(`模板只有 ${match.slots.length} 处空位，请删掉多余的输入行。`);
+      }
       const parts = match.slots.map((slot, index) => {
-        const text = (slotDrafts.value[index] || '').trim();
+        const text = (slotLines.value[index] || '').trim();
         const result = compare(slot.reference, text, checkCase.value);
         return {
           part: { label: `${index + 1}. ${slot.label}`, referenceSegments: makeSegments(slot.reference, result.left, result.leftMarks), writtenSegments: makeSegments(text, result.right, result.rightMarks) },
@@ -408,11 +417,13 @@ function assignExistingTime(entry: StudyTimeEntry) {
       <div class="recall-card recall-practice"><div class="recall-practice-title"><span class="recall-badge" :class="{ sst: current.examType === 'SST' }">{{ current.examType }}</span><h3>{{ current.title }}</h3></div><p v-if="current.question" class="recall-prompt">题目：{{ current.question }}</p><p class="recall-muted">标准答案已隐藏</p>
         <div class="recall-options"><label class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? '开启后只默写【】中的内容' : '可在第一步录入通用模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
         <template v-if="compareNonTemplate">
-          <p class="recall-template-status" :class="{ error: templateMatch.error }" role="status">{{ templateMatch.error || `按第一步设置的模板，填写以下 ${templateMatch.slots.length} 处空位。` }}</p>
+          <p class="recall-template-status" :class="{ error: templateMatch.error }" role="status">{{ templateMatch.error || `按模板顺序填写 ${templateMatch.slots.length} 处空位，每行对应一处；跳过中间空位时请保留空行。` }}</p>
           <button v-if="templateMatch.error" class="recall-secondary" type="button" @click="goTo('choose')">返回第一步修改通用模板</button>
           <div v-else class="recall-template-preview"><strong>模板提示</strong><p>{{ templatePreview }}</p></div>
-          <div v-if="!templateMatch.error" class="recall-slot-list">
-            <label v-for="(slot, index) in templateMatch.slots" :key="index" class="recall-slot-field"><span>{{ index + 1 }}. {{ slot.label }}</span><textarea v-model="slotDrafts[index]" :aria-label="`默写${slot.label}`" placeholder="只填写这一处的非模板内容" spellcheck="false" @input="resultReady = false"></textarea></label>
+          <div v-if="!templateMatch.error" class="recall-slot-editor">
+            <div class="recall-editor-head"><label for="recall-slot-written">按【1】【2】顺序，每行填写一处</label><span>已填 {{ filledSlotCount }} / {{ templateMatch.slots.length }} 处</span></div>
+            <textarea id="recall-slot-written" v-model="slotWritten" aria-describedby="recall-slot-hint" placeholder="第 1 行：填写【1】的内容&#10;第 2 行：填写【2】的内容&#10;依次类推，只写非模板内容" spellcheck="false" @input="resultReady = false"></textarea>
+            <p id="recall-slot-hint">每次换行进入下一处空位；内容较长也请写在同一行。</p>
           </div>
         </template>
         <template v-else><div class="recall-editor-head"><label for="recall-written">请默写完整答案</label><span>{{ wordCount }} 词</span></div><textarea id="recall-written" v-model="written" class="recall-editor" placeholder="从记忆中写出这篇文章。提交前不会显示标准答案。" spellcheck="false" @input="resultReady = false"></textarea></template>
@@ -454,7 +465,7 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-form{margin-bottom:17px;padding:21px 22px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-form h3{margin-bottom:16px;font-size:16px}.recall-form-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px}.recall-form-grid label,.recall-link{display:grid;gap:7px;color:#514a59;font-size:12px;font-weight:500}.recall-form-grid .wide{grid-column:1/-1}.recall-form-grid input,.recall-form-grid select,.recall-form-grid textarea,.recall-toolbar input,.recall-link select,.recall-editor{width:100%;border:1px solid #ded7e2;border-radius:7px;padding:10px 12px;color:var(--ink);background:#fff}.recall-form-grid textarea{min-height:135px;resize:vertical;line-height:1.65}.recall-form p{margin-top:12px;color:var(--muted);font-size:12px}.recall-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:15px}.recall-feedback{min-height:16px;margin-bottom:13px!important;color:#54846c;font-size:12px}.recall-feedback.error,.recall-save-foot .error{color:#b8566d}.recall-toolbar{margin-bottom:15px}.recall-toolbar input{width:min(340px,100%);font-size:13px}.recall-toolbar span,.recall-entry p,.recall-muted{color:#817b86;font-size:12px}.recall-list{display:grid;gap:10px}.recall-entry{padding:16px 18px;border:1px solid #ece5e9;border-radius:9px}.recall-entry:hover{border-color:#d9c8df;background:#fffdfd}.recall-entry-main{min-width:0}.recall-entry-title,.recall-practice-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.recall-entry-title strong{font-size:14px}.recall-badge,.recall-familiarity-tag{padding:3px 7px;border-radius:5px;color:#7763a8;background:#f1ecf9;font-size:11px;font-weight:500}.recall-badge.sst{color:#be5e7a;background:#fff0f4}.recall-familiarity-tag{color:#7a648e;background:#f7f1f8}.recall-entry p{margin-top:7px}.recall-preview{overflow:hidden;max-width:690px;text-overflow:ellipsis;white-space:nowrap}.recall-entry-actions{flex-shrink:0;gap:8px}.recall-entry-actions .recall-primary{white-space:nowrap}.recall-empty{padding:32px 20px;border:1px dashed #e8dce5;border-radius:8px;background:#fcfafb;color:var(--muted);font-size:13px;text-align:center}
 .recall-template-setup{display:grid;gap:9px;margin-bottom:18px;padding:16px 18px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-template-setup h4{margin:0;color:#514a59;font-size:14px;font-weight:500}.recall-template-setup p{color:var(--muted);font-size:12px;line-height:1.6}.recall-template-setup code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394;white-space:normal}.recall-template-setup label{color:#514a59;font-size:12px;font-weight:500}.recall-template-setup textarea{width:100%;min-height:100px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-template-save-foot{display:flex;align-items:center;justify-content:space-between;gap:12px}.recall-template-save-foot span{color:#54846c;font-size:12px}.recall-template-save-foot span.pending{color:#9a6c2d}.recall-template-save-foot span.error{color:#b8566d}
 .recall-practice-grid{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:17px}.recall-practice{padding:28px 30px}.recall-practice-title h3{font-size:20px}.recall-muted{margin:8px 0 17px!important}.recall-options{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:19px}.recall-switch{display:flex;align-items:center;gap:10px;min-height:54px;padding:10px 12px;border:1px solid #e7dfea;border-radius:8px;background:#faf8fc;cursor:pointer}.recall-options .recall-switch:first-child{flex:1 1 290px}.recall-switch input{position:absolute;width:1px;height:1px;opacity:0}.recall-switch .track{position:relative;flex:0 0 39px;width:39px;height:23px;border-radius:99px;background:#bbc7d8}.recall-switch .track:after{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,35,65,.25);content:'';transition:transform .15s}.recall-switch input:checked + .track{background:#7a77b9}.recall-switch input:checked + .track:after{transform:translateX(16px)}.recall-switch input:focus-visible + .track{outline:2px solid #b99ded;outline-offset:2px}.recall-switch>span:last-child{display:grid;gap:2px}.recall-switch strong{color:#4a4356;font-size:13px}.recall-switch small{color:var(--muted);font-size:11px;font-weight:400}.recall-switch.timer b{min-width:58px;color:#71639f;font-size:17px;font-variant-numeric:tabular-nums;text-align:right}.recall-editor-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:9px;color:#453e50;font-size:13px;font-weight:500}.recall-editor-head span{color:var(--muted)}.recall-editor{display:block;min-height:300px;padding:17px;font-size:15px;line-height:1.8;resize:vertical}.recall-bottom-actions{margin-top:18px}.recall-help{align-self:start;padding:20px;background:#fdfbff}.recall-help h3{font-size:15px}.recall-help p{margin-top:10px;color:var(--muted);font-size:13px;line-height:1.7}.recall-help div{margin-top:17px;padding:12px;border-radius:8px;color:#75649e;background:#f4effa;font-size:12px}
-.recall-template-status{margin:0 0 17px!important;color:#54846c;font-size:12px;line-height:1.5}.recall-template-status.error{color:#b8566d}.recall-slot-list{display:grid;gap:14px}.recall-slot-field{display:grid;gap:7px;color:#453e50;font-size:13px;font-weight:500}.recall-slot-field textarea{width:100%;min-height:82px;padding:12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;line-height:1.6;resize:vertical}
+.recall-template-status{margin:0 0 17px!important;color:#54846c;font-size:12px;line-height:1.5}.recall-template-status.error{color:#b8566d}.recall-slot-editor textarea{display:block;width:100%;height:220px;padding:12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;line-height:1.7;resize:vertical}.recall-slot-editor p{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.5}
 .recall-template-preview{margin:0 0 18px;padding:14px 16px;border:1px solid #e9e0ee;border-radius:8px;background:#fbf9fc}.recall-template-preview strong{color:#665394;font-size:12px}.recall-template-preview p{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere;color:#514a59;font-size:13px;line-height:1.7}
 .recall-result-head{padding:20px 23px;margin-bottom:15px}.recall-result-head h3{font-size:19px}.recall-result-head p{font-size:12px}.recall-counts,.recall-details>div{display:flex;flex-wrap:wrap;gap:7px}.recall-counts span,.recall-details>div span{padding:8px 10px;border-radius:7px;font-size:12px;font-weight:500}.recall-counts .missing,.recall-details .missing,.recall-answer .missing{color:#986126;background:#fff2dd}.recall-counts .wrong,.recall-details .wrong,.recall-answer .wrong{color:#aa4962;background:#ffe9ee}.recall-counts .extra,.recall-details .extra,.recall-answer .extra{color:#705caa;background:#f0ebfa}.recall-counts .correct{color:#518362;background:#eaf5ed}.recall-compare{display:grid;grid-template-columns:1fr 1fr;gap:15px}.recall-compare-panel{padding:22px}.recall-compare-panel h3{font-size:16px}.recall-compare-panel p{margin:5px 0 17px;color:var(--muted);font-size:12px}.recall-answer{min-height:85px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:2}.recall-answer .wrong{text-decoration:underline wavy;text-underline-offset:3px}.recall-details{margin-top:15px;padding:20px 22px}.recall-details h3{margin-bottom:12px;font-size:15px}.recall-details p{color:var(--muted);font-size:13px}.recall-save{margin-top:16px;padding:23px 25px}.recall-save-head{align-items:flex-start;margin-bottom:17px}.recall-save-head h3{font-size:16px}.recall-save-head p{font-size:12px}.recall-save-head>span{padding:8px 12px;border-radius:7px;color:#6f62a0;background:#f1ecfa;font-size:13px;font-weight:500;white-space:nowrap}.recall-save-time{width:100%;margin-bottom:17px}.recall-save-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.recall-field-label{display:block;margin-bottom:8px;color:#514a59;font-size:12px;font-weight:500}.recall-levels{display:flex;flex-wrap:wrap;gap:7px}.recall-levels label{cursor:pointer}.recall-levels input{position:absolute;width:1px;height:1px;opacity:0}.recall-levels span{display:inline-flex;align-items:center;min-height:40px;padding:0 14px;border:1px solid #ded7e2;border-radius:7px;color:#6d6671;font-size:13px;font-weight:500}.recall-levels input:checked + span{border-color:#bfb0dc;color:#6d5f9f;background:#f1ecfa}.recall-levels input:focus-visible + span{outline:2px solid #b99ded;outline-offset:2px}.recall-link select{min-height:40px;font-size:13px}.recall-save-foot{margin-top:17px}.recall-save-foot>span{color:var(--muted);font-size:12px;line-height:1.5}.recall-save-foot .recall-primary{white-space:nowrap}
 .recall-result-part+.recall-result-part{margin-top:18px}.recall-result-part>h3{margin:0 0 9px;color:#665394;font-size:14px}
