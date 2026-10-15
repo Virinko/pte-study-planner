@@ -47,7 +47,6 @@ const templateSaveStatus = reactive<Record<ExamType, string>>({
   SST: templateDirty.SST ? '检测到旧版仅保存在本机的模板，请点击保存模板以同步。' : '',
 });
 const templateSaveError = reactive<Record<ExamType, boolean>>({ WE: false, SST: false });
-const templateSaveTimers: Partial<Record<ExamType, number>> = {};
 const type = ref<ExamType>('WE');
 const view = ref<View>('choose');
 const search = ref('');
@@ -90,7 +89,7 @@ const entries = computed<RecallEntry[]>(() => {
 const visibleEntries = computed(() => entries.value.filter((entry) => entry.examType === type.value)
   .filter((entry) => !search.value.trim() || `${entry.title} ${entry.question || ''} ${entry.answer}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
 const wordCount = computed(() => written.value.trim().match(/\S+/g)?.length || 0);
-const activeTemplate = computed(() => current.value ? templateDrafts[current.value.examType] : '');
+const activeTemplate = computed(() => current.value ? props.data.recallTemplates?.[current.value.examType] || '' : '');
 const templatePreview = computed(() => activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1'));
 const templateMatch = computed(() => extractTemplateSlots(activeTemplate.value, current.value?.answer || ''));
 const elapsedMs = computed(() => timerAccumulated.value + (timerStartedAt.value === null ? 0 : Math.max(0, clock.value - timerStartedAt.value)));
@@ -144,7 +143,6 @@ function goTo(next: View) {
   resumeTimer();
 }
 function startPractice(entry: RecallEntry) {
-  if (templateTouched[entry.examType] && !saveTemplate(entry.examType)) return;
   current.value = entry;
   written.value = '';
   compareNonTemplate.value = false;
@@ -158,8 +156,6 @@ function startPractice(entry: RecallEntry) {
   goTo('write');
 }
 function saveTemplate(examType: ExamType) {
-  if (templateSaveTimers[examType] !== undefined) window.clearTimeout(templateSaveTimers[examType]);
-  delete templateSaveTimers[examType];
   if (!templateDirty[examType]) return true;
   try {
     props.saveProgress({ ...props.data, recallTemplates: { ...props.data.recallTemplates, [examType]: templateDrafts[examType] } });
@@ -176,14 +172,11 @@ function saveTemplate(examType: ExamType) {
     return false;
   }
 }
-function scheduleTemplateSave(examType: ExamType) {
+function markTemplateEdited(examType: ExamType) {
   templateDirty[examType] = true;
   templateTouched[examType] = true;
   templateSaveError[examType] = false;
-  templateSaveStatus[examType] = '正在保存模板…';
-  if (templateSaveTimers[examType] !== undefined) window.clearTimeout(templateSaveTimers[examType]);
-  templateSaveTimers[examType] = window.setTimeout(() => { saveTemplate(examType); }, 600);
-  resultReady.value = false;
+  templateSaveStatus[examType] = '有未保存的修改，请点击“保存模板”。';
 }
 function toggleTimer() {
   pauseTimer();
@@ -198,8 +191,8 @@ watch(() => props.data.recallTemplates, (templates) => {
     if (templateTouched[examType]) continue;
     if (synced || !templateDirty[examType]) {
       templateDrafts[examType] = synced;
+      if (templateDirty[examType]) templateSaveStatus[examType] = '';
       templateDirty[examType] = false;
-      if (synced) templateSaveStatus[examType] = '';
     }
   }
 }, { immediate: true });
@@ -213,7 +206,6 @@ watch([selectedTaskId, saveDuration], () => {
 });
 onMounted(() => { interval = window.setInterval(() => { if (timerStartedAt.value !== null) clock.value = Date.now(); }, 500); });
 onBeforeUnmount(() => {
-  for (const examType of ['WE', 'SST'] as const) if (templateTouched[examType]) saveTemplate(examType);
   pauseTimer();
   if (interval !== undefined) window.clearInterval(interval);
 });
@@ -383,8 +375,8 @@ function assignExistingTime(entry: StudyTimeEntry) {
         <h4>{{ type }} 通用默写模板</h4>
         <p>保留完整的固定文字，把需要默写的内容写成 <code>【】</code>。例如 <code>Nowadays, the topic of 【】 has become a widely discussed issue.</code>。模板对所有 {{ type }} 文章通用；练习时关闭“仅对比非模板部分”即可校验全文。</p>
         <label :for="`recall-template-${type}`">{{ type }} 通用模板</label>
-        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[type]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="scheduleTemplateSave(type)" @blur="saveTemplate(type)"></textarea>
-        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[type] }" role="status">{{ templateSaveStatus[type] || '输入后自动保存到学习进度，并随现有云端同步。' }}</span><button class="recall-secondary" type="button" :disabled="!templateDirty[type]" @click="saveTemplate(type)">保存模板</button></div>
+        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[type]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="markTemplateEdited(type)"></textarea>
+        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[type], pending: templateDirty[type] && !templateSaveError[type] }" role="status">{{ templateSaveStatus[type] || '编辑完成后点击“保存模板”；保存后随现有云端同步。' }}</span><button class="recall-secondary" type="button" :disabled="!templateDirty[type]" @click="saveTemplate(type)">保存模板</button></div>
       </div>
       <div class="recall-toolbar"><input v-model="search" type="search" placeholder="搜索标题、题目或答案内容" aria-label="搜索答案"><span>共 {{ visibleEntries.length }} 篇</span></div>
       <div v-if="visibleEntries.length" class="recall-list">
@@ -460,7 +452,7 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-steps{display:flex;gap:9px;margin-bottom:18px}.recall-steps button{display:flex;flex:1;align-items:center;gap:10px;min-height:54px;padding:11px 16px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#8a8490;text-align:left;box-shadow:0 7px 20px rgba(72,62,92,.04)}.recall-steps button.active{border-color:#f1c5d0;background:#fff4f6;color:#c85670}.recall-steps button.done{color:#6d7295}.recall-steps button span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#f4f0f3;font-size:12px}.recall-steps button.active span{background:#ea7186;color:#fff}.recall-steps button.done span{background:#eeebf6}
 .recall-card{min-width:0;border:1px solid rgba(122,119,185,.16);border-radius:12px;background:#fff;box-shadow:0 14px 34px rgba(72,62,92,.07)}.recall-choose{padding:27px 30px}.recall-section-head,.recall-head-actions,.recall-toolbar,.recall-entry,.recall-entry-actions,.recall-bottom-actions,.recall-result-head,.recall-save-head,.recall-save-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.recall-section-head{align-items:flex-start;margin-bottom:20px}.recall-section-head h3{font-size:19px}.recall-section-head p{font-size:12px}.recall-head-actions{gap:10px;flex-wrap:wrap}.recall-page button{border-radius:7px;padding:10px 15px;font-size:13px}.recall-primary{border:1px solid transparent;color:#fff;background:linear-gradient(135deg,#7a77b9,#6f58b9);box-shadow:0 8px 18px rgba(122,119,185,.18)}.recall-primary:hover:not(:disabled){background:linear-gradient(135deg,#6e6aab,#6350a8)}.recall-secondary{border:1px solid #d7c9e8;color:#71649c;background:#fff}.recall-ghost{border:1px solid #e7dee8;color:#605a6b;background:#fff}.recall-text{border:0;color:#7a70a6;background:transparent}.recall-text.danger{color:#c65b71}.recall-segmented{display:flex;gap:2px;padding:3px;border-radius:8px;background:#f4eff5}.recall-segmented button{border:0;padding:8px 16px;color:#817b87;background:transparent;font-size:12px}.recall-segmented button.active{color:#c4536d;background:#fff;box-shadow:0 2px 8px rgba(72,62,92,.1)}
 .recall-form{margin-bottom:17px;padding:21px 22px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-form h3{margin-bottom:16px;font-size:16px}.recall-form-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px}.recall-form-grid label,.recall-link{display:grid;gap:7px;color:#514a59;font-size:12px;font-weight:500}.recall-form-grid .wide{grid-column:1/-1}.recall-form-grid input,.recall-form-grid select,.recall-form-grid textarea,.recall-toolbar input,.recall-link select,.recall-editor{width:100%;border:1px solid #ded7e2;border-radius:7px;padding:10px 12px;color:var(--ink);background:#fff}.recall-form-grid textarea{min-height:135px;resize:vertical;line-height:1.65}.recall-form p{margin-top:12px;color:var(--muted);font-size:12px}.recall-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:15px}.recall-feedback{min-height:16px;margin-bottom:13px!important;color:#54846c;font-size:12px}.recall-feedback.error,.recall-save-foot .error{color:#b8566d}.recall-toolbar{margin-bottom:15px}.recall-toolbar input{width:min(340px,100%);font-size:13px}.recall-toolbar span,.recall-entry p,.recall-muted{color:#817b86;font-size:12px}.recall-list{display:grid;gap:10px}.recall-entry{padding:16px 18px;border:1px solid #ece5e9;border-radius:9px}.recall-entry:hover{border-color:#d9c8df;background:#fffdfd}.recall-entry-main{min-width:0}.recall-entry-title,.recall-practice-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.recall-entry-title strong{font-size:14px}.recall-badge,.recall-familiarity-tag{padding:3px 7px;border-radius:5px;color:#7763a8;background:#f1ecf9;font-size:11px;font-weight:500}.recall-badge.sst{color:#be5e7a;background:#fff0f4}.recall-familiarity-tag{color:#7a648e;background:#f7f1f8}.recall-entry p{margin-top:7px}.recall-preview{overflow:hidden;max-width:690px;text-overflow:ellipsis;white-space:nowrap}.recall-entry-actions{flex-shrink:0;gap:8px}.recall-entry-actions .recall-primary{white-space:nowrap}.recall-empty{padding:32px 20px;border:1px dashed #e8dce5;border-radius:8px;background:#fcfafb;color:var(--muted);font-size:13px;text-align:center}
-.recall-template-setup{display:grid;gap:9px;margin-bottom:18px;padding:16px 18px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-template-setup h4{margin:0;color:#514a59;font-size:14px;font-weight:500}.recall-template-setup p{color:var(--muted);font-size:12px;line-height:1.6}.recall-template-setup code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394;white-space:normal}.recall-template-setup label{color:#514a59;font-size:12px;font-weight:500}.recall-template-setup textarea{width:100%;min-height:100px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-template-save-foot{display:flex;align-items:center;justify-content:space-between;gap:12px}.recall-template-save-foot span{color:#54846c;font-size:12px}.recall-template-save-foot span.error{color:#b8566d}
+.recall-template-setup{display:grid;gap:9px;margin-bottom:18px;padding:16px 18px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-template-setup h4{margin:0;color:#514a59;font-size:14px;font-weight:500}.recall-template-setup p{color:var(--muted);font-size:12px;line-height:1.6}.recall-template-setup code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394;white-space:normal}.recall-template-setup label{color:#514a59;font-size:12px;font-weight:500}.recall-template-setup textarea{width:100%;min-height:100px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-template-save-foot{display:flex;align-items:center;justify-content:space-between;gap:12px}.recall-template-save-foot span{color:#54846c;font-size:12px}.recall-template-save-foot span.pending{color:#9a6c2d}.recall-template-save-foot span.error{color:#b8566d}
 .recall-practice-grid{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:17px}.recall-practice{padding:28px 30px}.recall-practice-title h3{font-size:20px}.recall-muted{margin:8px 0 17px!important}.recall-options{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:19px}.recall-switch{display:flex;align-items:center;gap:10px;min-height:54px;padding:10px 12px;border:1px solid #e7dfea;border-radius:8px;background:#faf8fc;cursor:pointer}.recall-options .recall-switch:first-child{flex:1 1 290px}.recall-switch input{position:absolute;width:1px;height:1px;opacity:0}.recall-switch .track{position:relative;flex:0 0 39px;width:39px;height:23px;border-radius:99px;background:#bbc7d8}.recall-switch .track:after{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,35,65,.25);content:'';transition:transform .15s}.recall-switch input:checked + .track{background:#7a77b9}.recall-switch input:checked + .track:after{transform:translateX(16px)}.recall-switch input:focus-visible + .track{outline:2px solid #b99ded;outline-offset:2px}.recall-switch>span:last-child{display:grid;gap:2px}.recall-switch strong{color:#4a4356;font-size:13px}.recall-switch small{color:var(--muted);font-size:11px;font-weight:400}.recall-switch.timer b{min-width:58px;color:#71639f;font-size:17px;font-variant-numeric:tabular-nums;text-align:right}.recall-editor-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:9px;color:#453e50;font-size:13px;font-weight:500}.recall-editor-head span{color:var(--muted)}.recall-editor{display:block;min-height:300px;padding:17px;font-size:15px;line-height:1.8;resize:vertical}.recall-bottom-actions{margin-top:18px}.recall-help{align-self:start;padding:20px;background:#fdfbff}.recall-help h3{font-size:15px}.recall-help p{margin-top:10px;color:var(--muted);font-size:13px;line-height:1.7}.recall-help div{margin-top:17px;padding:12px;border-radius:8px;color:#75649e;background:#f4effa;font-size:12px}
 .recall-template-status{margin:0 0 17px!important;color:#54846c;font-size:12px;line-height:1.5}.recall-template-status.error{color:#b8566d}.recall-slot-list{display:grid;gap:14px}.recall-slot-field{display:grid;gap:7px;color:#453e50;font-size:13px;font-weight:500}.recall-slot-field textarea{width:100%;min-height:82px;padding:12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;line-height:1.6;resize:vertical}
 .recall-template-preview{margin:0 0 18px;padding:14px 16px;border:1px solid #e9e0ee;border-radius:8px;background:#fbf9fc}.recall-template-preview strong{color:#665394;font-size:12px}.recall-template-preview p{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere;color:#514a59;font-size:13px;line-height:1.7}
