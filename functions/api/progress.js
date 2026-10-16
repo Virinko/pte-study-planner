@@ -47,20 +47,8 @@ export async function onRequestPost({ request, env }) {
     return json({ ok: false, error: 'Invalid JSON' }, 400);
   }
 
-  const stored = await env.PROGRESS_KV.get(PROGRESS_KEY, 'json');
-  const storedUpdatedAt = stored?.updatedAt || '';
-  const baseUpdatedAt = request.headers.get('x-progress-base-updated-at') || '';
-  if (storedUpdatedAt && storedUpdatedAt !== baseUpdatedAt) {
-    return json({
-      ok: false,
-      error: 'Conflict',
-      remoteUpdatedAt: storedUpdatedAt,
-      remote: stored,
-    }, 409);
-  }
-
   const updatedAt = new Date().toISOString();
   const stamped = { ...progress, updatedAt };
   await env.PROGRESS_KV.put(PROGRESS_KEY, JSON.stringify(stamped));
-  return json({ ok: true, updatedAt, progress: stamped });
+  return json({ ok: true, updatedAt });
 }

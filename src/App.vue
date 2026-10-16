@@ -19,12 +19,7 @@ const LEGACY_KEY = 'pte-study-planner-data';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const POMODORO_KEY = 'pte-study-planner-running-pomodoro';
 const APP_PASSWORD_KEY = 'pte_app_password';
-const DIRTY_KEY = 'pte_progress_dirty';
-const LAST_SYNCED_KEY = 'pte_progress_last_synced_at';
-const LAST_SYNC_LABEL_KEY = 'pte_progress_last_sync_label';
-const LAST_SYNC_MESSAGE_KEY = 'pte_progress_last_sync_message';
-const CLOUD_SAVE_DEBOUNCE_MS = 1500;
-const CLOUD_SAVE_MIN_INTERVAL_MS = 2000;
+const CLOUD_SAVE_DEBOUNCE_MS = 3000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -635,47 +630,8 @@ function readStoredPassword() {
   }
 }
 
-function readStoredDirty() {
-  try {
-    return localStorage.getItem(DIRTY_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-function readStoredLastSyncedAt() {
-  try {
-    return localStorage.getItem(LAST_SYNCED_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function readStoredLastSyncLabel() {
-  try {
-    return localStorage.getItem(LAST_SYNC_LABEL_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function readStoredLastSyncMessage() {
-  try {
-    return localStorage.getItem(LAST_SYNC_MESSAGE_KEY) || '';
-  } catch {
-    return '';
-  }
-}
-
-function hasStoredProgressBackup() {
-  try {
-    return Boolean(localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY));
-  } catch {
-    return false;
-  }
-}
-
 function load(): StudyData {
+  if (!IS_LOCAL_DEV) return defaultData();
   try {
     const raw = localStorage.getItem(KEY) || localStorage.getItem(LEGACY_KEY);
     const source = raw ? JSON.parse(raw) as Partial<StudyData> : undefined;
@@ -833,18 +789,18 @@ const runningPomodoro = ref<RunningPomodoro | null>(loadRunningPomodoro());
 const appPassword = ref(readStoredPassword());
 const passwordInput = ref('');
 const passwordError = ref('');
-const isDirty = ref(readStoredDirty());
+const isDirty = ref(false);
 const isCloudLoading = ref(false);
 const isCloudSaving = ref(false);
 const cloudSaveError = ref(false);
 const cloudLoadError = ref(false);
-const lastCloudSyncedAt = ref(readStoredLastSyncedAt());
-const lastCloudSyncLabel = ref(readStoredLastSyncLabel());
-const lastCloudSyncMessage = ref(readStoredLastSyncMessage());
+const lastCloudSyncedAt = ref('');
+const lastCloudSyncLabel = ref('');
+const lastCloudSyncMessage = ref('');
 const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
-const hasLocalProgressBackup = ref(hasStoredProgressBackup());
 let cloudSaveTimer: number | undefined;
-let lastCloudSaveAttemptAt = 0;
+let editRevision = 0;
+let activeCloudSave: Promise<boolean> | undefined;
 const showTimerModal = ref(false);
 const showPomodoroModal = ref(false);
 const timerEditHours = ref('');
@@ -1019,10 +975,10 @@ const saveStatusText = computed(() => {
   if (passwordError.value) return passwordError.value;
   if (isCloudLoading.value) return '正在检查云端最新进度...';
   if (isCloudSaving.value) return '保存中...';
-  if (cloudSaveError.value || cloudLoadError.value) return '网络异常，已暂存在本地';
+  if (cloudSaveError.value || cloudLoadError.value) return cloudLoadError.value ? '读取失败，请重试' : '保存失败，请重试';
   if (lastCloudSyncMessage.value) return lastCloudSyncLabel.value || '云端已同步';
   if (isDirty.value) return '有未同步改动';
-  return lastCloudSyncedAt.value ? '已保存本地并同步云端' : '本地已保存';
+  return lastCloudSyncedAt.value ? '已保存到云端' : '等待加载云端数据';
 });
 const saveStatusClass = computed(() => ({
   saving: !IS_LOCAL_DEV && (isCloudLoading.value || isCloudSaving.value),
@@ -1032,7 +988,9 @@ const saveStatusClass = computed(() => ({
 }));
 const syncStatusDetail = computed(() => {
   if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写 Cloudflare KV';
-  if (isCloudLoading.value) return '正在比较本地与云端更新时间';
+  if (isCloudLoading.value) return '正在获取云端最新数据';
+  if (cloudSaveError.value) return '修改仍在当前页面，请重试保存';
+  if (cloudLoadError.value) return '连接恢复后请重新读取云端数据';
   if (lastCloudSyncMessage.value) return lastCloudSyncMessage.value;
   return lastCloudSyncedAt.value ? new Date(lastCloudSyncedAt.value).toLocaleString('zh-CN', { hour12: false }) : '尚未同步';
 });
@@ -2068,6 +2026,7 @@ onMounted(() => {
   window.addEventListener('online', handleWindowOnline);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('pagehide', handlePageHide);
+  window.addEventListener('pageshow', handlePageShow);
   window.addEventListener('beforeunload', handleBeforeUnload);
   renderProgressCharts();
   if (!IS_LOCAL_DEV) void loadCloudProgress();
@@ -2081,6 +2040,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('online', handleWindowOnline);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   window.removeEventListener('pagehide', handlePageHide);
+  window.removeEventListener('pageshow', handlePageShow);
   window.removeEventListener('beforeunload', handleBeforeUnload);
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   disposeProgressCharts();
@@ -2126,24 +2086,22 @@ watch([todayDynamicTargetSignature, todayProgressSignature, hasTodayTargetSnapsh
 }, { immediate: true });
 
 function persistProgressBackup(next: StudyData) {
+  if (!IS_LOCAL_DEV) return;
   localStorage.setItem(KEY, JSON.stringify(next));
   localStorage.setItem(LEGACY_KEY, JSON.stringify(next));
-  hasLocalProgressBackup.value = true;
 }
 
 function persistDirty(value: boolean) {
   isDirty.value = value;
-  localStorage.setItem(DIRTY_KEY, value ? 'true' : 'false');
 }
 
 function persistLastCloudSyncState(label: string, message: string) {
   lastCloudSyncLabel.value = label;
   lastCloudSyncMessage.value = message;
-  localStorage.setItem(LAST_SYNC_LABEL_KEY, label);
-  localStorage.setItem(LAST_SYNC_MESSAGE_KEY, message);
 }
 
 function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+  if (!IS_LOCAL_DEV && (!hasCheckedCloudBaseline.value || isCloudLoading.value)) return;
   const { markDirty = true, scheduleSync = true } = options;
   const normalized = normalizeData(next);
   const stamped = {
@@ -2154,6 +2112,7 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
   persistProgressBackup(stamped);
   cloudLoadError.value = false;
   if (markDirty) {
+    editRevision += 1;
     persistLastCloudSyncState('', '');
     persistDirty(true);
     cloudSaveError.value = false;
@@ -2161,7 +2120,7 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
   }
 }
 
-function applyRemoteProgress(remote: StudyData, needsUpgrade = false) {
+function applyRemoteProgress(remote: StudyData) {
   const normalized = normalizeData(remote);
   data.value = normalized;
   persistProgressBackup(normalized);
@@ -2169,13 +2128,11 @@ function applyRemoteProgress(remote: StudyData, needsUpgrade = false) {
   cloudLoadError.value = false;
   cloudSaveError.value = false;
   lastCloudSyncedAt.value = normalized.updatedAt || lastCloudSyncedAt.value || '';
-  localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
   persistLastCloudSyncState(
     '已拉取云端最新进度',
     normalized.updatedAt ? `云端最新更新时间：${new Date(normalized.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '云端最新更新时间：尚未记录',
   );
   if (!selectedProgressPhaseId.value && normalized.phases[0]) selectedProgressPhaseId.value = normalized.phases[0].id;
-  if (needsUpgrade) saveLocal(normalized);
 }
 
 function clearAppPassword() {
@@ -2205,7 +2162,7 @@ function submitPassword() {
   void loadCloudProgress();
 }
 
-async function fetchCloudProgress(): Promise<{ progress: StudyData; needsUpgrade: boolean } | null> {
+async function fetchCloudProgress(): Promise<{ progress: StudyData } | null> {
   if (IS_LOCAL_DEV) return null;
   const res = await fetch('/api/progress', {
     headers: { 'x-app-password': appPassword.value },
@@ -2217,19 +2174,25 @@ async function fetchCloudProgress(): Promise<{ progress: StudyData; needsUpgrade
   }
   if (!res.ok) throw new Error(`Cloudflare 读取失败：HTTP ${res.status}`);
   const source = await res.json() as Partial<StudyData>;
-  return { progress: normalizeData(source), needsUpgrade: Number(source.version || 0) < 7 };
+  return { progress: normalizeData(source) };
 }
 
 async function loadCloudProgress() {
   if (IS_LOCAL_DEV || !appPassword.value) return;
   if (isCloudLoading.value) return;
   isCloudLoading.value = true;
+  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = undefined;
   cloudLoadError.value = false;
   try {
+    // Finish an already-sent save before reading; never upload pending stale edits here.
+    await activeCloudSave;
+    hasCheckedCloudBaseline.value = false;
     const result = await fetchCloudProgress();
     if (!result) return;
+    applyRemoteProgress(result.progress);
+    await nextTick();
     hasCheckedCloudBaseline.value = true;
-    applyRemoteProgress(result.progress, result.needsUpgrade);
   } catch {
     cloudLoadError.value = true;
   } finally {
@@ -2240,17 +2203,26 @@ async function loadCloudProgress() {
 function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
   if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || !hasCheckedCloudBaseline.value) return;
   if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
-  const elapsed = Date.now() - lastCloudSaveAttemptAt;
-  const waitForMinInterval = Math.max(0, CLOUD_SAVE_MIN_INTERVAL_MS - elapsed);
   cloudSaveTimer = window.setTimeout(() => {
     cloudSaveTimer = undefined;
     void syncCloudProgress();
-  }, Math.max(delay, waitForMinInterval));
+  }, delay);
 }
 
-async function syncCloudProgress() {
+function syncCloudProgress(): Promise<boolean> {
+  if (activeCloudSave) return activeCloudSave;
+  activeCloudSave = (async () => {
+    let saved = await uploadCloudProgress();
+    // Edits made during the request belong to this save too.
+    while (saved && isDirty.value) saved = await uploadCloudProgress();
+    return saved;
+  })().finally(() => { activeCloudSave = undefined; });
+  return activeCloudSave;
+}
+
+async function uploadCloudProgress() {
   if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value) return false;
-  lastCloudSaveAttemptAt = Date.now();
+  const submittedRevision = editRevision;
   isCloudSaving.value = true;
   cloudSaveError.value = false;
   try {
@@ -2260,7 +2232,6 @@ async function syncCloudProgress() {
       headers: {
         'Content-Type': 'application/json',
         'x-app-password': appPassword.value,
-        'x-progress-base-updated-at': lastCloudSyncedAt.value || '',
       },
       body: JSON.stringify(payload),
       keepalive: JSON.stringify(payload).length < 60000,
@@ -2269,26 +2240,17 @@ async function syncCloudProgress() {
       handleUnauthorized();
       return false;
     }
-    if (res.status === 409) {
-      const result = await res.json() as { remote?: Partial<StudyData>; progress?: Partial<StudyData> };
-      const remote = result.remote || result.progress;
-      if (remote) applyRemoteProgress(normalizeData(remote), Number(remote.version || 0) < 7);
-      return false;
-    }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
-    const result = await res.json() as { updatedAt?: string; progress?: Partial<StudyData> };
-    const saved = normalizeData(result.progress || payload);
-    data.value = saved;
-    persistProgressBackup(saved);
-    persistDirty(false);
+    const result = await res.json() as { updatedAt?: string };
+    lastCloudSyncedAt.value = result.updatedAt || '';
+    data.value.updatedAt = lastCloudSyncedAt.value;
+    persistDirty(editRevision !== submittedRevision);
     cloudSaveError.value = false;
-    cloudLoadError.value = false;
-    lastCloudSyncedAt.value = saved.updatedAt || '';
-    localStorage.setItem(LAST_SYNCED_KEY, lastCloudSyncedAt.value);
-    persistLastCloudSyncState(
-      '已保存并同步云端',
-      saved.updatedAt ? `最新修改时间：${new Date(saved.updatedAt).toLocaleString('zh-CN', { hour12: false })}` : '最新修改时间：尚未记录',
-    );
+    if (!isDirty.value) {
+      persistLastCloudSyncState('已保存到云端', result.updatedAt
+        ? `最新修改时间：${new Date(result.updatedAt).toLocaleString('zh-CN', { hour12: false })}`
+        : '');
+    }
     return true;
   } catch {
     persistDirty(true);
@@ -2323,15 +2285,26 @@ function handleWindowOnline() {
 }
 
 async function refreshCloudProgress() {
-  if (isDirty.value && !await syncCloudProgress()) return;
   await loadCloudProgress();
 }
 
 function handlePageHide() {
   tryImmediateCloudSave();
+  if (activeCloudSave) {
+    void activeCloudSave.finally(() => {
+      if (document.visibilityState !== 'visible') hasCheckedCloudBaseline.value = IS_LOCAL_DEV;
+    });
+  } else {
+    hasCheckedCloudBaseline.value = IS_LOCAL_DEV;
+  }
+}
+
+function handlePageShow(event: PageTransitionEvent) {
+  if (event.persisted) void loadCloudProgress();
 }
 
 function handleBeforeUnload() {
+  if (document.visibilityState !== 'visible') return;
   tryImmediateCloudSave();
 }
 
@@ -5333,6 +5306,7 @@ function taskLastStudyDate(task: Task) {
         <div>
           <strong>{{ saveStatusText }}</strong>
           <p>{{ syncStatusDetail }}</p>
+          <button v-if="cloudSaveError && hasCheckedCloudBaseline" type="button" @click="syncCloudProgress">重试保存</button>
         </div>
       </div>
       <div class="sidebar-note">
@@ -5341,11 +5315,12 @@ function taskLastStudyDate(task: Task) {
       </div>
     </header>
 
-    <div v-if="!IS_LOCAL_DEV && isCloudLoading && (!hasCheckedCloudBaseline || isDirty)" class="cloud-refresh-guard" role="status" aria-live="polite">
+    <div v-if="!IS_LOCAL_DEV && appPassword && (!hasCheckedCloudBaseline || isCloudLoading)" class="cloud-refresh-guard" role="status" aria-live="polite">
       <div>
-        <span class="cloud-refresh-spinner" aria-hidden="true"></span>
-        <strong>正在同步最新进度</strong>
-        <p>检查完成前暂时锁定编辑，避免旧页面覆盖新数据。</p>
+        <span v-if="isCloudLoading" class="cloud-refresh-spinner" aria-hidden="true"></span>
+        <strong>{{ cloudLoadError ? '读取失败' : '正在加载最新进度' }}</strong>
+        <p>从云端读取最新数据后即可编辑。</p>
+        <button v-if="cloudLoadError" type="button" @click="loadCloudProgress">重新加载</button>
       </div>
     </div>
 
