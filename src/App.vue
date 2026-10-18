@@ -817,6 +817,7 @@ const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
+const currentDate = computed(() => { nowMs.value; return todayIso(); });
 const dailyMottos = ['先开始，进度会自己出现。', '慢一点没关系，别停下来。'] as const;
 const todayMotto = computed(() => {
   const now = new Date(nowMs.value);
@@ -843,7 +844,7 @@ const shelvedTasks = computed(() => data.value.tasks
   .filter((task) => task.planStatus === 'shelved')
   .sort((a, b) => (b.shelvedAt || '').localeCompare(a.shelvedAt || '')));
 const schedule = computed(() => buildSchedule(data.value));
-const phase = computed(() => currentPhase(schedule.value));
+const phase = computed(() => currentPhase(schedule.value, currentDate.value));
 const todayMockExams = computed(() => schedule.value.flatMap((scheduledPhase) => {
   const sourcePhase = data.value.phases.find((item) => item.id === scheduledPhase.id);
   return (sourcePhase?.mockExams || [])
@@ -853,13 +854,14 @@ const todayMockExams = computed(() => schedule.value.flatMap((scheduledPhase) =>
 const todayTasks = computed(() => {
   const active = phase.value;
   if (!active) return [];
+  const date = currentDate.value;
   return data.value.tasks.filter((task) => {
     if (task.planStatus !== 'active') return false;
     if (task.phaseId !== active.id) return false;
-    return todayIso() >= (task.startDate || active.startDate);
+    return date >= (task.startDate || active.startDate);
   });
 });
-const todayLogs = computed(() => data.value.dailyLogs[todayIso()] || []);
+const todayLogs = computed(() => data.value.dailyLogs[currentDate.value] || []);
 const studyTimeEntries = computed(() => data.value.studyTimeEntries || []);
 const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
   .map((log) => log.date)
@@ -1019,23 +1021,25 @@ const exportAnswerRows = computed(() => {
   return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 });
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
-const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[todayIso()] || {});
-const todayDynamicTargetSignature = computed(() => JSON.stringify(todayDynamicTargetByTask.value));
-const todayProgressSignature = computed(() => JSON.stringify(todayLogByTask.value));
+const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[currentDate.value] || {});
+const todayTargetSnapshotKeys = computed(() => JSON.stringify([
+  ...todayTasks.value.map((task) => task.id),
+  ...Object.keys(data.value.dailyTargets?.[currentDate.value] || {}),
+]));
 const todayTargetDiffRows = computed<TodayTargetDiffRow[]>(() => todayTasks.value
   .map((task) => ({
     task,
     current: todayFrozenTargetByTask.value[task.id] ?? 0,
     latest: todayDynamicTargetByTask.value[task.id] ?? 0,
   }))
-  .filter((row) => row.current !== row.latest && (todayLogByTask.value[row.task.id] || 0) > 0));
+  .filter((row) => row.current !== row.latest));
 const todayTargetDiffRowsByPhase = computed(() => todayTargetDiffRows.value.reduce<Record<string, TodayTargetDiffRow[]>>((acc, row) => {
   const rows = acc[row.task.phaseId] || [];
   rows.push(row);
   acc[row.task.phaseId] = rows;
   return acc;
 }, {}));
-const hasTodayTargetSnapshot = computed(() => Boolean(data.value.dailyTargets?.[todayIso()]));
+const hasTodayTargetSnapshot = computed(() => Boolean(data.value.dailyTargets?.[currentDate.value]));
 const shouldShowTodayTargetRefresh = computed(() => hasTodayTargetSnapshot.value && todayTargetDiffRows.value.length > 0);
 
 function formatTodayTargetRefreshSummary(rows: TodayTargetDiffRow[]) {
@@ -2079,10 +2083,8 @@ watch([phaseProgress, phase], () => {
   if (!selectedProgressPhaseId.value && phase.value) selectedProgressPhaseId.value = phase.value.id;
 }, { immediate: true });
 
-watch([todayDynamicTargetSignature, todayProgressSignature, hasTodayTargetSnapshot], () => {
-  refreshUnstartedTodayTargets(hasTodayTargetSnapshot.value
-    ? {}
-    : { markDirty: false, scheduleSync: false });
+watch([todayTargetSnapshotKeys, () => hasCheckedCloudBaseline.value && !isCloudLoading.value], () => {
+  if (hasCheckedCloudBaseline.value && !isCloudLoading.value) ensureTodayTargetSnapshot();
 }, { immediate: true });
 
 function persistProgressBackup(next: StudyData) {
@@ -3293,7 +3295,6 @@ function updateTaskTarget(task: Task, event: Event) {
   saveLocal({
     ...data.value,
     tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item),
-    dailyTargets: dailyTargetsWithoutTaskToday(task.id),
   });
 }
 
@@ -3318,7 +3319,6 @@ function updateTask(id: string, patch: Partial<Task>) {
   saveLocal({
     ...data.value,
     tasks,
-    ...(shouldRecalculateRoundPlan ? { dailyTargets: dailyTargetsWithoutTaskToday(id) } : {}),
   });
 }
 
@@ -3376,16 +3376,6 @@ function roundInstruction(task: Task) {
   if (task.roundStage === 3) return '刷第二轮留下的标记题；完成后直接进入题量相同的第四轮。';
   if (task.roundPass === 1) return '按计划完成第四轮；仍有错题时会进入后 20% 的错题缓冲期。';
   return '错题缓冲期：每天至少建议刷剩余题量的一半；若剩余天数不足，会提高推荐量，直到清零。';
-}
-
-function dailyTargetsWithoutTaskToday(taskId: string): StudyData['dailyTargets'] {
-  const date = todayIso();
-  const current = { ...(data.value.dailyTargets[date] || {}) };
-  delete current[taskId];
-  const dailyTargets = { ...data.value.dailyTargets };
-  if (Object.keys(current).length) dailyTargets[date] = current;
-  else delete dailyTargets[date];
-  return dailyTargets;
 }
 
 function openRoundSetup(task: Task) {
@@ -3447,7 +3437,7 @@ function submitRoundSetup() {
   const nextTask = targetPhase
     ? { ...normalizedNextTask, roundStageEndDate: taskRoundStageEndDate(normalizedNextTask, targetPhase, todayIso()) }
     : normalizedNextTask;
-  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
+  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
   closeRoundSetup();
 }
 
@@ -3511,7 +3501,7 @@ function advanceRoundTask(task: Task, remainingMarked?: number) {
   const nextTask = cleared
     ? normalizedNextTask
     : resetRoundStageEndDate(normalizedNextTask, schedule.value, nextStageStartDate);
-  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
+  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
 }
 
 function restartRoundCycle(task: Task) {
@@ -3526,7 +3516,7 @@ function restartRoundCycle(task: Task) {
     roundCleared: false,
     completionArchived: true,
   }, data.value.phases[0]?.id || ''));
-  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
+  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
 }
 
 function disableRoundMode(task: Task) {
@@ -3539,7 +3529,7 @@ function disableRoundMode(task: Task) {
     repeatCount: 1,
     completionArchived: true,
   }, data.value.phases[0]?.id || '');
-  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item), dailyTargets: dailyTargetsWithoutTaskToday(task.id) });
+  saveLocal({ ...data.value, tasks: data.value.tasks.map((item) => item.id === task.id ? nextTask : item) });
 }
 
 function handleTaskPlatformChange(task: Task, event: Event) {
@@ -5082,31 +5072,21 @@ function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: bool
   }, options);
 }
 
-function refreshUnstartedTodayTargets(options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+function ensureTodayTargetSnapshot() {
   const date = todayIso();
+  const currentTargets = data.value.dailyTargets?.[date];
+  const missingTasks = todayTasks.value.filter((task) => !Object.prototype.hasOwnProperty.call(currentTargets || {}, task.id));
+  if (currentTargets && !missingTasks.length) return;
   const latestTargets = buildTodayTargetSnapshot();
-  const currentTargets = data.value.dailyTargets?.[date] || {};
-  const todayTaskIds = new Set(todayTasks.value.map((task) => task.id));
-  const nextTargets = Object.entries(currentTargets).reduce<Record<string, number>>((acc, [taskId, target]) => {
-    if (todayTaskIds.has(taskId)) acc[taskId] = target;
-    return acc;
-  }, {});
-
-  todayTasks.value.forEach((task) => {
-    const hasProgress = (todayLogByTask.value[task.id] || 0) > 0;
-    if (!hasProgress || !Object.prototype.hasOwnProperty.call(nextTargets, task.id)) {
-      nextTargets[task.id] = latestTargets[task.id] || 0;
-    }
-  });
-
-  if (sameTargetSnapshot(currentTargets, nextTargets)) return;
+  const nextTargets = { ...currentTargets };
+  missingTasks.forEach((task) => { nextTargets[task.id] = latestTargets[task.id] || 0; });
   saveLocal({
     ...data.value,
     dailyTargets: {
       ...(data.value.dailyTargets || {}),
       [date]: nextTargets,
     },
-  }, options);
+  });
 }
 
 function plannedDailyTarget(task: Task, targetPhase?: PhaseSchedule) {
@@ -6282,8 +6262,8 @@ function taskLastStudyDate(task: Task) {
           </div>
           <div v-if="shouldShowTodayTargetRefreshForPhase(group.phase.id)" class="today-target-refresh settings-target-refresh">
             <div>
-              <strong>今日目标可能已过期</strong>
-              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。已有进度的任务不会自动变化，可在这里按最新计划手动刷新。</p>
+              <strong>今日目标有新的建议</strong>
+              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。今日目标保持不变，需要时可按最新计划手动刷新。</p>
             </div>
             <button type="button" @click="refreshTodayTargets()">刷新今日目标</button>
           </div>
