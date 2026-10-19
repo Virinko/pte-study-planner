@@ -1023,7 +1023,7 @@ const exportAnswerRows = computed(() => {
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[currentDate.value] || {});
 const todayTargetSnapshotKeys = computed(() => JSON.stringify([
-  ...todayTasks.value.map((task) => task.id),
+  ...todayTasks.value.map((task) => [task.id, todayDynamicTargetByTask.value[task.id], todayLogByTask.value[task.id] || 0]),
   ...Object.keys(data.value.dailyTargets?.[currentDate.value] || {}),
 ]));
 const todayTargetDiffRows = computed<TodayTargetDiffRow[]>(() => todayTasks.value
@@ -1032,7 +1032,7 @@ const todayTargetDiffRows = computed<TodayTargetDiffRow[]>(() => todayTasks.valu
     current: todayFrozenTargetByTask.value[task.id] ?? 0,
     latest: todayDynamicTargetByTask.value[task.id] ?? 0,
   }))
-  .filter((row) => row.current !== row.latest));
+  .filter((row) => (todayLogByTask.value[row.task.id] || 0) > 0 && row.current !== row.latest));
 const todayTargetDiffRowsByPhase = computed(() => todayTargetDiffRows.value.reduce<Record<string, TodayTargetDiffRow[]>>((acc, row) => {
   const rows = acc[row.task.phaseId] || [];
   rows.push(row);
@@ -5075,11 +5075,20 @@ function refreshTodayTargets(options: { markDirty?: boolean; scheduleSync?: bool
 function ensureTodayTargetSnapshot() {
   const date = todayIso();
   const currentTargets = data.value.dailyTargets?.[date];
-  const missingTasks = todayTasks.value.filter((task) => !Object.prototype.hasOwnProperty.call(currentTargets || {}, task.id));
-  if (currentTargets && !missingTasks.length) return;
   const latestTargets = buildTodayTargetSnapshot();
   const nextTargets = { ...currentTargets };
-  missingTasks.forEach((task) => { nextTargets[task.id] = latestTargets[task.id] || 0; });
+  let changed = !currentTargets;
+  for (const task of todayTasks.value) {
+    const hasSavedTarget = Object.prototype.hasOwnProperty.call(nextTargets, task.id);
+    if (!hasSavedTarget || (todayLogByTask.value[task.id] || 0) <= 0) {
+      const latestTarget = latestTargets[task.id] || 0;
+      if (!hasSavedTarget || nextTargets[task.id] !== latestTarget) {
+        nextTargets[task.id] = latestTarget;
+        changed = true;
+      }
+    }
+  }
+  if (!changed) return;
   saveLocal({
     ...data.value,
     dailyTargets: {
@@ -6263,7 +6272,7 @@ function taskLastStudyDate(task: Task) {
           <div v-if="shouldShowTodayTargetRefreshForPhase(group.phase.id)" class="today-target-refresh settings-target-refresh">
             <div>
               <strong>今日目标有新的建议</strong>
-              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。今日目标保持不变，需要时可按最新计划手动刷新。</p>
+              <p>{{ todayTargetRefreshSummaryForPhase(group.phase.id) }}。已有今日进度的任务目标保持不变，需要时可按最新计划手动刷新。</p>
             </div>
             <button type="button" @click="refreshTodayTargets()">刷新今日目标</button>
           </div>
