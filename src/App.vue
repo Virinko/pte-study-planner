@@ -23,7 +23,7 @@ const CLOUD_SAVE_DEBOUNCE_MS = 3000;
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
-const frequencyTypes: FrequencyType[] = ['全题库', '月预测', '超高频', '非超高频', '句乐部', '错题复习'];
+const frequencyTypes: FrequencyType[] = ['全题库', '月预测', 'C哥预测', '超高频', '非超高频', '句乐部', '错题复习'];
 const taskScoreRows = [
   { name: 'SGD', skill: '听力', percent: 20 },
   { name: 'RS', skill: '听力', percent: 17 },
