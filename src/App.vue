@@ -726,6 +726,10 @@ const tab = ref<(typeof tabs)[number][0]>('today');
 const manualAmounts = ref<Record<string, number>>({});
 const reviewAmounts = ref<Record<string, number>>({});
 const selectedReviewSubItems = ref<Record<string, string[]>>({});
+const reviewCalendarTaskId = ref('');
+const reviewCalendarMonth = ref('');
+const reviewCalendarSelectedDates = ref<string[]>([]);
+const reviewCalendarCloseButton = ref<HTMLButtonElement | null>(null);
 const reviewAddTaskId = ref('');
 const reviewAddDate = ref<'today' | 'tomorrow'>('today');
 const reviewAddTargetInput = ref(5);
@@ -818,6 +822,18 @@ const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
+const reviewCalendarTask = computed(() => data.value.tasks.find((task) => task.id === reviewCalendarTaskId.value));
+const reviewCalendarDays = computed(() => {
+  if (!reviewCalendarMonth.value) return [];
+  const first = new Date(`${reviewCalendarMonth.value}T00:00:00`);
+  const leadingDays = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const cellCount = Math.ceil((leadingDays + daysInMonth) / 7) * 7;
+  return Array.from({ length: cellCount }, (_, index) => {
+    const date = addDays(reviewCalendarMonth.value, index - leadingDays);
+    return { date, day: Number(date.slice(8)), inMonth: date.slice(0, 7) === reviewCalendarMonth.value.slice(0, 7) };
+  });
+});
 const dailyMottos = ['先开始，进度会自己出现。', '慢一点没关系，别停下来。'] as const;
 const todayMotto = computed(() => {
   const now = new Date(nowMs.value);
@@ -949,6 +965,12 @@ const todayReviewPlans = computed<ReviewPlanRow[]>(() => {
 });
 const tomorrowReviewPlans = computed(() => (data.value.reviewPlans[addDays(todayIso(), 1)] || [])
   .filter((plan) => data.value.tasks.find((task) => task.id === plan.taskId)?.planStatus !== 'shelved'));
+const futureReviewPlans = computed(() => Object.entries(data.value.reviewPlans)
+  .filter(([date]) => date > addDays(todayIso(), 1))
+  .flatMap(([date, plans]) => plans
+    .filter((plan) => data.value.tasks.find((task) => task.id === plan.taskId)?.planStatus !== 'shelved')
+    .map((plan) => ({ ...plan, dueDate: date })))
+  .sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.taskName.localeCompare(b.taskName)));
 const reviewEnabledTasks = computed(() => activePlanTasks.value.filter((task) => task.reviewEnabled));
 const countReviewEnabledTasks = computed(() => reviewEnabledTasks.value.filter((task) => task.trackingMode !== 'itemized'));
 const todayReviewTarget = computed(() => todayReviewPlans.value.reduce((sum, plan) => sum + plan.target, 0));
@@ -4094,39 +4116,61 @@ function clearReviewSubItemSelection(taskId: string) {
   selectedReviewSubItems.value[reviewSelectionKey(taskId)] = [];
 }
 
-function addSelectedSubItemsToReview(task: Task, date: string) {
+function openReviewCalendar(task: Task) {
+  if (!selectedReviewItemIds(task.id).length) return;
+  reviewCalendarTaskId.value = task.id;
+  reviewCalendarMonth.value = `${todayIso().slice(0, 7)}-01`;
+  reviewCalendarSelectedDates.value = [];
+  nextTick(() => reviewCalendarCloseButton.value?.focus());
+}
+
+function closeReviewCalendar() {
+  reviewCalendarTaskId.value = '';
+  reviewCalendarSelectedDates.value = [];
+}
+
+function shiftReviewCalendarMonth(offset: number) {
+  const first = new Date(`${reviewCalendarMonth.value}T00:00:00`);
+  first.setMonth(first.getMonth() + offset);
+  const month = `${first.getFullYear()}-${String(first.getMonth() + 1).padStart(2, '0')}-01`;
+  if (month >= `${todayIso().slice(0, 7)}-01`) reviewCalendarMonth.value = month;
+}
+
+function toggleReviewCalendarDate(date: string) {
+  if (date < todayIso()) return;
+  reviewCalendarSelectedDates.value = reviewCalendarSelectedDates.value.includes(date)
+    ? reviewCalendarSelectedDates.value.filter((selected) => selected !== date)
+    : [...reviewCalendarSelectedDates.value, date].sort();
+}
+
+function addSelectedSubItemsToReviewDates() {
+  const task = reviewCalendarTask.value;
+  if (!task) return;
   const selectedIds = selectedReviewItemIds(task.id).filter((id) => task.subItems.some((item) => item.id === id && item.status === 'done'));
-  if (!selectedIds.length) return;
-  const plans = data.value.reviewPlans[date] || [];
-  const existing = plans.find((plan) => plan.taskId === task.id && plan.sourceDate === todayIso() && isItemizedReviewPlan(plan));
-  const nextSubItemIds = [...new Set([...(existing?.subItemIds || []), ...selectedIds])];
-  const completedSubItemIds = (existing?.completedSubItemIds || []).filter((id) => nextSubItemIds.includes(id));
-  const nextPlan: ReviewPlan = {
-    id: existing?.id || crypto.randomUUID(),
-    taskId: task.id,
-    taskName: task.name,
-    sourceDate: todayIso(),
-    target: nextSubItemIds.length,
-    completed: completedSubItemIds.length,
-    subItemIds: nextSubItemIds,
-    completedSubItemIds,
-  };
-  saveLocal({
-    ...data.value,
-    reviewPlans: {
-      ...data.value.reviewPlans,
-      [date]: [...plans.filter((plan) => plan.id !== existing?.id), nextPlan],
-    },
-  });
+  const dates = reviewCalendarSelectedDates.value.filter((date) => date >= todayIso());
+  if (!selectedIds.length || !dates.length) return;
+  const sourceDate = todayIso();
+  const reviewPlans = { ...data.value.reviewPlans };
+  for (const date of dates) {
+    const plans = reviewPlans[date] || [];
+    const existing = plans.find((plan) => plan.taskId === task.id && plan.sourceDate === sourceDate && isItemizedReviewPlan(plan));
+    const subItemIds = [...new Set([...(existing?.subItemIds || []), ...selectedIds])];
+    const completedSubItemIds = (existing?.completedSubItemIds || []).filter((id) => subItemIds.includes(id));
+    const nextPlan: ReviewPlan = {
+      id: existing?.id || crypto.randomUUID(),
+      taskId: task.id,
+      taskName: task.name,
+      sourceDate,
+      target: subItemIds.length,
+      completed: completedSubItemIds.length,
+      subItemIds,
+      completedSubItemIds,
+    };
+    reviewPlans[date] = [...plans.filter((plan) => plan.id !== existing?.id), nextPlan];
+  }
+  saveLocal({ ...data.value, reviewPlans });
   clearReviewSubItemSelection(task.id);
-}
-
-function addSelectedSubItemsToTodayReview(task: Task) {
-  addSelectedSubItemsToReview(task, todayIso());
-}
-
-function addSelectedSubItemsToTomorrowReview(task: Task) {
-  addSelectedSubItemsToReview(task, addDays(todayIso(), 1));
+  closeReviewCalendar();
 }
 
 function cancelTomorrowReviewRegistration(task: Task) {
@@ -5515,13 +5559,13 @@ function taskLastStudyDate(task: Task) {
                     <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                     <strong>{{ item.title }}</strong>
                     <b>{{ item.familiarity }}</b>
-                    <label v-if="task.reviewEnabled" class="done-review-picker">
+                    <label class="done-review-picker">
                       <input
                         type="checkbox"
                         :checked="isReviewSubItemSelected(task.id, item.id)"
                         @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
                       >
-                      选中
+                      复习
                     </label>
                   </article>
                 </div>
@@ -5538,23 +5582,22 @@ function taskLastStudyDate(task: Task) {
                         <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                         <strong>{{ item.title }}</strong>
                         <b>{{ item.familiarity }}</b>
-                        <label v-if="task.reviewEnabled" class="done-review-picker">
+                        <label class="done-review-picker">
                           <input
                             type="checkbox"
                             :checked="isReviewSubItemSelected(task.id, item.id)"
                             @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
                           >
-                          选中
+                          复习
                         </label>
                       </article>
                     </div>
                   </div>
                 </details>
-                <div v-if="task.reviewEnabled && completedSubItems(task).length" class="itemized-review-actions review-register-actions">
-                  <span>已选 {{ selectedReviewItemIds(task.id).length }} 篇</span>
+                <div v-if="completedSubItems(task).length" class="itemized-review-actions review-register-actions">
+                  <span>已选 {{ selectedReviewItemIds(task.id).length }} 篇{{ selectedReviewItemIds(task.id).length ? '' : '，请勾选上方篇目' }}</span>
                   <button class="review-register-cancel" type="button" @click="clearReviewSubItemSelection(task.id)">清空</button>
-                  <button class="review-register-cancel" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="addSelectedSubItemsToTodayReview(task)">加入今日复习</button>
-                  <button class="review-register-save" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="addSelectedSubItemsToTomorrowReview(task)">加入明日复习</button>
+                  <button class="review-register-save" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="openReviewCalendar(task)"><CalendarDays :size="16" aria-hidden="true" />安排复习日期</button>
                 </div>
               </section>
               <section>
@@ -5793,6 +5836,22 @@ function taskLastStudyDate(task: Task) {
               </article>
             </div>
             <p v-else class="muted">还没有登记明日复习量。完成主任务后可在任务下方登记。</p>
+          </section>
+          <section v-if="futureReviewPlans.length">
+            <h3>后续复习计划</h3>
+            <div class="review-list compact">
+              <article v-for="plan in futureReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
+                <div>
+                  <strong>{{ reviewPlanTaskName(plan) }}</strong>
+                  <small>{{ plan.dueDate }}</small>
+                </div>
+                <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
+                  <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
+                </div>
+                <span class="review-itemized-count">{{ plan.target }} {{ isItemizedReviewPlan(plan) ? '篇' : '题' }}</span>
+                <button class="icon-button" type="button" @click="deleteReviewPlan(plan.dueDate, plan.id)">删除</button>
+              </article>
+            </div>
           </section>
         </div>
       </section>
@@ -6326,10 +6385,11 @@ function taskLastStudyDate(task: Task) {
                 </div>
                 <span v-else>跟随总计划</span>
               </div>
-              <label class="review-toggle table-field" data-label="复习">
+              <label v-if="task.trackingMode !== 'itemized'" class="review-toggle table-field" data-label="复习">
                 <input type="checkbox" :checked="task.reviewEnabled" @change="updateTask(task.id, { reviewEnabled: ($event.target as HTMLInputElement).checked })">
                 开启
               </label>
+              <span v-else class="review-toggle table-field" data-label="复习">按篇目安排</span>
               <label class="table-field number-field" data-label="题库量">
                 <input
                   type="number"
@@ -6731,6 +6791,45 @@ function taskLastStudyDate(task: Task) {
         <p v-else class="muted answer-empty">还没有符合条件的答案，先录入第一条吧。</p>
       </section>
     </section>
+
+    <div v-if="reviewCalendarTask" class="modal review-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="review-calendar-title" @click.self="closeReviewCalendar" @keydown.esc="closeReviewCalendar">
+      <form class="modal-box review-calendar-box" @submit.prevent="addSelectedSubItemsToReviewDates">
+        <button ref="reviewCalendarCloseButton" class="modal-close-button" type="button" aria-label="关闭复习日期日历" @click="closeReviewCalendar">×</button>
+        <div>
+          <h3 id="review-calendar-title">选择复习日期</h3>
+          <p>为 {{ reviewCalendarTask.name }} 已选的 {{ selectedReviewItemIds(reviewCalendarTask.id).length }} 篇安排复习，可选择多个日期。</p>
+        </div>
+        <div class="review-calendar-heading">
+          <button type="button" aria-label="上个月" :disabled="reviewCalendarMonth.slice(0, 7) <= currentDate.slice(0, 7)" @click="shiftReviewCalendarMonth(-1)"><ChevronLeft :size="20" aria-hidden="true" /></button>
+          <strong>{{ reviewCalendarMonth.slice(0, 4) }} 年 {{ Number(reviewCalendarMonth.slice(5, 7)) }} 月</strong>
+          <button type="button" aria-label="下个月" @click="shiftReviewCalendarMonth(1)"><ChevronRight :size="20" aria-hidden="true" /></button>
+        </div>
+        <div class="review-calendar-grid">
+          <span v-for="weekday in ['一', '二', '三', '四', '五', '六', '日']" :key="weekday" class="review-calendar-weekday">{{ weekday }}</span>
+          <button
+            v-for="day in reviewCalendarDays"
+            :key="day.date"
+            type="button"
+            :class="{ 'is-other-month': !day.inMonth, 'is-today': day.date === currentDate, 'is-selected': reviewCalendarSelectedDates.includes(day.date) }"
+            :disabled="day.date < currentDate"
+            :aria-label="`${day.date}${reviewCalendarSelectedDates.includes(day.date) ? '，已选中' : ''}`"
+            :aria-pressed="reviewCalendarSelectedDates.includes(day.date)"
+            @click="toggleReviewCalendarDate(day.date)"
+          >{{ day.day }}</button>
+        </div>
+        <div class="review-calendar-selection">
+          <strong>已选 {{ reviewCalendarSelectedDates.length }} 天</strong>
+          <p v-if="reviewCalendarSelectedDates.length === 0">点击日历中的日期进行选择。再次点击可取消。</p>
+          <div v-else class="review-calendar-selected-dates">
+            <button v-for="date in reviewCalendarSelectedDates" :key="date" type="button" :aria-label="`取消 ${date}`" @click="toggleReviewCalendarDate(date)">{{ date }} ×</button>
+          </div>
+        </div>
+        <div class="review-calendar-actions">
+          <button type="button" @click="closeReviewCalendar">取消</button>
+          <button class="review-register-save" type="submit" :disabled="reviewCalendarSelectedDates.length === 0 || selectedReviewItemIds(reviewCalendarTask.id).length === 0">安排复习</button>
+        </div>
+      </form>
+    </div>
 
     <div v-if="showTimerModal && runningTimer" class="modal timer-modal">
       <section class="modal-box timer-modal-box">

@@ -4427,6 +4427,164 @@ nav button.active::after {
   opacity: .55;
 }
 
+.itemized-review-actions .review-register-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-calendar-modal {
+  z-index: 20;
+}
+
+.review-calendar-box {
+  position: relative;
+  width: min(420px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+}
+
+.review-calendar-box h3 {
+  margin: 0 32px 6px 0;
+  color: #172033;
+  font-size: 20px;
+}
+
+.review-calendar-box p {
+  margin: 0;
+  color: #667389;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.review-calendar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.review-calendar-heading button {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: #6f58b9;
+  background: #f7f1ff;
+  border: 0;
+  border-radius: 8px;
+}
+
+.review-calendar-heading button:disabled {
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+.review-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.review-calendar-weekday {
+  padding: 6px 0;
+  color: #667389;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.review-calendar-grid button {
+  min-width: 0;
+  aspect-ratio: 1;
+  color: #34445d;
+  background: #fff;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+.review-calendar-grid button:hover:not(:disabled) {
+  background: #f7f1ff;
+}
+
+.review-calendar-grid button.is-other-month {
+  color: #9aa5b5;
+}
+
+.review-calendar-grid button.is-today {
+  border-color: #bda3fb;
+}
+
+.review-calendar-grid button.is-selected,
+.review-calendar-grid button.is-selected:hover:not(:disabled) {
+  color: #fff;
+  background: #7a3ed2;
+}
+
+.review-calendar-grid button:disabled {
+  color: #c7ced9;
+  cursor: not-allowed;
+}
+
+.review-calendar-selection {
+  display: grid;
+  gap: 8px;
+  min-height: 55px;
+  padding: 12px;
+  background: #fbf8ff;
+  border: 1px solid #e9dcff;
+  border-radius: 8px;
+}
+
+.review-calendar-selection strong {
+  color: #34445d;
+  font-size: 13px;
+}
+
+.review-calendar-selected-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 100px;
+  overflow: auto;
+}
+
+.review-calendar-selected-dates button {
+  padding: 4px 8px;
+  color: #6c38ca;
+  background: #fff;
+  border: 1px solid #d9c4ff;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.review-calendar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.review-calendar-actions button {
+  min-height: 36px;
+  padding: 7px 14px;
+  color: #667389;
+  background: #fff;
+  border: 1px solid #dbe2ef;
+  border-radius: 7px;
+  font-weight: 700;
+}
+
+.review-calendar-actions .review-register-save {
+  color: #fff;
+  background: #7a3ed2;
+  border-color: #7a3ed2;
+}
+
+.review-calendar-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .today-done-items.compact {
   grid-template-columns: 1fr;
   gap: 8px;
