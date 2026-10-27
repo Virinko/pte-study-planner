@@ -7,7 +7,7 @@ import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronR
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import RecallPage from './RecallPage.vue';
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
+import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, RecallReviewTarget, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
 
@@ -723,6 +723,7 @@ function loadRunningPomodoro(): RunningPomodoro | null {
 
 const data = ref<StudyData>(load());
 const tab = ref<(typeof tabs)[number][0]>('today');
+const recallReviewTarget = ref<RecallReviewTarget | null>(null);
 const manualAmounts = ref<Record<string, number>>({});
 const reviewAmounts = ref<Record<string, number>>({});
 const selectedReviewSubItems = ref<Record<string, string[]>>({});
@@ -822,6 +823,7 @@ const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
+watch(tab, (value) => { if (value !== 'recall') recallReviewTarget.value = null; });
 const reviewCalendarTask = computed(() => data.value.tasks.find((task) => task.id === reviewCalendarTaskId.value));
 const reviewCalendarDays = computed(() => {
   if (!reviewCalendarMonth.value) return [];
@@ -4252,6 +4254,32 @@ function reviewPlanSubItems(plan: ReviewPlan) {
     .filter((item): item is SubItem => Boolean(item));
 }
 
+function isRecallReviewPlan(plan: ReviewPlan) {
+  const task = reviewPlanTask(plan);
+  return task?.trackingMode === 'itemized' && isItemizedReviewPlan(plan);
+}
+
+function canRecallReviewPlan(plan: ReviewPlan) {
+  const task = reviewPlanTask(plan);
+  return isRecallReviewPlan(plan)
+    && (plan.subItemIds || []).some((id) => !(plan.completedSubItemIds || []).includes(id) && task?.subItems.some((item) => item.id === id));
+}
+
+function openRecallForReview(plan: ReviewPlan & { dueDate?: string }) {
+  const task = reviewPlanTask(plan);
+  const subItemId = (plan.subItemIds || []).find((id) => !(plan.completedSubItemIds || []).includes(id) && task?.subItems.some((item) => item.id === id));
+  if (!subItemId || !canRecallReviewPlan(plan)) return;
+  recallReviewTarget.value = { requestId: crypto.randomUUID(), date: reviewPlanDate(plan), planId: plan.id, taskId: plan.taskId, subItemId };
+  tab.value = 'recall';
+}
+
+function advanceRecallReview() {
+  const target = recallReviewTarget.value;
+  const plan = (data.value.reviewPlans[target?.date || ''] || []).find((item) => item.id === target?.planId);
+  if (plan && canRecallReviewPlan(plan)) openRecallForReview({ ...plan, dueDate: target!.date });
+  else tab.value = 'today';
+}
+
 function isReviewPlanSubItemDone(plan: ReviewPlan, itemId: string) {
   return (plan.completedSubItemIds || []).includes(itemId);
 }
@@ -5357,7 +5385,7 @@ function taskLastStudyDate(task: Task) {
       </div>
     </div>
 
-    <RecallPage v-show="tab === 'recall'" :data="data" :active="tab === 'recall'" :today-task-ids="activeTodayTaskRows.map(task => task.id)" :save-progress="saveLocal" />
+    <RecallPage v-show="tab === 'recall'" :data="data" :active="tab === 'recall'" :today-task-ids="activeTodayTaskRows.map(task => task.id)" :save-progress="saveLocal" :review-target="recallReviewTarget" @advance-review="advanceRecallReview" @return-review="tab = 'today'" />
 
     <section v-if="tab === 'today'" class="page dashboard-page">
       <section class="plan-strip">
@@ -5762,6 +5790,7 @@ function taskLastStudyDate(task: Task) {
                     <div class="review-card-titleline">
                       <strong>{{ reviewPlanTaskName(plan) }}</strong>
                       <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, reviewPlanTaskName(plan), plan.taskId)">{{ timerEntryLabel('review', plan.id) }}</button>
+                      <button v-if="isRecallReviewPlan(plan)" class="review-recall-button" type="button" :disabled="!canRecallReviewPlan(plan)" :title="canRecallReviewPlan(plan) ? '默写未完成的复习篇目' : '复习已完成，或计划篇目已不存在'" @click="openRecallForReview(plan)">去默写</button>
                       <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">今日已学 {{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
                     </div>
                   </div>

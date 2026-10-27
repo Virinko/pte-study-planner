@@ -5111,6 +5111,28 @@ nav button.active::after {
   font-size: 15px;
 }
 
+.itemized-review-card .review-card-titleline {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.review-recall-button {
+  min-height: 30px;
+  padding: 5px 10px;
+  color: #fff;
+  background: #7a3ed2;
+  border: 1px solid #7a3ed2;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.review-recall-button:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
 .itemized-review-card .review-card-meta > small {
   font-size: 13px;
 }

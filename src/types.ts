@@ -112,6 +112,7 @@ export interface ReviewPlan {
   subItemIds?: string[];
   completedSubItemIds?: string[];
 }
+export interface RecallReviewTarget { requestId: string; date: string; planId: string; taskId: string; subItemId: string; }
 export interface ReviewPlans { [date: string]: ReviewPlan[]; }
 export interface ReviewLogEntry {
   id: string;

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
-import { todayIso } from './planner';
+import { isCurrentTaskProgressLog, todayIso } from './planner';
 import { extractTemplateSlots } from './recallTemplate';
-import type { AnswerEntry, Familiarity, RecallTemplates, StudyData, StudyTimeEntry } from './types';
+import type { AnswerEntry, Familiarity, RecallReviewTarget, RecallTemplates, StudyData, StudyTimeEntry } from './types';
 
-type ExamType = 'WE' | 'SST';
+type ExamType = string;
+type TemplateType = keyof RecallTemplates;
 type View = 'choose' | 'write' | 'result';
 type Mark = '' | 'missing' | 'wrong' | 'extra';
 type Detail = { kind: Exclude<Mark, ''>; text: string };
@@ -19,7 +20,8 @@ const OWN_KEY = 'pte_recall_answers_v1';
 const FAMILIARITY_KEY = 'pte_recall_familiarity_v1';
 const TEMPLATE_KEY = 'pte_recall_templates_v1';
 const levels: Familiarity[] = ['生', '半熟', '熟', '可默写'];
-const props = defineProps<{ data: StudyData; active: boolean; todayTaskIds: string[]; saveProgress: (next: StudyData) => void }>();
+const props = defineProps<{ data: StudyData; active: boolean; todayTaskIds: string[]; saveProgress: (next: StudyData) => void; reviewTarget: RecallReviewTarget | null }>();
+const emit = defineEmits<{ 'advance-review': []; 'return-review': [] }>();
 
 function readJson<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; }
@@ -32,21 +34,21 @@ const storedTemplates = readJson<unknown>(TEMPLATE_KEY, {});
 const ownAnswers = ref<LocalAnswer[]>(Array.isArray(storedAnswers) ? storedAnswers : []);
 const familiarity = ref<SavedFamiliarity>(storedFamiliarity && typeof storedFamiliarity === 'object' && !Array.isArray(storedFamiliarity) ? storedFamiliarity as SavedFamiliarity : {});
 const legacyTemplates = storedTemplates && typeof storedTemplates === 'object' && !Array.isArray(storedTemplates) ? storedTemplates as Record<string, unknown> : {};
-const legacyCommon = (examType: ExamType) => typeof legacyTemplates[`type:${examType}`] === 'string' ? legacyTemplates[`type:${examType}`] as string : '';
+const legacyCommon = (examType: TemplateType) => typeof legacyTemplates[`type:${examType}`] === 'string' ? legacyTemplates[`type:${examType}`] as string : '';
 const templateDrafts = reactive<RecallTemplates>({
   WE: props.data.recallTemplates?.WE || legacyCommon('WE'),
   SST: props.data.recallTemplates?.SST || legacyCommon('SST'),
 });
-const templateDirty = reactive<Record<ExamType, boolean>>({
+const templateDirty = reactive<Record<TemplateType, boolean>>({
   WE: !props.data.recallTemplates?.WE && !!legacyCommon('WE'),
   SST: !props.data.recallTemplates?.SST && !!legacyCommon('SST'),
 });
-const templateTouched = reactive<Record<ExamType, boolean>>({ WE: false, SST: false });
-const templateSaveStatus = reactive<Record<ExamType, string>>({
+const templateTouched = reactive<Record<TemplateType, boolean>>({ WE: false, SST: false });
+const templateSaveStatus = reactive<Record<TemplateType, string>>({
   WE: templateDirty.WE ? '检测到旧版仅保存在本机的模板，请点击保存模板以同步。' : '',
   SST: templateDirty.SST ? '检测到旧版仅保存在本机的模板，请点击保存模板以同步。' : '',
 });
-const templateSaveError = reactive<Record<ExamType, boolean>>({ WE: false, SST: false });
+const templateSaveError = reactive<Record<TemplateType, boolean>>({ WE: false, SST: false });
 const type = ref<ExamType>('WE');
 const view = ref<View>('choose');
 const search = ref('');
@@ -75,21 +77,25 @@ const resultParts = ref<ResultPart[]>([]);
 const details = ref<Detail[]>([]);
 let interval: number | undefined;
 
+const recallTypes = computed(() => [...new Set([
+  'WE', 'SST',
+  ...props.data.tasks.filter((task) => task.trackingMode === 'itemized').map((task) => task.name.trim().split(/\s+/)[0].toUpperCase()),
+])]);
+const selectedTemplateType = computed<TemplateType | null>(() => type.value === 'WE' || type.value === 'SST' ? type.value : null);
 const entries = computed<RecallEntry[]>(() => {
   const convert = (rows: Array<LocalAnswer | AnswerEntry>, source: RecallEntry['source']) => rows
-    .filter((entry) => entry && typeof entry.examType === 'string' && ['WE', 'SST'].includes(entry.examType.toUpperCase()) && typeof entry.answer === 'string' && entry.answer.trim())
+    .filter((entry) => entry && typeof entry.examType === 'string' && recallTypes.value.includes(entry.examType.toUpperCase()) && typeof entry.answer === 'string' && entry.answer.trim())
     .map((entry) => ({
       key: `${source}:${entry.id}`, id: entry.id, source,
-      examType: entry.examType.toUpperCase() as ExamType,
+      examType: entry.examType.toUpperCase(),
       title: entry.title || '未命名答案', question: 'question' in entry ? entry.question : undefined, answer: entry.answer,
       platformRefs: 'platformRefs' in entry ? entry.platformRefs : [],
     }));
   return [...convert(ownAnswers.value, 'own'), ...convert(props.data.answerEntries, 'library')];
 });
-const visibleEntries = computed(() => entries.value.filter((entry) => entry.examType === type.value)
-  .filter((entry) => !search.value.trim() || `${entry.title} ${entry.question || ''} ${entry.answer}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
 const wordCount = computed(() => written.value.trim().match(/\S+/g)?.length || 0);
-const activeTemplate = computed(() => current.value ? props.data.recallTemplates?.[current.value.examType] || '' : '');
+const activeTemplate = computed(() => current.value?.examType === 'WE' || current.value?.examType === 'SST'
+  ? props.data.recallTemplates?.[current.value.examType] || '' : '');
 const templatePreview = computed(() => {
   let index = 0;
   return activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1')
@@ -107,7 +113,19 @@ const countByKind = computed(() => ({
 }));
 const linkOptions = computed(() => props.data.tasks
   .filter((task) => task.name.trim().toUpperCase().startsWith(current.value?.examType || '____'))
-  .flatMap((task) => task.subItems.map((item) => ({ key: `${task.id}:${item.id}`, taskId: task.id, subItemId: item.id, label: `${task.name} · ${item.title}` }))));
+  .flatMap((task) => task.subItems.map((item) => ({ key: `${task.id}:${item.id}`, taskId: task.id, subItemId: item.id, title: item.title, label: `${task.name} · ${item.title}` }))));
+const reviewAssignment = computed(() => {
+  const target = props.reviewTarget;
+  if (!target) return null;
+  const plan = (props.data.reviewPlans[target.date] || []).find((item) => item.id === target.planId && item.taskId === target.taskId);
+  const task = props.data.tasks.find((item) => item.id === target.taskId);
+  const item = task?.subItems.find((entry) => entry.id === target.subItemId);
+  return plan && task && item && plan.subItemIds?.includes(item.id) ? { plan, task, item } : null;
+});
+const visibleEntries = computed(() => entries.value.filter((entry) => entry.examType === type.value)
+  .filter((entry) => !reviewAssignment.value || normalizeTitle(entry.title) === normalizeTitle(reviewAssignment.value.item.title))
+  .filter((entry) => !search.value.trim() || `${entry.title} ${entry.question || ''} ${entry.answer}`.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())));
+const reviewRemainingCount = computed(() => reviewAssignment.value?.plan.subItemIds?.filter((id) => !reviewAssignment.value?.plan.completedSubItemIds?.includes(id)).length || 0);
 function todayTasksForType(examType: string) {
   return props.data.tasks.filter((task) => props.todayTaskIds.includes(task.id)
     && (task.name.trim().toUpperCase() === examType
@@ -116,10 +134,14 @@ function todayTasksForType(examType: string) {
 const matchingTodayTasks = computed(() => todayTasksForType(current.value?.examType || ''));
 const unassignedRecallEntries = computed(() => props.data.studyTimeEntries.filter((entry) =>
   entry.date === todayIso() && !entry.taskId && entry.durationSeconds > 0
-  && ['WE', 'SST'].includes(entry.examType.toUpperCase()) && entry.note.startsWith('默写检查：')));
+  && recallTypes.value.includes(entry.examType.toUpperCase()) && entry.note.startsWith('默写检查：')));
 function taskOptionLabel(task: StudyData['tasks'][number]) {
   const name = task.name.includes(task.frequencyType) ? task.name : `${task.name} ${task.frequencyType}`;
   return `${name} · ${task.platform}`;
+}
+
+function normalizeTitle(value: string) {
+  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 }
 
 function formatDuration(seconds: number) {
@@ -149,7 +171,9 @@ function goTo(next: View) {
   resumeTimer();
 }
 function startPractice(entry: RecallEntry) {
+  if (reviewAssignment.value && (entry.examType !== type.value || normalizeTitle(entry.title) !== normalizeTitle(reviewAssignment.value.item.title))) return;
   current.value = entry;
+  if (props.reviewTarget) checkTimer.value = true;
   written.value = '';
   compareNonTemplate.value = false;
   slotWritten.value = '';
@@ -161,7 +185,7 @@ function startPractice(entry: RecallEntry) {
   clock.value = Date.now();
   goTo('write');
 }
-function saveTemplate(examType: ExamType) {
+function saveTemplate(examType: TemplateType) {
   if (!templateDirty[examType]) return true;
   try {
     props.saveProgress({ ...props.data, recallTemplates: { ...props.data.recallTemplates, [examType]: templateDrafts[examType] } });
@@ -178,7 +202,7 @@ function saveTemplate(examType: ExamType) {
     return false;
   }
 }
-function markTemplateEdited(examType: ExamType) {
+function markTemplateEdited(examType: TemplateType) {
   templateDirty[examType] = true;
   templateTouched[examType] = true;
   templateSaveError[examType] = false;
@@ -191,6 +215,21 @@ function toggleTimer() {
   resumeTimer();
 }
 watch(() => props.active, (active) => { if (active) resumeTimer(); else pauseTimer(); });
+watch(() => props.reviewTarget, (target, previous) => {
+  if (!target) {
+    if (previous) { pauseTimer(); current.value = null; view.value = 'choose'; search.value = ''; }
+    return;
+  }
+  const assignment = reviewAssignment.value;
+  if (!assignment) return;
+  type.value = assignment.task.name.trim().split(/\s+/)[0].toUpperCase();
+  search.value = assignment.item.title;
+  const title = normalizeTitle(assignment.item.title);
+  const matching = entries.value.find((entry) => entry.source === 'library' && entry.examType === type.value && normalizeTitle(entry.title) === title)
+    || entries.value.find((entry) => entry.examType === type.value && normalizeTitle(entry.title) === title);
+  if (matching) startPractice(matching);
+  else { pauseTimer(); current.value = null; view.value = 'choose'; }
+}, { immediate: true });
 watch(() => props.data.recallTemplates, (templates) => {
   for (const examType of ['WE', 'SST'] as const) {
     const synced = templates?.[examType] || '';
@@ -207,7 +246,11 @@ watch(activeTemplate, (value) => {
   resultReady.value = false;
   if (!value.trim()) compareNonTemplate.value = false;
 });
-watch([selectedTaskId, saveDuration], () => {
+watch(selectedLinkedKey, (key) => {
+  const linkedTaskId = linkOptions.value.find((option) => option.key === key)?.taskId;
+  if (linkedTaskId && matchingTodayTasks.value.some((task) => task.id === linkedTaskId)) selectedTaskId.value = linkedTaskId;
+});
+watch([selectedTaskId, selectedLinkedKey, saveDuration], () => {
   if (saveError.value) { saveError.value = false; saveStatus.value = '选择熟练度后，可保存本次练习。'; }
 });
 onMounted(() => { interval = window.setInterval(() => { if (timerStartedAt.value !== null) clock.value = Date.now(); }, 500); });
@@ -294,55 +337,128 @@ function submitPractice() {
   pauseTimer();
   durationSeconds.value = checkTimer.value ? Math.max(1, Math.ceil(timerAccumulated.value / 1000)) : 0;
   saveDuration.value = durationSeconds.value > 0;
-  selectedLevel.value = familiarity.value[current.value.key]?.level || '生';
-  selectedLinkedKey.value = familiarity.value[current.value.key]?.linkedKey || '';
+  selectedLevel.value = reviewAssignment.value?.item.familiarity || familiarity.value[current.value.key]?.level || '生';
+  const exactLinks = linkOptions.value.filter((option) => normalizeTitle(option.title) === normalizeTitle(current.value!.title));
+  const todayLinks = exactLinks.filter((option) => props.todayTaskIds.includes(option.taskId));
+  selectedLinkedKey.value = reviewAssignment.value
+    ? `${reviewAssignment.value.task.id}:${reviewAssignment.value.item.id}`
+    : todayLinks.length === 1 ? todayLinks[0].key
+      : exactLinks.length === 1 ? exactLinks[0].key
+        : familiarity.value[current.value.key]?.linkedKey || '';
   const savedTaskId = familiarity.value[current.value.key]?.taskId;
-  selectedTaskId.value = matchingTodayTasks.value.some((task) => task.id === savedTaskId)
-    ? savedTaskId! : matchingTodayTasks.value.length === 1 ? matchingTodayTasks.value[0].id : '';
+  const linkedTaskId = linkOptions.value.find((option) => option.key === selectedLinkedKey.value)?.taskId;
+  selectedTaskId.value = matchingTodayTasks.value.some((task) => task.id === linkedTaskId)
+    ? linkedTaskId! : matchingTodayTasks.value.some((task) => task.id === savedTaskId)
+      ? savedTaskId!
+      : matchingTodayTasks.value.length === 1 ? matchingTodayTasks.value[0].id : '';
   resultReady.value = true;
   sessionSaved.value = false;
-  saveStatus.value = '选择熟练度后，可保存本次练习。';
+  saveStatus.value = reviewAssignment.value ? '保存后将完成当前复习篇目、记录复习用时并更新熟练度。' : '选择熟练度后，可保存本次练习。';
   saveError.value = false;
   goTo('result');
 }
 function saveSession() {
   if (!current.value || sessionSaved.value) return;
   const savedAt = new Date().toISOString();
-  const linked = linkOptions.value.find((item) => item.key === selectedLinkedKey.value);
-  const seconds = saveDuration.value ? durationSeconds.value : 0;
+  const review = reviewAssignment.value;
+  const linked = review ? null : linkOptions.value.find((item) => item.key === selectedLinkedKey.value);
+  const seconds = review ? Math.max(1, durationSeconds.value) : saveDuration.value ? durationSeconds.value : 0;
   const level = selectedLevel.value;
   const selectedTask = matchingTodayTasks.value.find((task) => task.id === selectedTaskId.value);
-  if (seconds > 0 && matchingTodayTasks.value.length > 0 && !selectedTask) {
+  if (props.reviewTarget && !review) {
+    saveStatus.value = '这条复习计划或篇目已不存在，请返回今日任务重新选择。';
+    saveError.value = true;
+    return;
+  }
+  if (!review && seconds > 0 && matchingTodayTasks.value.length > 0 && !selectedTask) {
     saveStatus.value = '请先选择本次用时归属的今日任务。';
+    saveError.value = true;
+    return;
+  }
+  if (!review && matchingTodayTasks.value.some((task) => task.trackingMode === 'itemized' && task.subItems.length > 0) && !linked) {
+    saveStatus.value = '请先选择对应的计划篇目，保存后会同步完成状态和熟练度。';
+    saveError.value = true;
+    return;
+  }
+  if (!review && linked && matchingTodayTasks.value.some((task) => task.trackingMode === 'itemized') && !props.todayTaskIds.includes(linked.taskId)) {
+    saveStatus.value = '请选择当前今日任务中的篇目，避免把默写结果记到其他任务。';
+    saveError.value = true;
+    return;
+  }
+  if (!review && linked && selectedTask && linked.taskId !== selectedTask.id) {
+    saveStatus.value = '用时归属任务与计划篇目不一致，请选择对应的今日任务。';
+    saveError.value = true;
+    return;
+  }
+  if (review?.plan.completedSubItemIds?.includes(review.item.id)) {
+    saveStatus.value = '这篇复习已完成，请返回复习任务选择下一篇。';
     saveError.value = true;
     return;
   }
   try {
     let next: StudyData = props.data;
-    if (seconds > 0 || linked) {
-      if (linked) next = { ...next, tasks: next.tasks.map((task) => task.id === linked.taskId ? {
-        ...task, subItems: task.subItems.map((item) => item.id === linked.subItemId ? { ...item, familiarity: level } : item),
-      } : task) };
-      if (seconds > 0) {
-        const date = todayIso();
-        const startAt = new Date(new Date(savedAt).getTime() - seconds * 1000).toISOString();
-        const entry: StudyTimeEntry = {
-          id: crypto.randomUUID(), date, taskId: selectedTask?.id || '', reviewPlanId: '',
-          taskName: selectedTask ? taskOptionLabel(selectedTask) : `${current.value.examType} 默写检查`, examType: current.value.examType,
-          durationSeconds: seconds, timeType: 'main', source: 'timer', note: `默写检查：${current.value.title}`,
-          startAt, endAt: savedAt, createdAt: savedAt,
-        };
-        next = { ...next, studyTimeEntries: [...next.studyTimeEntries, entry] };
+    if (review) {
+      const completedSubItemIds = [...new Set([...(review.plan.completedSubItemIds || []), review.item.id])];
+      const updatedPlan = { ...review.plan, completedSubItemIds, completed: completedSubItemIds.length };
+      const date = todayIso();
+      next = {
+        ...next,
+        tasks: next.tasks.map((task) => task.id === review.task.id ? {
+          ...task, subItems: task.subItems.map((item) => item.id === review.item.id ? { ...item, familiarity: level } : item),
+        } : task),
+        reviewPlans: { ...next.reviewPlans, [props.reviewTarget!.date]: next.reviewPlans[props.reviewTarget!.date].map((plan) => plan.id === review.plan.id ? updatedPlan : plan) },
+        reviewLogs: { ...next.reviewLogs, [date]: [...(next.reviewLogs[date] || []), {
+          id: crypto.randomUUID(), reviewPlanId: review.plan.id, taskId: review.task.id, taskName: review.task.name, amount: 1, createdAt: savedAt,
+        }] },
+      };
+    } else if (linked) {
+      const task = next.tasks.find((item) => item.id === linked.taskId);
+      const subItem = task?.subItems.find((item) => item.id === linked.subItemId);
+      if (!task || !subItem) throw new Error('关联篇目已不存在');
+      const date = todayIso();
+      const newlyCompleted = subItem.status !== 'done';
+      const subItems = task.subItems.map((item) => item.id === linked.subItemId ? {
+        ...item, familiarity: level,
+        status: newlyCompleted ? 'done' as const : item.status,
+        completedDate: newlyCompleted ? date : item.completedDate,
+        round: newlyCompleted ? Math.max(1, item.round || 0) : item.round,
+      } : item);
+      next = { ...next, tasks: next.tasks.map((item) => item.id === task.id ? { ...task, subItems } : item) };
+      if (newlyCompleted) {
+        const logs = next.dailyLogs[date] || [];
+        const subItemIds = subItems.filter((item) => item.completedDate === date).map((item) => item.id);
+        next = { ...next, dailyLogs: { ...next.dailyLogs, [date]: [
+          ...logs.filter((entry) => !isCurrentTaskProgressLog(task, entry)),
+          { taskId: task.id, count: subItemIds.length, subItemIds, progressCycle: task.progressCycle || 0 },
+        ] } };
       }
     }
-    const updated = { ...familiarity.value, [current.value.key]: { level, linkedKey: linked?.key || '', taskId: seconds > 0 ? selectedTask?.id || '' : familiarity.value[current.value.key]?.taskId || '', updatedAt: savedAt } };
-    localStorage.setItem(FAMILIARITY_KEY, JSON.stringify(updated));
+    if (seconds > 0) {
+      const date = todayIso();
+      const startAt = new Date(new Date(savedAt).getTime() - seconds * 1000).toISOString();
+      const timeTask = review?.task || selectedTask || next.tasks.find((task) => task.id === linked?.taskId);
+      const entry: StudyTimeEntry = {
+        id: crypto.randomUUID(), date, taskId: timeTask?.id || '', reviewPlanId: review?.plan.id || '',
+        taskName: timeTask ? taskOptionLabel(timeTask) : `${current.value.examType} 默写检查`, examType: current.value.examType,
+        durationSeconds: seconds, timeType: review ? 'review' : 'main', source: 'timer',
+        note: `${review ? '复习默写' : '默写检查'}：${current.value.title}`,
+        startAt, endAt: savedAt, createdAt: savedAt,
+      };
+      next = { ...next, studyTimeEntries: [...next.studyTimeEntries, entry] };
+    }
+    if (next !== props.data) props.saveProgress(next);
+    const updated = { ...familiarity.value, [current.value.key]: {
+      level, linkedKey: review ? `${review.task.id}:${review.item.id}` : linked?.key || '',
+      taskId: review?.task.id || selectedTask?.id || linked?.taskId || '', updatedAt: savedAt,
+    } };
+    try { localStorage.setItem(FAMILIARITY_KEY, JSON.stringify(updated)); } catch { /* The study progress already holds the linked familiarity. */ }
     familiarity.value = updated;
-    if (seconds > 0 || linked) props.saveProgress(next);
     sessionSaved.value = true;
-    saveStatus.value = seconds > 0
-      ? selectedTask ? `用时已计入「${taskOptionLabel(selectedTask)}」今日学习时长，熟练度已保存。` : '用时已计入题型统计；今日任务无对应项。熟练度已保存。'
-      : '本篇熟练度已保存。';
+    saveStatus.value = review
+      ? `本篇复习已完成，已记录 ${formatDuration(seconds)} 复习用时并更新熟练度。`
+      : linked
+        ? `计划篇目已${props.data.tasks.find((task) => task.id === linked.taskId)?.subItems.find((item) => item.id === linked.subItemId)?.status === 'done' ? '更新熟练度' : '标为完成并更新熟练度'}${seconds > 0 ? `，已记录 ${formatDuration(seconds)} 学习用时` : ''}。`
+        : seconds > 0 ? '用时已计入题型统计；熟练度已保存。' : '本篇熟练度已保存。';
     saveError.value = false;
   } catch {
     saveStatus.value = '保存失败，请检查浏览器存储空间后重试。';
@@ -366,8 +482,12 @@ function assignExistingTime(entry: StudyTimeEntry) {
 <template>
   <section class="page recall-page">
     <div class="recall-header">
-      <div><h2>WE / SST 默写检查</h2><p>从答案库选择一篇答案，遮住原文默写，提交后查看遗漏与错误。</p></div>
+      <div><h2>背诵型默写检查</h2><p>从答案库选择一篇答案，遮住原文默写，提交后查看遗漏与错误。</p></div>
       <span class="recall-source">已读取现有答案库</span>
+    </div>
+    <div v-if="reviewAssignment" class="recall-review-context" role="status">
+      <strong>复习默写：{{ reviewAssignment.item.title }}</strong>
+      <span>保存后会完成这篇复习、记录复习用时并更新计划篇目的熟练度。</span>
     </div>
     <div class="recall-steps" aria-label="默写流程">
       <button type="button" :class="{ active: view === 'choose', done: view !== 'choose' }" @click="goTo('choose')"><span>1</span>选择文章</button>
@@ -378,14 +498,14 @@ function assignExistingTime(entry: StudyTimeEntry) {
     <div v-if="view === 'choose'" class="recall-card recall-choose">
       <div class="recall-section-head">
         <div><h3>选择一篇答案</h3><p>答案内容统一在答案库维护；旧版本地答案仍可只读默写。</p></div>
-        <div class="recall-head-actions"><div class="recall-segmented" aria-label="题型筛选"><button v-for="examType in (['WE', 'SST'] as const)" :key="examType" type="button" :class="{ active: type === examType }" :aria-pressed="type === examType" @click="type = examType">{{ examType }}</button></div></div>
+        <div class="recall-head-actions"><div class="recall-segmented" aria-label="题型筛选"><button v-for="examType in recallTypes" :key="examType" type="button" :class="{ active: type === examType }" :aria-pressed="type === examType" :disabled="Boolean(reviewAssignment) && type !== examType" @click="type = examType">{{ examType }}</button></div></div>
       </div>
-      <div class="recall-template-setup">
+      <div v-if="selectedTemplateType" class="recall-template-setup">
         <h4>{{ type }} 通用默写模板</h4>
         <p>保留完整的固定文字，把需要默写的内容写成 <code>【】</code>。例如 <code>Nowadays, the topic of 【】 has become a widely discussed issue.</code>。模板对所有 {{ type }} 文章通用；练习时关闭“仅对比非模板部分”即可校验全文。</p>
         <label :for="`recall-template-${type}`">{{ type }} 通用模板</label>
-        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[type]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="markTemplateEdited(type)"></textarea>
-        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[type], pending: templateDirty[type] && !templateSaveError[type] }" role="status">{{ templateSaveStatus[type] || '编辑完成后点击“保存模板”；保存后随现有云端同步。' }}</span><button class="recall-secondary" type="button" :disabled="!templateDirty[type]" @click="saveTemplate(type)">保存模板</button></div>
+        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[selectedTemplateType]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="markTemplateEdited(selectedTemplateType)"></textarea>
+        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[selectedTemplateType], pending: templateDirty[selectedTemplateType] && !templateSaveError[selectedTemplateType] }" role="status">{{ templateSaveStatus[selectedTemplateType] || '编辑完成后点击“保存模板”；保存后随现有云端同步。' }}</span><button class="recall-secondary" type="button" :disabled="!templateDirty[selectedTemplateType]" @click="saveTemplate(selectedTemplateType)">保存模板</button></div>
       </div>
       <div class="recall-toolbar"><input v-model="search" type="search" placeholder="搜索标题、题目或答案内容" aria-label="搜索答案"><span>共 {{ visibleEntries.length }} 篇</span></div>
       <div v-if="visibleEntries.length" class="recall-list">
@@ -394,7 +514,7 @@ function assignExistingTime(entry: StudyTimeEntry) {
           <div class="recall-entry-actions"><button class="recall-primary" type="button" @click="startPractice(entry)">开始默写</button></div>
         </article>
       </div>
-      <div v-else class="recall-empty">还没有符合条件的答案。请先在答案库录入答案。</div>
+      <div v-else class="recall-empty">{{ reviewAssignment ? '未找到符合搜索条件的同名答案。请清空搜索，或先在答案库录入同名答案。' : '还没有符合条件的答案。请先在答案库录入答案。' }}</div>
       <section v-if="unassignedRecallEntries.length" class="recall-unassigned">
         <h3>待归属的默写用时</h3>
         <p>今天已保存的这些用时还没有对应任务。选择平台后，可补到“今日任务”的相应行。</p>
@@ -415,7 +535,7 @@ function assignExistingTime(entry: StudyTimeEntry) {
 
     <div v-else-if="view === 'write' && current" class="recall-practice-grid">
       <div class="recall-card recall-practice"><div class="recall-practice-title"><span class="recall-badge" :class="{ sst: current.examType === 'SST' }">{{ current.examType }}</span><h3>{{ current.title }}</h3></div><p v-if="current.question" class="recall-prompt">题目：{{ current.question }}</p><p class="recall-muted">标准答案已隐藏</p>
-        <div class="recall-options"><label class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? '开启后只默写【】中的内容' : '可在第一步录入通用模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
+        <div class="recall-options"><label v-if="current.examType === 'WE' || current.examType === 'SST'" class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? '开启后只默写【】中的内容' : '可在第一步录入通用模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" :disabled="Boolean(reviewAssignment)" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
         <template v-if="compareNonTemplate">
           <p class="recall-template-status" :class="{ error: templateMatch.error }" role="status">{{ templateMatch.error || `按模板顺序填写 ${templateMatch.slots.length} 处空位，每行对应一处；跳过中间空位时请保留空行。` }}</p>
           <button v-if="templateMatch.error" class="recall-secondary" type="button" @click="goTo('choose')">返回第一步修改通用模板</button>
@@ -436,9 +556,9 @@ function assignExistingTime(entry: StudyTimeEntry) {
       <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>{{ resultMode === 'slots' ? '仅对比非模板部分；' : '对比完整答案；' }}忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span v-if="!details.length" class="correct">{{ resultMode === 'slots' ? '检查部分完全一致' : '完全一致' }}</span></div></div>
       <div v-for="(part, partIndex) in resultParts" :key="partIndex" class="recall-result-part"><h3 v-if="part.label">{{ part.label }}</h3><div class="recall-compare"><div class="recall-card recall-compare-panel"><h3>{{ resultMode === 'slots' ? '标准内容' : '标准答案' }}</h3><p>橙色：遗漏　红色：写错</p><div class="recall-answer"><span v-for="(segment, index) in part.referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div><div class="recall-card recall-compare-panel"><h3>我的默写</h3><p>红色：写错　紫色：多写</p><div class="recall-answer"><span v-for="(segment, index) in part.writtenSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div></div></div>
       <div class="recall-card recall-details"><h3>需要回看的地方</h3><div v-if="details.length"><span v-for="(detail, index) in details" :key="index" :class="detail.kind">{{ detail.kind === 'missing' ? '遗漏' : detail.kind === 'wrong' ? '错误' : '多写' }}：{{ detail.text }}</span></div><p v-else>没有发现遗漏或错误。</p></div>
-      <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>可选择将用时计入题型学习时长，并记录这篇答案的熟练度。</p></div><span>{{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
-        <label v-if="durationSeconds" class="recall-switch recall-save-time"><input v-model="saveDuration" type="checkbox" role="switch" :disabled="sessionSaved"><span class="track"></span><span><strong>将本次用时计入题型学习时长</strong><small>开启后可选择归属的今日任务</small></span></label>
-        <div v-if="durationSeconds && saveDuration" class="recall-task-choice">
+      <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>{{ reviewAssignment ? '保存时完成当前复习篇目，并自动记录复习用时与熟练度。' : '可选择将用时计入题型学习时长，并同步完成对应的计划篇目。' }}</p></div><span>{{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
+        <label v-if="durationSeconds && !reviewAssignment" class="recall-switch recall-save-time"><input v-model="saveDuration" type="checkbox" role="switch" :disabled="sessionSaved"><span class="track"></span><span><strong>将本次用时计入题型学习时长</strong><small>开启后可选择归属的今日任务</small></span></label>
+        <div v-if="durationSeconds && saveDuration && !reviewAssignment" class="recall-task-choice">
           <label v-if="matchingTodayTasks.length" for="recall-today-task">用时归属的今日任务</label>
           <select v-if="matchingTodayTasks.length" id="recall-today-task" v-model="selectedTaskId" :disabled="sessionSaved" :required="matchingTodayTasks.length > 1">
             <option value="" disabled>请选择对应任务</option>
@@ -447,15 +567,18 @@ function assignExistingTime(entry: StudyTimeEntry) {
           <p v-if="matchingTodayTasks.length">保存后，用时会显示在所选任务的“今日已学”下方。</p>
           <p v-else>今日任务没有进行中的 {{ current.examType }} 项；用时将只计入题型统计。</p>
         </div>
-        <div class="recall-save-grid"><div><span class="recall-field-label">选择熟练度</span><div class="recall-levels" role="radiogroup" aria-label="熟练度"><label v-for="level in levels" :key="level"><input v-model="selectedLevel" type="radio" name="recall-familiarity" :value="level" :disabled="sessionSaved"><span>{{ level }}</span></label></div></div><label v-if="linkOptions.length" class="recall-link"><span>同步到计划篇目（可选）</span><select v-model="selectedLinkedKey" :disabled="sessionSaved"><option value="">仅记录本篇熟练度</option><option v-for="option in linkOptions" :key="option.key" :value="option.key">{{ option.label }}</option></select></label></div>
+        <div class="recall-save-grid"><div><span class="recall-field-label">选择熟练度</span><div class="recall-levels" role="radiogroup" aria-label="熟练度"><label v-for="level in levels" :key="level"><input v-model="selectedLevel" type="radio" name="recall-familiarity" :value="level" :disabled="sessionSaved"><span>{{ level }}</span></label></div></div><label v-if="linkOptions.length && !reviewAssignment" class="recall-link"><span>同步完成计划篇目</span><select v-model="selectedLinkedKey" :disabled="sessionSaved"><option value="">选择对应篇目</option><option v-for="option in linkOptions" :key="option.key" :value="option.key">{{ option.label }}</option></select></label></div>
         <div class="recall-save-foot"><span :class="{ error: saveError }" role="status">{{ saveStatus }}</span><button class="recall-primary" type="button" :disabled="sessionSaved" @click="saveSession">{{ sessionSaved ? '已保存' : '保存本次练习' }}</button></div>
       </div>
-      <div class="recall-bottom-actions"><button class="recall-text" type="button" @click="goTo('choose')">← 选择其他文章</button><button class="recall-primary" type="button" @click="startPractice(current)">再默写一次</button></div>
+      <div v-if="reviewAssignment" class="recall-bottom-actions"><button class="recall-text" type="button" @click="emit('return-review')">← 返回今日任务</button><button v-if="sessionSaved && reviewRemainingCount > 0" class="recall-primary" type="button" @click="emit('advance-review')">默写下一篇</button></div>
+      <div v-else class="recall-bottom-actions"><button class="recall-text" type="button" @click="goTo('choose')">← 选择其他文章</button><button class="recall-primary" type="button" @click="startPractice(current)">再默写一次</button></div>
     </div>
   </section>
 </template>
 
 <style scoped>
+.recall-review-context{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:1180px;margin:0 auto 18px;padding:12px 16px;border:1px solid #d9c4ff;border-radius:9px;background:#f8f3ff;color:#614396;font-size:13px}
+.recall-review-context span{color:#74678d}
 .recall-page{--ink:#221f2a;--muted:#746f7a;--line:#eee4e5;min-width:0;padding:36px clamp(22px,4vw,54px) 48px;color:var(--ink);background:#faf8f6}
 .recall-page h2,.recall-page h3,.recall-page p{margin:0}.recall-page button{font-weight:500}.recall-page strong,.recall-page b,.recall-page h2,.recall-page h3{font-weight:500}.recall-page input,.recall-page textarea,.recall-page select{font:inherit;font-weight:400}.recall-page button:disabled{opacity:.55;cursor:not-allowed}
 .recall-header,.recall-steps,.recall-choose,.recall-practice-grid,.recall-result{max-width:1180px;margin-left:auto;margin-right:auto}
