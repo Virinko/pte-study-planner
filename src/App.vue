@@ -5817,42 +5817,44 @@ function taskLastStudyDate(task: Task) {
             </div>
             <p v-else class="muted">今天没有待复习任务。可以手动添加，或使用昨天登记的明日复习。</p>
           </section>
-          <section>
-            <h3>明日复习计划</h3>
-            <div v-if="tomorrowReviewPlans.length" class="review-list compact">
-              <article v-for="plan in tomorrowReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
-                <div>
-                  <strong>{{ reviewPlanTaskName(plan) }}</strong>
-                  <small>{{ plan.sourceDate === todayIso() ? '今日登记给明天' : `${plan.sourceDate} 登记` }}</small>
-                </div>
-                <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
-                  <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
-                </div>
-                <label v-if="!isItemizedReviewPlan(plan)" class="review-target-input">计划
-                  <input type="number" min="0" :value="plan.target" @input="setReviewTarget(addDays(todayIso(), 1), plan, ($event.target as HTMLInputElement).value)">
-                </label>
-                <span v-else class="review-itemized-count">{{ plan.target }} 篇</span>
-                <button class="icon-button" type="button" @click="deleteReviewPlan(addDays(todayIso(), 1), plan.id)">删除</button>
-              </article>
-            </div>
-            <p v-else class="muted">还没有登记明日复习量。完成主任务后可在任务下方登记。</p>
-          </section>
-          <section v-if="futureReviewPlans.length">
-            <h3>后续复习计划</h3>
-            <div class="review-list compact">
-              <article v-for="plan in futureReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
-                <div>
-                  <strong>{{ reviewPlanTaskName(plan) }}</strong>
-                  <small>{{ plan.dueDate }}</small>
-                </div>
-                <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
-                  <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
-                </div>
-                <span class="review-itemized-count">{{ plan.target }} {{ isItemizedReviewPlan(plan) ? '篇' : '题' }}</span>
-                <button class="icon-button" type="button" @click="deleteReviewPlan(plan.dueDate, plan.id)">删除</button>
-              </article>
-            </div>
-          </section>
+          <div class="review-upcoming-column">
+            <section>
+              <h3>明日复习计划</h3>
+              <div v-if="tomorrowReviewPlans.length" class="review-list compact">
+                <article v-for="plan in tomorrowReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
+                  <div>
+                    <strong>{{ reviewPlanTaskName(plan) }}</strong>
+                    <small>{{ plan.sourceDate === todayIso() ? '今日登记给明天' : `${plan.sourceDate} 登记` }}</small>
+                  </div>
+                  <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
+                    <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
+                  </div>
+                  <label v-if="!isItemizedReviewPlan(plan)" class="review-target-input">计划
+                    <input type="number" min="0" :value="plan.target" @input="setReviewTarget(addDays(todayIso(), 1), plan, ($event.target as HTMLInputElement).value)">
+                  </label>
+                  <span v-else class="review-itemized-count">{{ plan.target }} 篇</span>
+                  <button class="icon-button" type="button" @click="deleteReviewPlan(addDays(todayIso(), 1), plan.id)">删除</button>
+                </article>
+              </div>
+              <p v-else class="muted">还没有登记明日复习量。完成主任务后可在任务下方登记。</p>
+            </section>
+            <section v-if="futureReviewPlans.length">
+              <h3>后续复习计划</h3>
+              <div class="review-list compact">
+                <article v-for="plan in futureReviewPlans" :key="plan.id" :class="{ 'tomorrow-itemized-review-row': isItemizedReviewPlan(plan) }">
+                  <div>
+                    <strong>{{ reviewPlanTaskName(plan) }}</strong>
+                    <small>{{ plan.dueDate }}</small>
+                  </div>
+                  <div v-if="isItemizedReviewPlan(plan)" class="tomorrow-review-items">
+                    <span v-for="item in reviewPlanSubItems(plan)" :key="item.id">{{ item.title }}</span>
+                  </div>
+                  <span class="review-itemized-count">{{ plan.target }} {{ isItemizedReviewPlan(plan) ? '篇' : '题' }}</span>
+                  <button class="icon-button" type="button" @click="deleteReviewPlan(plan.dueDate, plan.id)">删除</button>
+                </article>
+              </div>
+            </section>
+          </div>
         </div>
       </section>
 

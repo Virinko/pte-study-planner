@@ -5431,11 +5431,20 @@ nav button.active::after {
   margin-bottom: 10px;
 }
 
-.review-columns > section + section {
+.review-upcoming-column {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 22px;
   padding-top: 0;
   padding-left: 22px;
   border-top: 0;
   border-left: 1px solid #e6edf6;
+}
+
+.review-upcoming-column > section + section {
+  padding-top: 16px;
+  border-top: 1px solid #e6edf6;
 }
 
 .review-add-form {
@@ -7559,7 +7568,7 @@ nav button.active::after {
     grid-template-columns: 1fr;
   }
 
-  .review-columns > section + section {
+  .review-upcoming-column {
     padding-top: 16px;
     padding-left: 0;
     border-top: 1px solid #e6edf6;
