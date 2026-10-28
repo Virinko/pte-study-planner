@@ -4730,6 +4730,52 @@ nav button.active::after {
   color: #667389;
 }
 
+.today-task-group {
+  min-width: 0;
+  padding: 18px 18px 8px;
+  border: 1px solid #e2e9f4;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.today-task-group + .today-task-group {
+  margin-top: 20px;
+}
+
+.today-task-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  padding: 0 2px 12px;
+}
+
+.today-task-group-heading h3 {
+  color: #2e3146;
+  font-size: 18px;
+}
+
+.today-task-group-heading p {
+  margin-top: 4px;
+  color: #667389;
+  font-size: 12px;
+}
+
+.today-task-group-heading > span {
+  color: #667389;
+  font-size: 13px;
+}
+
+.today-task-group-speaking {
+  border-color: #e5d9f6;
+}
+
+.today-task-group .today-table .dashboard-table-head,
+.today-task-group .today-table .dashboard-table-row {
+  min-width: 1080px;
+}
+
 .today-footer {
   display: flex;
   gap: 28px;

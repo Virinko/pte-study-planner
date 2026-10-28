@@ -58,6 +58,7 @@ const taskPriorityOptions = Object.values(taskScoreRows.reduce<Record<string, { 
 }, {})).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 const taskPriorityByName = new Map(taskPriorityOptions.map((item) => [item.name, item]));
 const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => [item.name, index]));
+const speakingExamTypes = new Set(['RA', 'RS', 'DI', 'RL', 'ASQ', 'SGD', 'RTS']);
 const examTypeOptions = taskPriorityOptions.map((item) => item.name);
 const noteExamTypeOptions = ['综合', ...examTypeOptions];
 const trackingModes: { value: TrackingMode; label: string }[] = [
@@ -1138,6 +1139,14 @@ const todayTaskRows = computed(() => todayTasks.value.map((task, index) => {
 }).sort((a, b) => b.priorityScore - a.priorityScore || a.priorityRank - b.priorityRank || a.sourceIndex - b.sourceIndex));
 const completedOverallTaskRows = computed(() => todayTaskRows.value.filter((task) => isTaskCompletedOverall(task) && !task.canUndoTodayCompletion));
 const activeTodayTaskRows = computed(() => todayTaskRows.value.filter((task) => !isTaskCompletedOverall(task) || task.canUndoTodayCompletion));
+const todayTaskGroups = computed(() => [
+  { key: 'other', title: '非口语题型', rows: activeTodayTaskRows.value.filter((task) => !speakingExamTypes.has(task.initials)) },
+  { key: 'speaking', title: '口语题型', rows: activeTodayTaskRows.value.filter((task) => speakingExamTypes.has(task.initials)) },
+].map((group) => ({
+  ...group,
+  target: group.rows.reduce((sum, task) => sum + task.dailyTarget, 0),
+  completed: group.rows.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0),
+})));
 const todayPomodoroTasks = computed(() => activeTodayTaskRows.value.filter((task) => task.target > 0));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
 const todayTarget = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + task.dailyTarget, 0));
@@ -5506,175 +5515,184 @@ function taskLastStudyDate(task: Task) {
           <div class="mock-day-actions"><button v-for="exam in todayMockExams" :key="exam.id" class="mock-complete-button" :class="{ completed: exam.completed }" type="button" @click="toggleMockExam(exam.phaseId, exam.id)"><Sparkles :size="17" />{{ exam.completed ? '模考已完成' : '标记模考完成' }}</button></div>
         </section>
 
-        <div class="dashboard-table today-table">
-          <div class="dashboard-table-head">
-            <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>当前进度</span><span>状态</span><span>操作</span>
-          </div>
-          <template v-for="task in activeTodayTaskRows" :key="task.id">
-            <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
-              <strong class="task-name-cell">
-                <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
-                <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
-              </strong>
-              <span class="timer-entry-cell">
-                <button class="timer-entry-button" :class="{ 'is-running': isTimerRunning('task', task.id), 'is-paused': isTimerPaused('task', task.id) }" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
-                <small v-if="savedTimeSeconds('task', task.id) > 0">今日已学 {{ formatDurationText(savedTimeSeconds('task', task.id)) }}</small>
-              </span>
-              <span class="daily-target-cell">
-                {{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}
-              </span>
-              <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
-                <span class="progress-meta">
-                  <strong v-if="task.trackingMode === 'itemized'">今日已完成 {{ task.todayCompleted }} / {{ task.dailyTarget }} 篇</strong>
-                  <strong v-else>{{ task.todayCompleted }} / {{ task.dailyTarget }}</strong>
-                  <b>{{ task.todayPercent }}%</b>
-                </span>
-                <span class="progress-track"><i :style="{ width: `${task.todayPercent}%`, background: task.accent }" /></span>
-                <small class="progress-support-text">今日剩余 {{ Math.max(0, task.dailyTarget - task.todayCompleted) }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</small>
-              </span>
-              <span class="today-progress-cell overall-progress-cell">
-                <span class="progress-meta">
-                  <strong>{{ task.summaryCompleted }} / {{ task.summaryTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
-                  <b>{{ task.summaryPercent }}%</b>
-                </span>
-                <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
-                <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text" :class="task.roundModeEnabled ? ['round-deadline-text', roundStageClass(task)] : undefined">{{ currentTaskRoundDeadline(task) }}</small>
-              </span>
-              <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
-              <span class="row-actions">
-                <button v-if="task.trackingMode === 'itemized'" class="itemized-open" type="button" @click="toggleItemizedDetails(task.id)">
-                  {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}
-                </button>
-                <span v-else class="manual-action-group">
-                  <span class="manual-stepper">
-                    <button type="button" @click="applyManualAmount(task, -1)">
-                      <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
-                    </button>
-                    <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
-                    <button type="button" @click="applyManualAmount(task, 1)">
-                      <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
-                    </button>
-                  </span>
-                  <span class="manual-quick-buttons">
-                    <button type="button" @click="setManualAmountValue(task.id, 1)">1</button>
-                    <button type="button" @click="setManualAmountValue(task.id, 2)">2</button>
-                    <button
-                      class="complete-today-button"
-                      :class="{ 'is-undo': task.canUndoTodayCompletion }"
-                      type="button"
-                      :disabled="!task.canUndoTodayCompletion && (task.doneToday || task.dailyTarget <= 0)"
-                      :title="task.canUndoTodayCompletion ? `恢复到一键完成前（撤销 ${task.todayCompletionUndoAmount}）` : task.doneToday ? '今日目标已完成' : `一键完成今日目标（补 ${task.remainingToday}）`"
-                      :aria-label="task.canUndoTodayCompletion ? `恢复到一键完成前，撤销 ${task.todayCompletionUndoAmount}` : task.doneToday ? '今日目标已完成' : `一键完成今日目标，还需完成 ${task.remainingToday}`"
-                      @click="task.canUndoTodayCompletion ? undoTodayTargetCompletion(task) : completeTodayTarget(task)"
-                    >
-                      <RotateCcw v-if="task.canUndoTodayCompletion" :size="15" stroke-width="2.7" aria-hidden="true" />
-                      <Check v-else :size="15" stroke-width="2.8" aria-hidden="true" />
-                    </button>
-                  </span>
-                  <button v-if="task.roundModeEnabled && task.roundCompleted >= task.roundTarget" class="round-complete-button" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
-                </span>
-              </span>
+        <section v-for="group in todayTaskGroups" :key="group.key" class="today-task-group" :class="`today-task-group-${group.key}`" :aria-labelledby="`today-task-group-${group.key}-title`">
+          <div class="today-task-group-heading">
+            <div>
+              <h3 :id="`today-task-group-${group.key}-title`">{{ group.title }}</h3>
+              <p>{{ group.rows.length }} 项任务</p>
             </div>
-            <div v-if="task.trackingMode === 'itemized' && isItemizedExpanded(task.id)" class="today-itemized-panel">
-              <section>
-                <h3>完成详情</h3>
-                <div class="done-section-title">
-                  <strong>今日完成</strong>
-                  <span>{{ todayDoneItems(task).length }} 篇</span>
-                </div>
-                <div v-if="todayDoneItems(task).length" class="today-done-items">
-                  <article v-for="item in todayDoneItems(task)" :key="item.id">
-                    <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
-                    <strong>{{ item.title }}</strong>
-                    <b>{{ item.familiarity }}</b>
-                    <label class="done-review-picker">
-                      <input
-                        type="checkbox"
-                        :checked="isReviewSubItemSelected(task.id, item.id)"
-                        @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
+            <span v-if="group.rows.length">今日进度 {{ group.completed }} / {{ group.target }} 题/篇</span>
+          </div>
+          <div v-if="group.rows.length" class="dashboard-table today-table">
+            <div class="dashboard-table-head">
+              <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>当前进度</span><span>状态</span><span>操作</span>
+            </div>
+            <template v-for="task in group.rows" :key="task.id">
+              <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
+                <strong class="task-name-cell">
+                  <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
+                  <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
+                </strong>
+                <span class="timer-entry-cell">
+                  <button class="timer-entry-button" :class="{ 'is-running': isTimerRunning('task', task.id), 'is-paused': isTimerPaused('task', task.id) }" type="button" @click="openTimer('task', task.id, taskDisplayName(task))">{{ timerEntryLabel('task', task.id) }}</button>
+                  <small v-if="savedTimeSeconds('task', task.id) > 0">今日已学 {{ formatDurationText(savedTimeSeconds('task', task.id)) }}</small>
+                </span>
+                <span class="daily-target-cell">
+                  {{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}
+                </span>
+                <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
+                  <span class="progress-meta">
+                    <strong v-if="task.trackingMode === 'itemized'">今日已完成 {{ task.todayCompleted }} / {{ task.dailyTarget }} 篇</strong>
+                    <strong v-else>{{ task.todayCompleted }} / {{ task.dailyTarget }}</strong>
+                    <b>{{ task.todayPercent }}%</b>
+                  </span>
+                  <span class="progress-track"><i :style="{ width: `${task.todayPercent}%`, background: task.accent }" /></span>
+                  <small class="progress-support-text">今日剩余 {{ Math.max(0, task.dailyTarget - task.todayCompleted) }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</small>
+                </span>
+                <span class="today-progress-cell overall-progress-cell">
+                  <span class="progress-meta">
+                    <strong>{{ task.summaryCompleted }} / {{ task.summaryTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</strong>
+                    <b>{{ task.summaryPercent }}%</b>
+                  </span>
+                  <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
+                  <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text" :class="task.roundModeEnabled ? ['round-deadline-text', roundStageClass(task)] : undefined">{{ currentTaskRoundDeadline(task) }}</small>
+                </span>
+                <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
+                <span class="row-actions">
+                  <button v-if="task.trackingMode === 'itemized'" class="itemized-open" type="button" @click="toggleItemizedDetails(task.id)">
+                    {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}
+                  </button>
+                  <span v-else class="manual-action-group">
+                    <span class="manual-stepper">
+                      <button type="button" @click="applyManualAmount(task, -1)">
+                        <Minus :size="16" stroke-width="2.6" aria-hidden="true" />
+                      </button>
+                      <input class="manual-input" type="number" min="0" :value="manualAmount(task.id)" @input="setManualAmount(task.id, ($event.target as HTMLInputElement).value)">
+                      <button type="button" @click="applyManualAmount(task, 1)">
+                        <Plus :size="16" stroke-width="2.6" aria-hidden="true" />
+                      </button>
+                    </span>
+                    <span class="manual-quick-buttons">
+                      <button type="button" @click="setManualAmountValue(task.id, 1)">1</button>
+                      <button type="button" @click="setManualAmountValue(task.id, 2)">2</button>
+                      <button
+                        class="complete-today-button"
+                        :class="{ 'is-undo': task.canUndoTodayCompletion }"
+                        type="button"
+                        :disabled="!task.canUndoTodayCompletion && (task.doneToday || task.dailyTarget <= 0)"
+                        :title="task.canUndoTodayCompletion ? `恢复到一键完成前（撤销 ${task.todayCompletionUndoAmount}）` : task.doneToday ? '今日目标已完成' : `一键完成今日目标（补 ${task.remainingToday}）`"
+                        :aria-label="task.canUndoTodayCompletion ? `恢复到一键完成前，撤销 ${task.todayCompletionUndoAmount}` : task.doneToday ? '今日目标已完成' : `一键完成今日目标，还需完成 ${task.remainingToday}`"
+                        @click="task.canUndoTodayCompletion ? undoTodayTargetCompletion(task) : completeTodayTarget(task)"
                       >
-                      复习
-                    </label>
-                  </article>
-                </div>
-                <p v-else class="muted">今天还没有选择完成篇目。</p>
-                <details v-if="historicalDoneCount(task) > 0" class="history-done">
-                  <summary>
-                    <ChevronRight class="summary-icon" :size="16" stroke-width="2.6" aria-hidden="true" />
-                    <span>此前已完成 {{ historicalDoneCount(task) }} 篇</span>
-                  </summary>
-                  <div v-for="group in historicalDoneGroups(task)" :key="group.date" class="history-done-group">
-                    <time>{{ group.date }}</time>
-                    <div class="today-done-items compact">
-                      <article v-for="item in group.items" :key="item.id">
-                        <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
-                        <strong>{{ item.title }}</strong>
-                        <b>{{ item.familiarity }}</b>
-                        <label class="done-review-picker">
-                          <input
-                            type="checkbox"
-                            :checked="isReviewSubItemSelected(task.id, item.id)"
-                            @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
-                          >
-                          复习
-                        </label>
-                      </article>
+                        <RotateCcw v-if="task.canUndoTodayCompletion" :size="15" stroke-width="2.7" aria-hidden="true" />
+                        <Check v-else :size="15" stroke-width="2.8" aria-hidden="true" />
+                      </button>
+                    </span>
+                    <button v-if="task.roundModeEnabled && task.roundCompleted >= task.roundTarget" class="round-complete-button" type="button" @click="openRoundAdvance(task)">{{ task.roundStage === 3 ? '进入第 4 轮' : '完成本轮' }}</button>
+                  </span>
+                </span>
+              </div>
+              <div v-if="task.trackingMode === 'itemized' && isItemizedExpanded(task.id)" class="today-itemized-panel">
+                <section>
+                  <h3>完成详情</h3>
+                  <div class="done-section-title">
+                    <strong>今日完成</strong>
+                    <span>{{ todayDoneItems(task).length }} 篇</span>
+                  </div>
+                  <div v-if="todayDoneItems(task).length" class="today-done-items">
+                    <article v-for="item in todayDoneItems(task)" :key="item.id">
+                      <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
+                      <strong>{{ item.title }}</strong>
+                      <b>{{ item.familiarity }}</b>
+                      <label class="done-review-picker">
+                        <input
+                          type="checkbox"
+                          :checked="isReviewSubItemSelected(task.id, item.id)"
+                          @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
+                        >
+                        复习
+                      </label>
+                    </article>
+                  </div>
+                  <p v-else class="muted">今天还没有选择完成篇目。</p>
+                  <details v-if="historicalDoneCount(task) > 0" class="history-done">
+                    <summary>
+                      <ChevronRight class="summary-icon" :size="16" stroke-width="2.6" aria-hidden="true" />
+                      <span>此前已完成 {{ historicalDoneCount(task) }} 篇</span>
+                    </summary>
+                    <div v-for="group in historicalDoneGroups(task)" :key="group.date" class="history-done-group">
+                      <time>{{ group.date }}</time>
+                      <div class="today-done-items compact">
+                        <article v-for="item in group.items" :key="item.id">
+                          <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
+                          <strong>{{ item.title }}</strong>
+                          <b>{{ item.familiarity }}</b>
+                          <label class="done-review-picker">
+                            <input
+                              type="checkbox"
+                              :checked="isReviewSubItemSelected(task.id, item.id)"
+                              @change="toggleReviewSubItem(task.id, item.id, ($event.target as HTMLInputElement).checked)"
+                            >
+                            复习
+                          </label>
+                        </article>
+                      </div>
+                    </div>
+                  </details>
+                  <div v-if="completedSubItems(task).length" class="itemized-review-actions review-register-actions">
+                    <span>已选 {{ selectedReviewItemIds(task.id).length }} 篇{{ selectedReviewItemIds(task.id).length ? '' : '，请勾选上方篇目' }}</span>
+                    <button class="review-register-cancel" type="button" @click="clearReviewSubItemSelection(task.id)">清空</button>
+                    <button class="review-register-save" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="openReviewCalendar(task)"><CalendarDays :size="16" aria-hidden="true" />安排复习日期</button>
+                  </div>
+                </section>
+                <section>
+                  <h3>快速选择（可多选）</h3>
+                  <div v-if="pendingSubItems(task).length > 0" class="quick-subitems">
+                    <div v-for="item in visibleSubItems(task)" :key="item.id" class="quick-subitem">
+                      <label>
+                        <input
+                          type="checkbox"
+                          :checked="false"
+                          @change="toggleTodaySubItem(task, item.id, ($event.target as HTMLInputElement).checked)"
+                        >
+                        {{ item.title }}
+                      </label>
+                      <label class="select-control compact-select">
+                        <select
+                          :value="item.familiarity"
+                          @change="updateTodaySubItemFamiliarity(task, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
+                        >
+                          <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
+                        </select>
+                        <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
+                      </label>
                     </div>
                   </div>
-                </details>
-                <div v-if="completedSubItems(task).length" class="itemized-review-actions review-register-actions">
-                  <span>已选 {{ selectedReviewItemIds(task.id).length }} 篇{{ selectedReviewItemIds(task.id).length ? '' : '，请勾选上方篇目' }}</span>
-                  <button class="review-register-cancel" type="button" @click="clearReviewSubItemSelection(task.id)">清空</button>
-                  <button class="review-register-save" type="button" :disabled="selectedReviewItemIds(task.id).length === 0" @click="openReviewCalendar(task)"><CalendarDays :size="16" aria-hidden="true" />安排复习日期</button>
-                </div>
-              </section>
-              <section>
-                <h3>快速选择（可多选）</h3>
-                <div v-if="pendingSubItems(task).length > 0" class="quick-subitems">
-                  <div v-for="item in visibleSubItems(task)" :key="item.id" class="quick-subitem">
-                    <label>
-                      <input
-                        type="checkbox"
-                        :checked="false"
-                        @change="toggleTodaySubItem(task, item.id, ($event.target as HTMLInputElement).checked)"
-                      >
-                      {{ item.title }}
-                    </label>
-                    <label class="select-control compact-select">
-                      <select
-                        :value="item.familiarity"
-                        @change="updateTodaySubItemFamiliarity(task, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
-                      >
-                        <option v-for="familiarity in familiarityOptions" :key="familiarity" :value="familiarity">{{ familiarity }}</option>
-                      </select>
-                      <ChevronDown class="select-control-icon" :size="15" stroke-width="2.4" aria-hidden="true" />
-                    </label>
-                  </div>
-                </div>
-                <p v-else-if="task.subItems.length === 0" class="muted">请先在计划设置中新增或批量导入篇目。</p>
-                <p v-else class="muted">所有篇目都已完成，可在左侧完成详情中查看或取消。</p>
-                <button v-if="pendingSubItems(task).length > 10" class="text-button" type="button" @click="toggleSubItemList(task.id)">
-                  {{ expandedSubItemLists[task.id] ? '收起' : `展开未完成（${pendingSubItems(task).length}）` }}
-                  <ChevronDown v-if="!expandedSubItemLists[task.id]" :size="15" stroke-width="2.4" aria-hidden="true" />
-                  <ChevronRight v-else :size="15" stroke-width="2.4" aria-hidden="true" />
-                </button>
-              </section>
-            </div>
-            <div v-if="shouldShowTomorrowReviewRegister(task)" class="review-register-panel">
-              <div>
-                <strong>登记明日复习量</strong>
-                <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
-                <span v-else>填入明天需要复习的错题量，不计入主任务进度。</span>
+                  <p v-else-if="task.subItems.length === 0" class="muted">请先在计划设置中新增或批量导入篇目。</p>
+                  <p v-else class="muted">所有篇目都已完成，可在左侧完成详情中查看或取消。</p>
+                  <button v-if="pendingSubItems(task).length > 10" class="text-button" type="button" @click="toggleSubItemList(task.id)">
+                    {{ expandedSubItemLists[task.id] ? '收起' : `展开未完成（${pendingSubItems(task).length}）` }}
+                    <ChevronDown v-if="!expandedSubItemLists[task.id]" :size="15" stroke-width="2.4" aria-hidden="true" />
+                    <ChevronRight v-else :size="15" stroke-width="2.4" aria-hidden="true" />
+                  </button>
+                </section>
               </div>
-              <div class="review-register-actions">
-                <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
-                <button class="review-register-cancel" type="button" @click="cancelTomorrowReviewRegistration(task)">取消</button>
-                <button class="review-register-save" type="button" @click="setTomorrowReview(task)">保存</button>
+              <div v-if="shouldShowTomorrowReviewRegister(task)" class="review-register-panel">
+                <div>
+                  <strong>登记明日复习量</strong>
+                  <span v-if="tomorrowReviewTargetForTask(task.id) > 0">已登记 {{ tomorrowReviewTargetForTask(task.id) }} 题</span>
+                  <span v-else>填入明天需要复习的错题量，不计入主任务进度。</span>
+                </div>
+                <div class="review-register-actions">
+                  <input type="number" min="0" :value="reviewAmount(task.id)" @input="setReviewAmount(task.id, ($event.target as HTMLInputElement).value)">
+                  <button class="review-register-cancel" type="button" @click="cancelTomorrowReviewRegistration(task)">取消</button>
+                  <button class="review-register-save" type="button" @click="setTomorrowReview(task)">保存</button>
+                </div>
               </div>
-            </div>
-          </template>
-          <div v-if="activeTodayTaskRows.length === 0" class="empty-row">今天还没有待完成任务。</div>
-        </div>
+            </template>
+          </div>
+          <p v-else class="empty-row">暂无待完成任务。</p>
+        </section>
 
         <div class="today-footer">
           <span>今日总任务量：{{ todayTarget }} 题/篇</span>
