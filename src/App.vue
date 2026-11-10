@@ -61,6 +61,26 @@ const taskPriorityRankByName = new Map(taskPriorityOptions.map((item, index) => 
 const speakingExamTypes = new Set(['RA', 'RS', 'DI', 'RL', 'ASQ', 'SGD', 'RTS']);
 const examTypeOptions = taskPriorityOptions.map((item) => item.name);
 const noteExamTypeOptions = ['综合', ...examTypeOptions];
+const answerTypeGroups = [
+  { name: '口语', color: '#A965C8', types: ['DI', 'RS', 'RA', 'RL', 'SGD', 'RTS', 'ASQ'] },
+  { name: '写作', color: '#D87945', types: ['WE', 'SWT'] },
+  { name: '听力', color: '#38AA86', types: ['SST', 'WFD', 'FIB-L', 'HIW'] },
+  { name: '阅读', color: '#2A93B8', types: ['FIB-R', 'FIB-RW', 'RP'] },
+];
+const answerTypeNames: Record<string, string> = {
+  DI: '描述图片', RS: '复述句子', RA: '朗读文本', RL: '复述讲座', SGD: '小组讨论',
+  RTS: '回应情境', ASQ: '简答题', WE: '议论文写作', SWT: '总结文本',
+  SST: '总结讲座', WFD: '听写句子', 'FIB-L': '听力填空', HIW: '标错词',
+  'FIB-R': '阅读填空', 'FIB-RW': '读写填空', RP: '段落排序',
+};
+const answerTypeEnglishNames: Record<string, string> = {
+  DI: 'Describe Image', RS: 'Repeat Sentence', RA: 'Read Aloud', RL: 'Retell Lecture',
+  SGD: 'Summarize Group Discussion', RTS: 'Respond to a Situation', ASQ: 'Answer Short Question',
+  WE: 'Write Essay', SWT: 'Summarize Written Text', SST: 'Summarize Spoken Text',
+  WFD: 'Write from Dictation', 'FIB-L': 'Listening: Fill in the Blanks',
+  HIW: 'Highlight Incorrect Words', 'FIB-R': 'Reading: Fill in the Blanks',
+  'FIB-RW': 'Reading & Writing: Fill in the Blanks', RP: 'Reorder Paragraph',
+};
 const trackingModes: { value: TrackingMode; label: string }[] = [
   { value: 'count_only', label: '只记数量' },
   { value: 'itemized', label: '记录篇目' },
@@ -760,12 +780,15 @@ const answerTitle = ref('');
 const answerQuestion = ref('');
 const answerContent = ref('');
 const editingAnswerId = ref('');
+const selectedAnswerType = ref('');
+const answerEditorOpen = ref(false);
+const answerTitleInput = ref<HTMLInputElement | null>(null);
 const answerSearch = ref('');
-const answerTypeFilter = ref('全部');
 const answerPlatformFilter = ref<'全部' | PracticePlatform>('全部');
 const answerManualSortMode = ref(false);
+const answerBulkMode = ref(false);
+const selectedAnswerIds = ref<string[]>([]);
 const draggingAnswerId = ref('');
-const exportAnswerType = ref('DI');
 const isExportingAnswersPdf = ref(false);
 const importTaskId = ref('');
 const importText = ref('');
@@ -824,7 +847,10 @@ const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
-watch(tab, (value) => { if (value !== 'recall') recallReviewTarget.value = null; });
+watch(tab, (value) => {
+  if (value !== 'recall') recallReviewTarget.value = null;
+  if (value !== 'answers') returnToAnswerTypes();
+});
 const reviewCalendarTask = computed(() => data.value.tasks.find((task) => task.id === reviewCalendarTaskId.value));
 const reviewCalendarDays = computed(() => {
   if (!reviewCalendarMonth.value) return [];
@@ -1025,25 +1051,37 @@ const noteRows = computed(() => Object.entries(data.value.dailyNotes || {})
   .flatMap(([date, notes]) => (notes || []).map((note) => ({ ...note, date: note.date || date })))
   .filter((note) => !isNoteContentEmpty(note.content))
   .sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+function compareAnswerOrder(a: AnswerEntry, b: AnswerEntry) {
+  const aOrder = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+  const bOrder = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+  return aOrder - bOrder || b.createdAt.localeCompare(a.createdAt);
+}
+
 const answerRows = computed(() => {
   const keyword = answerSearch.value.trim().toLocaleLowerCase();
   const rows = [...(data.value.answerEntries || [])]
-    .filter((entry) => answerTypeFilter.value === '全部' || entry.examType === answerTypeFilter.value)
+    .filter((entry) => entry.examType === selectedAnswerType.value)
     .filter((entry) => answerPlatformFilter.value === '全部' || entry.platformRefs.some((ref) => ref.platform === answerPlatformFilter.value))
     .filter((entry) => !keyword || [...entry.platformRefs.map((ref) => ref.questionNumber), entry.title, entry.question || '', entry.answer].some((value) => value.toLocaleLowerCase().includes(keyword)));
-  if (answerManualSortMode.value) {
-    return rows.sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER));
-  }
-  return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return rows.sort(compareAnswerOrder);
 });
 const answerExamTypeOptions = computed(() => [...new Set(['DI', 'RS', ...examTypeOptions, ...data.value.answerEntries.map((entry) => entry.examType)])]);
-const exportAnswerTypeOptions = computed(() => {
-  const savedTypes = new Set(data.value.answerEntries.map((entry) => entry.examType));
-  return answerExamTypeOptions.value.filter((type) => savedTypes.has(type));
+const answerTypeGroupsWithExtras = computed(() => {
+  const grouped = new Set(answerTypeGroups.flatMap((group) => group.types));
+  const extras = answerExamTypeOptions.value.filter((type) => !grouped.has(type));
+  return extras.length ? [...answerTypeGroups, { name: '其他', color: '#7D63C8', types: extras }] : answerTypeGroups;
 });
+const answerCountsByType = computed(() => data.value.answerEntries.reduce<Record<string, number>>((counts, entry) => {
+  counts[entry.examType] = (counts[entry.examType] || 0) + 1;
+  return counts;
+}, {}));
+const selectedAnswerCount = computed(() => answerCountsByType.value[selectedAnswerType.value] || 0);
 const exportAnswerRows = computed(() => {
-  const rows = [...data.value.answerEntries].filter((entry) => entry.examType === exportAnswerType.value);
-  return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const rows = [...data.value.answerEntries].filter((entry) => entry.examType === selectedAnswerType.value);
+  return rows.sort(compareAnswerOrder);
+});
+watch([answerSearch, answerPlatformFilter], () => {
+  if (answerBulkMode.value) selectedAnswerIds.value = [];
 });
 const todayDynamicTargetByTask = computed(() => buildTodayTargetSnapshot());
 const todayFrozenTargetByTask = computed(() => data.value.dailyTargets?.[currentDate.value] || {});
@@ -1787,7 +1825,7 @@ function buildStudyTypeBarChartOption(): EChartsCoreOption {
       formatter(params: unknown) {
         const data = (params as { data?: { type?: string; seconds?: number; color?: string; softColor?: string } }).data;
         if (!data?.type || typeof data.seconds !== 'number') return '';
-        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:${data.softColor};border-radius:999px;line-height:1.45;white-space:nowrap"><strong style="color:${data.color};font-size:16px;font-weight:700">${data.type}</strong><span style="color:#172033;font-size:14px;font-weight:400">${formatDurationCompact(data.seconds)}</span></div>`;
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:${data.softColor};border-radius:999px;line-height:1.45;white-space:nowrap"><strong style="color:${data.color};font-size:16px;font-weight:600">${data.type}</strong><span style="color:#172033;font-size:14px;font-weight:400">${formatDurationCompact(data.seconds)}</span></div>`;
       },
     },
     xAxis: {
@@ -1800,7 +1838,7 @@ function buildStudyTypeBarChartOption(): EChartsCoreOption {
         rotate: 28,
         margin: 14,
         fontSize: 12,
-        fontWeight: 700,
+        fontWeight: 600,
         color(value: string) {
           return rowByType.get(value)?.color || '#617087';
         },
@@ -1852,7 +1890,7 @@ function buildStudyTypePieChartOption(): EChartsCoreOption {
       subtext: rows.length ? `${studyTypeTimeRange.value === 'week' ? '本周' : '全部'}时长 · ${rows.length} 个题型` : '记录学习时长后显示分布',
       left: 'center',
       top: '42%',
-      textStyle: { color: '#51446f', fontSize: compact ? 15 : 18, fontWeight: 800 },
+      textStyle: { color: '#51446f', fontSize: compact ? 15 : 18, fontWeight: 600 },
       subtextStyle: { color: '#9186a6', fontSize: compact ? 10 : 12 },
       itemGap: 8,
     },
@@ -1873,7 +1911,7 @@ function buildStudyTypePieChartOption(): EChartsCoreOption {
       },
       textStyle: {
         rich: {
-          topic: { width: 66, color: '#51446f', fontSize: 12, fontWeight: 700 },
+          topic: { width: 66, color: '#51446f', fontSize: 12, fontWeight: 600 },
           duration: { color: '#9186a6', fontSize: 11 },
         },
       },
@@ -1910,7 +1948,7 @@ function buildStudyTypePieChartOption(): EChartsCoreOption {
         distanceToLabelLine: 5,
         formatter: '{name|{b}}',
         rich: {
-          name: { fontSize: compact ? 11 : 12, fontWeight: 800, lineHeight: 18 },
+          name: { fontSize: compact ? 11 : 12, fontWeight: 600, lineHeight: 18 },
         },
       },
       labelLine: { length: compact ? 8 : 15, length2: 8, smooth: .2, lineStyle: { width: 1.3 } },
@@ -1941,7 +1979,7 @@ function buildOverallProgressChartOption(): EChartsCoreOption {
       text: `${percent}%`,
       left: 'center',
       top: 'center',
-      textStyle: { color: '#172033', fontSize: 30, fontWeight: 800 },
+      textStyle: { color: '#172033', fontSize: 30, fontWeight: 600 },
     },
     tooltip: { show: false },
     series: [{
@@ -2106,10 +2144,6 @@ watch(overallPercent, () => {
 
 watch([() => data.value.settings.startDate, () => data.value.settings.deadline], () => {
   selectedStudyWeekNumber.value = currentPlanStudyWeekNumber.value;
-}, { immediate: true });
-
-watch(exportAnswerTypeOptions, (options) => {
-  if (!options.includes(exportAnswerType.value)) exportAnswerType.value = options[0] || '';
 }, { immediate: true });
 
 watch([phaseProgress, phase], () => {
@@ -4763,6 +4797,46 @@ function resetAnswerDraft(preserveExamType = false) {
   editingAnswerId.value = '';
 }
 
+function answerTypeStyle(type: string) {
+  return { '--answer-accent': taskTypeColor(type, answerExamTypeOptions.value.indexOf(type)) };
+}
+
+function selectAnswerType(type: string) {
+  selectedAnswerType.value = type;
+  answerExamType.value = type;
+  answerSearch.value = '';
+  answerPlatformFilter.value = '全部';
+  answerManualSortMode.value = false;
+  answerBulkMode.value = false;
+  selectedAnswerIds.value = [];
+  draggingAnswerId.value = '';
+  answerEditorOpen.value = false;
+  resetAnswerDraft(true);
+}
+
+function returnToAnswerTypes() {
+  selectedAnswerType.value = '';
+  answerEditorOpen.value = false;
+  answerManualSortMode.value = false;
+  answerBulkMode.value = false;
+  selectedAnswerIds.value = [];
+  draggingAnswerId.value = '';
+  resetAnswerDraft();
+}
+
+function openAnswerEditor() {
+  if (!selectedAnswerType.value) return;
+  resetAnswerDraft(true);
+  answerExamType.value = selectedAnswerType.value;
+  answerEditorOpen.value = true;
+  nextTick(() => answerTitleInput.value?.focus());
+}
+
+function closeAnswerEditor() {
+  answerEditorOpen.value = false;
+  resetAnswerDraft(true);
+}
+
 function nextAnswerSortOrder(examType: string) {
   const orders = data.value.answerEntries
     .filter((entry) => entry.examType === examType && typeof entry.sortOrder === 'number')
@@ -4776,13 +4850,36 @@ function toggleAnswerManualSort() {
     draggingAnswerId.value = '';
     return;
   }
-  if (answerTypeFilter.value === '全部') {
-    alert('请先选择一个题型，再调整该题型内的答案顺序。');
-    return;
-  }
+  if (!selectedAnswerType.value) return;
   answerSearch.value = '';
   answerPlatformFilter.value = '全部';
+  answerBulkMode.value = false;
+  selectedAnswerIds.value = [];
   answerManualSortMode.value = true;
+}
+
+function toggleAnswerBulkMode() {
+  answerBulkMode.value = !answerBulkMode.value;
+  selectedAnswerIds.value = [];
+  answerManualSortMode.value = false;
+  draggingAnswerId.value = '';
+}
+
+function toggleAnswerSelection(id: string) {
+  selectedAnswerIds.value = selectedAnswerIds.value.includes(id)
+    ? selectedAnswerIds.value.filter((selectedId) => selectedId !== id)
+    : [...selectedAnswerIds.value, id];
+}
+
+function deleteSelectedAnswers() {
+  const ids = new Set(selectedAnswerIds.value);
+  const selected = data.value.answerEntries.filter((entry) => entry.examType === selectedAnswerType.value && ids.has(entry.id));
+  if (!selected.length || !confirm('确定删除选中的 ' + selected.length + ' 条答案吗？此操作无法撤销。')) return;
+  const selectedIds = new Set(selected.map((entry) => entry.id));
+  saveLocal({ ...data.value, answerEntries: data.value.answerEntries.filter((entry) => !selectedIds.has(entry.id)) });
+  if (selectedIds.has(editingAnswerId.value)) closeAnswerEditor();
+  selectedAnswerIds.value = [];
+  answerBulkMode.value = false;
 }
 
 function startAnswerDrag(id: string, event: DragEvent) {
@@ -4790,7 +4887,7 @@ function startAnswerDrag(id: string, event: DragEvent) {
   event.dataTransfer?.setData('text/plain', id);
   if (event.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move';
-    const row = (event.currentTarget as HTMLElement).closest('.answer-row');
+    const row = (event.currentTarget as HTMLElement).closest('.answer-detail-row');
     if (row) event.dataTransfer.setDragImage(row, 36, 36);
   }
   draggingAnswerId.value = id;
@@ -4818,6 +4915,22 @@ function dropAnswerAt(targetId: string) {
       : entry),
   });
   draggingAnswerId.value = '';
+}
+
+function moveAnswer(id: string, direction: -1 | 1) {
+  if (!answerManualSortMode.value) return;
+  const ordered = [...answerRows.value];
+  const index = ordered.findIndex((entry) => entry.id === id);
+  const targetIndex = index + direction;
+  if (index < 0 || targetIndex < 0 || targetIndex >= ordered.length) return;
+  [ordered[index], ordered[targetIndex]] = [ordered[targetIndex], ordered[index]];
+  const sortOrderById = new Map(ordered.map((entry, order) => [entry.id, order]));
+  saveLocal({
+    ...data.value,
+    answerEntries: data.value.answerEntries.map((entry) => sortOrderById.has(entry.id)
+      ? { ...entry, sortOrder: sortOrderById.get(entry.id) }
+      : entry),
+  });
 }
 
 function optimizeAnswerText() {
@@ -4871,6 +4984,7 @@ function saveAnswer() {
     : [entry, ...data.value.answerEntries];
   saveLocal({ ...data.value, answerEntries });
   resetAnswerDraft(true);
+  answerEditorOpen.value = false;
 }
 
 function editAnswer(entry: AnswerEntry) {
@@ -4880,14 +4994,16 @@ function editAnswer(entry: AnswerEntry) {
   answerQuestion.value = entry.question || '';
   answerContent.value = entry.answer;
   editingAnswerId.value = entry.id;
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  answerEditorOpen.value = true;
+  nextTick(() => answerTitleInput.value?.focus());
 }
 
 function deleteAnswer(id: string) {
   const entry = data.value.answerEntries.find((item) => item.id === id);
   if (!entry || !confirm(`确定删除「${entry.title}」吗？`)) return;
   saveLocal({ ...data.value, answerEntries: data.value.answerEntries.filter((item) => item.id !== id) });
-  if (editingAnswerId.value === id) resetAnswerDraft();
+  selectedAnswerIds.value = selectedAnswerIds.value.filter((selectedId) => selectedId !== id);
+  if (editingAnswerId.value === id) closeAnswerEditor();
 }
 
 function escapePrintHtml(value: string) {
@@ -4917,11 +5033,11 @@ function answerExportFilename(title: string, extension: 'pdf' | 'txt') {
 function exportAnswersToTxt() {
   const entries = exportAnswerRows.value;
   if (!entries.length) {
-    alert(`还没有 ${exportAnswerType.value} 题型的答案可导出。`);
+    alert(`还没有 ${selectedAnswerType.value} 题型的答案可导出。`);
     return;
   }
 
-  const exportTitle = `${exportAnswerType.value} 答案`;
+  const exportTitle = `${selectedAnswerType.value} 答案`;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const content = [
     `${exportTitle}（共 ${entries.length} 条）`,
@@ -4952,12 +5068,12 @@ function exportAnswersToTxt() {
 async function exportAnswersToPdf() {
   const entries = exportAnswerRows.value;
   if (!entries.length) {
-    alert(`还没有 ${exportAnswerType.value} 题型的答案可导出。`);
+    alert(`还没有 ${selectedAnswerType.value} 题型的答案可导出。`);
     return;
   }
   if (isExportingAnswersPdf.value) return;
 
-  const exportTitle = `${exportAnswerType.value} 答案`;
+  const exportTitle = `${selectedAnswerType.value} 答案`;
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
   const content = entries.map((entry, index) => `
     <article class="answer-pdf-answer">
@@ -4980,7 +5096,7 @@ async function exportAnswersToPdf() {
     .answer-pdf-document .answer-pdf-cover::before { position: absolute; top: 25px; right: 56px; width: 85px; height: 75px; content: ""; background-image: radial-gradient(circle, #b8c7ff 1.6px, transparent 1.8px); background-size: 12px 12px; opacity: .62; }
     .answer-pdf-document .answer-pdf-cover::after { position: absolute; right: -30px; bottom: -55px; width: 190px; height: 190px; content: ""; border: 1px solid #cbd4ff; border-radius: 50%; box-shadow: 0 0 0 36px rgba(206, 213, 255, .37), 0 0 0 72px rgba(226, 229, 255, .42); }
     .answer-pdf-document .cover-brand, .answer-pdf-document h1, .answer-pdf-document .cover-rule, .answer-pdf-document .cover-meta { position: relative; z-index: 1; }
-    .answer-pdf-document .cover-brand { display: flex; align-items: center; gap: 9px; color: #4d66bc; font-size: 11px; font-weight: 800; letter-spacing: .1em; }
+    .answer-pdf-document .cover-brand { display: flex; align-items: center; gap: 9px; color: #4d66bc; font-size: 11px; font-weight: 600; letter-spacing: .1em; }
     .answer-pdf-document .brand-mark, .answer-pdf-document .meta-icon { display: grid; place-items: center; flex: 0 0 auto; color: #5472db; background: linear-gradient(145deg, #dff1ff, #d8ddff); border-radius: 8px; }
     .answer-pdf-document .brand-mark { width: 25px; height: 25px; box-shadow: 0 5px 10px rgba(85, 111, 210, .18); }
     .answer-pdf-document .brand-mark svg { width: 15px; height: 15px; }
@@ -4999,7 +5115,7 @@ async function exportAnswersToPdf() {
     .answer-pdf-document .answer-tags span { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.25; }
     .answer-pdf-document .type-tag { color: #fff; background: #496fe1; }
     .answer-pdf-document .platform-tag { color: #375081; background: #e7eefc; }
-    .answer-pdf-document .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 800; letter-spacing: .08em; }
+    .answer-pdf-document .number { flex: 0 0 auto; color: #496fe1; font-size: 15px; font-weight: 600; letter-spacing: .08em; }
     .answer-pdf-document h2 { margin: 11px 0 9px; color: #17233c; font-size: 18px; line-height: 1.35; }
     .answer-pdf-document .prompt { margin: 0 0 10px; color: #536486; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
     .answer-pdf-document .body { color: #40506d; font-family: Arial, Helvetica, "Microsoft YaHei", sans-serif; font-size: 12px; font-weight: 400; line-height: 1.65; font-kerning: normal; font-variant-ligatures: none; font-feature-settings: "liga" 0, "clig" 0; letter-spacing: 0; word-spacing: 0; text-align: left; text-rendering: auto; transform: none; white-space: normal; overflow-wrap: normal; word-break: normal; hyphens: none; }
@@ -6727,118 +6843,172 @@ function taskLastStudyDate(task: Task) {
     </section>
 
     <section v-else-if="tab === 'answers'" class="page answers-page">
-      <section class="panel answers-panel answer-compose-panel">
-        <div class="answers-panel-head">
-          <div class="answers-title">
-            <span class="answers-title-icon"><BookOpen :size="30" /></span>
-            <div>
-              <h2>{{ editingAnswerId ? '编辑答案' : '录入答案' }}</h2>
-              <p>保存平台、题号、标题和完整答案；WE 题型还需录入题目。</p>
+      <header class="answer-page-header">
+        <span class="answer-page-eyebrow">ANSWER LIBRARY</span>
+        <div class="answer-page-heading">
+          <div>
+            <h2>我的答案库</h2>
+            <p>{{ selectedAnswerType ? '当前只显示已选择题型的答案。' : '选一个题型，查看它的答案并继续录入。' }}</p>
+          </div>
+          <span class="answer-total-count">{{ data.answerEntries.length }} 条答案</span>
+        </div>
+      </header>
+
+      <section v-if="!selectedAnswerType" class="answer-picker" aria-label="选择题型">
+        <div class="answer-picker-heading">
+          <h3>选择题型</h3>
+          <span>按口语、写作、听力和阅读整理</span>
+        </div>
+        <div class="answer-type-groups">
+          <section v-for="group in answerTypeGroupsWithExtras" :key="group.name" class="answer-type-group" :style="{ '--answer-group-accent': group.color }">
+            <div class="answer-type-group-heading">
+              <span class="answer-group-dot" aria-hidden="true"></span>
+              <h3>{{ group.name }}</h3>
+              <small>{{ group.types.length }} 个题型</small>
             </div>
-          </div>
-        </div>
-
-        <div class="answer-meta-grid">
-          <label>
-            <span>题型</span>
-            <span class="answer-select-control">
-              <select v-model="answerExamType">
-                <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
-              </select>
-              <ChevronDown :size="18" aria-hidden="true" />
-            </span>
-          </label>
-          <label class="answer-title-field">
-            <span>答案标题</span>
-            <input v-model="answerTitle" type="text" placeholder="例如：城市交通题通用模板">
-          </label>
-          <label v-for="ref in answerPlatformRefs" :key="ref.platform" class="answer-platform-number">
-            <span>{{ ref.platform }}题号</span>
-            <input v-model="ref.questionNumber" type="text" :placeholder="`${ref.platform}题号`">
-          </label>
-        </div>
-
-        <label v-if="answerExamType.trim().toUpperCase() === 'WE'" class="answer-content-field answer-question-field">
-          <span>WE 题目</span>
-          <textarea v-model="answerQuestion" placeholder="输入本篇 WE 的题目" required></textarea>
-        </label>
-        <label class="answer-content-field">
-          <span>答案内容</span>
-          <textarea v-model="answerContent" placeholder="在这里录入完整答案，换行会在导出的 PDF 和 TXT 中保留。"></textarea>
-        </label>
-        <div class="answer-compose-foot">
-          <p><Sparkles :size="18" /> 小贴士：三个平台固定，只需填写各自对应题号。</p>
-          <div class="panel-actions">
-            <button class="ghost" type="button" :disabled="!answerContent.trim()" @click="optimizeAnswerText"><Sparkles :size="18" />文本优化</button>
-            <button class="ghost" type="button" @click="resetAnswerDraft()"><X :size="18" />取消</button>
-            <button type="button" @click="saveAnswer"><Save :size="18" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
-          </div>
+            <div class="answer-type-grid">
+              <button
+                v-for="type in group.types"
+                :key="type"
+                class="answer-type-card"
+                :style="answerTypeStyle(type)"
+                type="button"
+                :aria-label="'查看 ' + type + ' ' + (answerTypeEnglishNames[type] || type) + ' ' + (answerTypeNames[type] || '题型') + ' 答案'"
+                @click="selectAnswerType(type)"
+              >
+                <span class="answer-type-card-icon" :class="{ 'is-fib-rw': type === 'FIB-RW' }">{{ type }}</span>
+                <span class="answer-type-card-text">
+                  <strong class="answer-type-english" :class="{ 'is-long': (answerTypeEnglishNames[type] || type).length > 28 }" :title="answerTypeEnglishNames[type] || type">{{ answerTypeEnglishNames[type] || type }}</strong>
+                  <span class="answer-type-chinese">{{ answerTypeNames[type] || type }}</span>
+                  <small>{{ answerCountsByType[type] || 0 }} 条答案</small>
+                </span>
+              </button>
+            </div>
+          </section>
         </div>
       </section>
 
-      <section class="panel answers-panel answer-library-panel">
-        <div class="answer-library-head">
-          <div>
-            <h2>我的答案</h2>
-            <p>已显示 {{ answerRows.length }} 条答案</p>
+      <section v-else class="answer-detail" :style="answerTypeStyle(selectedAnswerType)">
+        <button class="answer-back-button" type="button" @click="returnToAnswerTypes"><ChevronLeft :size="17" />重新选择题型</button>
+        <div class="answer-selected-hero">
+          <div class="answer-selected-heading">
+            <span class="answer-selected-mark">{{ selectedAnswerType }}</span>
+            <div>
+              <h2>{{ selectedAnswerType }} · {{ answerTypeNames[selectedAnswerType] || selectedAnswerType }}</h2>
+              <p>在这里管理当前题型的全部答案</p>
+            </div>
           </div>
-          <div class="answer-export-controls">
-            <label>
-              <span>导出题型</span>
-              <span class="answer-select-control">
-                <select v-model="exportAnswerType" :disabled="exportAnswerTypeOptions.length === 0">
-                  <option v-for="option in exportAnswerTypeOptions" :key="option" :value="option">{{ option }}</option>
-                </select>
-                <ChevronDown :size="17" aria-hidden="true" />
-              </span>
-            </label>
-            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0 || isExportingAnswersPdf" @click="exportAnswersToPdf"><FileDown :size="18" />{{ isExportingAnswersPdf ? '正在生成 PDF…' : `下载 ${exportAnswerType} 答案 PDF` }}</button>
-            <button class="answer-export-button" type="button" :disabled="exportAnswerTypeOptions.length === 0" @click="exportAnswersToTxt"><FileDown :size="18" />下载 {{ exportAnswerType }} 答案 TXT</button>
-          </div>
+          <span class="answer-selected-count">{{ selectedAnswerCount }} 条答案</span>
         </div>
-        <div class="answer-filters">
-          <input v-model="answerSearch" :disabled="answerManualSortMode" type="search" placeholder="搜索题号、标题、WE题目或答案内容">
-          <span class="answer-select-control">
-            <select v-model="answerTypeFilter" :disabled="answerManualSortMode">
-              <option value="全部">全部题型</option>
-              <option v-for="option in answerExamTypeOptions" :key="option" :value="option">{{ option }}</option>
-            </select>
-            <ChevronDown :size="17" aria-hidden="true" />
-          </span>
-          <span class="answer-select-control">
-            <select v-model="answerPlatformFilter" :disabled="answerManualSortMode">
+
+        <section class="answer-detail-panel" aria-label="当前题型答案列表">
+          <div class="answer-detail-panel-head">
+            <div>
+              <h3>答案列表</h3>
+              <p>仅显示 {{ selectedAnswerType }} 题型的内容</p>
+            </div>
+            <div class="answer-detail-actions">
+              <button type="button" :disabled="!selectedAnswerCount || isExportingAnswersPdf" @click="exportAnswersToPdf"><FileDown :size="16" />{{ isExportingAnswersPdf ? '生成中…' : 'PDF' }}</button>
+              <button type="button" :disabled="!selectedAnswerCount" @click="exportAnswersToTxt"><FileDown :size="16" />TXT</button>
+              <button class="answer-primary-button" type="button" @click="openAnswerEditor"><Plus :size="17" />录入答案</button>
+            </div>
+          </div>
+
+          <div class="answer-detail-toolbar">
+            <input v-model="answerSearch" :disabled="answerManualSortMode" type="search" aria-label="搜索当前题型答案" placeholder="搜索标题、题号或答案">
+            <select v-model="answerPlatformFilter" :disabled="answerManualSortMode" aria-label="筛选平台">
               <option value="全部">全部平台</option>
               <option v-for="option in answerReferencePlatforms" :key="option" :value="option">{{ option }}</option>
             </select>
-            <ChevronDown :size="17" aria-hidden="true" />
-          </span>
-          <button class="answer-sort-button" :class="{ 'is-active': answerManualSortMode }" type="button" @click="toggleAnswerManualSort"><List :size="17" />{{ answerManualSortMode ? '完成排序' : '调整排序' }}</button>
-        </div>
-        <p v-if="answerManualSortMode" class="answer-sort-hint"><GripVertical :size="16" />正在调整 {{ answerTypeFilter }} 的答案顺序，拖动左侧手柄即可保存。</p>
+            <button type="button" :class="{ 'is-active': answerManualSortMode }" @click="toggleAnswerManualSort"><GripVertical :size="16" />{{ answerManualSortMode ? '完成排序' : '调整排序' }}</button>
+            <button type="button" :class="{ 'is-active': answerBulkMode }" @click="toggleAnswerBulkMode"><Trash2 :size="15" />{{ answerBulkMode ? '取消批量' : '批量删除' }}</button>
+            <button v-if="answerBulkMode" class="answer-bulk-delete-button" type="button" :disabled="!selectedAnswerIds.length" @click="deleteSelectedAnswers">删除选中 ({{ selectedAnswerIds.length }})</button>
+          </div>
+          <p v-if="answerManualSortMode" class="answer-mode-hint">拖动左侧手柄，或使用上下按钮调整当前题型的顺序。</p>
+          <p v-else-if="answerBulkMode" class="answer-mode-hint">勾选要删除的答案，再点击“删除选中”。</p>
 
-        <div v-if="answerRows.length" class="answer-list">
-          <article v-for="entry in answerRows" :key="entry.id" class="answer-row" :class="{ 'is-sortable': answerManualSortMode, 'is-dragging': draggingAnswerId === entry.id }" @dragover.prevent @drop="dropAnswerAt(entry.id)">
-            <span v-if="answerManualSortMode" class="answer-drag-handle" draggable="true" aria-label="拖动调整顺序" @dragstart="startAnswerDrag(entry.id, $event)" @dragend="finishAnswerDrag"><GripVertical :size="21" /></span>
-            <div class="answer-row-content">
-              <div class="answer-row-meta">
-                <span class="answer-exam-type" :style="noteTypeStyle(entry.examType)">{{ entry.examType }}</span>
-                <template v-for="ref in entry.platformRefs" :key="`${ref.platform}-${ref.questionNumber}`">
-                  <span class="answer-platform-tag" :class="answerPlatformTagClass(ref.platform)">{{ ref.platform }} #{{ ref.questionNumber }}</span>
-                </template>
+          <div v-if="answerRows.length" class="answer-detail-list">
+            <article
+              v-for="(entry, index) in answerRows"
+              :key="entry.id"
+              class="answer-detail-row"
+              :class="{ 'is-dragging': draggingAnswerId === entry.id, 'is-selected': selectedAnswerIds.includes(entry.id) }"
+              @dragover.prevent
+              @drop="dropAnswerAt(entry.id)"
+            >
+              <input
+                v-if="answerBulkMode"
+                class="answer-row-checkbox"
+                type="checkbox"
+                :checked="selectedAnswerIds.includes(entry.id)"
+                :aria-label="'选择 ' + entry.title"
+                @change="toggleAnswerSelection(entry.id)"
+              >
+              <span v-else-if="answerManualSortMode" class="answer-drag-handle" draggable="true" aria-label="拖动调整顺序" @dragstart="startAnswerDrag(entry.id, $event)" @dragend="finishAnswerDrag"><GripVertical :size="20" /></span>
+              <span v-else class="answer-row-number">{{ String(index + 1).padStart(2, '0') }}</span>
+              <div class="answer-row-content">
+                <div class="answer-row-title-line">
+                  <h3>{{ entry.title }}</h3>
+                  <span v-for="ref in entry.platformRefs" :key="ref.platform + '-' + ref.questionNumber" class="answer-row-platform">{{ ref.platform }} #{{ ref.questionNumber }}</span>
+                </div>
+                <p v-if="entry.question" class="answer-row-question">题目：{{ entry.question }}</p>
+                <p class="answer-row-preview">{{ entry.answer }}</p>
+                <time v-if="entry.updatedAt">更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
               </div>
-              <h3>{{ entry.title }}</h3>
-              <p v-if="entry.question" class="answer-question-preview">题目：{{ entry.question }}</p>
-              <p>{{ entry.answer }}</p>
-              <time v-if="entry.updatedAt">更新于 {{ new Date(entry.updatedAt).toLocaleString('zh-CN', { hour12: false }) }}</time>
-            </div>
-            <div class="answer-row-actions">
-              <button type="button" @click="editAnswer(entry)"><PencilLine :size="16" />编辑</button>
-              <button type="button" @click="deleteAnswer(entry.id)"><Trash2 :size="16" />删除</button>
-            </div>
-          </article>
-        </div>
-        <p v-else class="muted answer-empty">还没有符合条件的答案，先录入第一条吧。</p>
+              <div class="answer-row-actions">
+                <template v-if="answerManualSortMode">
+                  <button type="button" :disabled="index === 0" aria-label="上移答案" @click="moveAnswer(entry.id, -1)">↑</button>
+                  <button type="button" :disabled="index === answerRows.length - 1" aria-label="下移答案" @click="moveAnswer(entry.id, 1)">↓</button>
+                </template>
+                <button type="button" @click="editAnswer(entry)"><PencilLine :size="15" />编辑</button>
+                <button type="button" @click="deleteAnswer(entry.id)"><Trash2 :size="15" />删除</button>
+              </div>
+            </article>
+          </div>
+          <div v-else class="answer-detail-empty">
+            <span><BookOpen :size="23" /></span>
+            <strong>{{ selectedAnswerCount ? '没有符合条件的答案' : '这个题型还没有答案' }}</strong>
+            <p>{{ selectedAnswerCount ? '试试其他关键词或平台。' : '点击“录入答案”，建立第一条内容。' }}</p>
+          </div>
+        </section>
       </section>
+
+      <div v-if="answerEditorOpen" class="answer-editor-overlay" :style="answerTypeStyle(selectedAnswerType)" role="dialog" aria-modal="true" aria-labelledby="answer-editor-title" @click.self="closeAnswerEditor" @keydown.esc="closeAnswerEditor">
+        <form class="answer-editor-dialog" @submit.prevent="saveAnswer">
+          <div class="answer-editor-heading">
+            <div>
+              <h2 id="answer-editor-title">{{ editingAnswerId ? '编辑' : '录入' }} {{ selectedAnswerType }} 答案</h2>
+              <p>保存后将显示在当前题型的答案列表中。</p>
+            </div>
+            <button type="button" aria-label="关闭" @click="closeAnswerEditor"><X :size="20" /></button>
+          </div>
+          <label class="answer-editor-field">
+            <span>答案标题</span>
+            <input ref="answerTitleInput" v-model="answerTitle" type="text" required placeholder="例如：城市交通图表">
+          </label>
+          <div class="answer-editor-ref-grid">
+            <label v-for="ref in answerPlatformRefs" :key="ref.platform" class="answer-editor-field">
+              <span>{{ ref.platform }}题号</span>
+              <input v-model="ref.questionNumber" type="text" :placeholder="ref.platform + '题号'">
+            </label>
+          </div>
+          <label v-if="selectedAnswerType === 'WE'" class="answer-editor-field">
+            <span>WE 题目</span>
+            <textarea v-model="answerQuestion" required placeholder="输入本篇 WE 的题目"></textarea>
+          </label>
+          <label class="answer-editor-field">
+            <span>答案内容</span>
+            <textarea v-model="answerContent" required placeholder="在这里录入完整答案，换行会在导出的 PDF 和 TXT 中保留。"></textarea>
+          </label>
+          <div class="answer-editor-footer">
+            <button type="button" :disabled="!answerContent.trim()" @click="optimizeAnswerText"><Sparkles :size="16" />文本优化</button>
+            <div>
+              <button type="button" @click="closeAnswerEditor">取消</button>
+              <button class="answer-primary-button" type="submit"><Save :size="16" />{{ editingAnswerId ? '更新答案' : '保存答案' }}</button>
+            </div>
+          </div>
+        </form>
+      </div>
     </section>
 
     <div v-if="reviewCalendarTask" class="modal review-calendar-modal" role="dialog" aria-modal="true" aria-labelledby="review-calendar-title" @click.self="closeReviewCalendar" @keydown.esc="closeReviewCalendar">
