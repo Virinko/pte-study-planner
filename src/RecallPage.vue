@@ -273,6 +273,7 @@ function tokenize(text: string): Token[] {
     .map((match) => ({ text: match[0], index: match.index || 0 }));
 }
 function compare(reference: string, submitted: string, caseSensitive: boolean) {
+  type IndexedDetail = Detail & { referenceIndex?: number };
   const left = tokenize(reference);
   const right = tokenize(submitted);
   if (left.length > 1000 || right.length > 1000) throw new Error('单篇内容过长，请控制在 1000 个词或符号以内。');
@@ -286,21 +287,51 @@ function compare(reference: string, submitted: string, caseSensitive: boolean) {
   }
   const leftMarks: Mark[] = Array(left.length).fill('');
   const rightMarks: Mark[] = Array(right.length).fill('');
-  const resultDetails: Detail[] = [];
+  const resultDetails: IndexedDetail[] = [];
   let i = left.length;
   let j = right.length;
   while (i || j) {
-    if (i && j && same(left[i - 1].text, right[j - 1].text) && rows[i][j] === rows[i - 1][j - 1]) { i--; j--; continue; }
+    if (i && j && same(left[i - 1].text, right[j - 1].text) && rows[i][j] === rows[i - 1][j - 1]) {
+      // Keep repeated sentence marks beside matching words instead of matching the last mark first.
+      const skipLaterMark = /[.!?。！？]/u.test(left[i - 1].text) && i > 1 && j > 1
+        && !same(left[i - 2].text, right[j - 2].text) && rows[i][j] === rows[i - 1][j] + 1;
+      if (!skipLaterMark) { i--; j--; continue; }
+    }
     if (i && j && rows[i][j] === rows[i - 1][j - 1] + 1) {
       leftMarks[i - 1] = 'wrong'; rightMarks[j - 1] = 'wrong';
       resultDetails.push({ kind: 'wrong', text: `${right[j - 1].text} → ${left[i - 1].text}` }); i--; j--; continue;
     }
     if (i && rows[i][j] === rows[i - 1][j] + 1) {
-      leftMarks[i - 1] = 'missing'; resultDetails.push({ kind: 'missing', text: left[i - 1].text }); i--; continue;
+      leftMarks[i - 1] = 'missing'; resultDetails.push({ kind: 'missing', text: left[i - 1].text, referenceIndex: i - 1 }); i--; continue;
     }
     rightMarks[j - 1] = 'extra'; resultDetails.push({ kind: 'extra', text: right[j - 1].text }); j--;
   }
-  return { left, right, leftMarks, rightMarks, details: resultDetails.reverse() };
+  const groupedDetails: Detail[] = [];
+  let missingStart = -1;
+  let missingEnd = -1;
+  const flushMissing = () => {
+    if (missingStart < 0) return;
+    const first = left[missingStart];
+    const last = left[missingEnd];
+    groupedDetails.push({ kind: 'missing', text: reference.slice(first.index, last.index + last.text.length) });
+    missingStart = -1;
+    missingEnd = -1;
+  };
+  for (const detail of resultDetails.reverse()) {
+    if (detail.kind !== 'missing' || detail.referenceIndex === undefined) {
+      flushMissing();
+      groupedDetails.push({ kind: detail.kind, text: detail.text });
+      continue;
+    }
+    const nextIndex = detail.referenceIndex;
+    const previous = left[missingEnd];
+    const between = previous && reference.slice(previous.index + previous.text.length, left[nextIndex].index);
+    if (missingEnd >= 0 && (nextIndex !== missingEnd + 1 || (/[.!?。！？]/u.test(previous.text) && /\s/u.test(between)))) flushMissing();
+    if (missingStart < 0) missingStart = nextIndex;
+    missingEnd = nextIndex;
+  }
+  flushMissing();
+  return { left, right, leftMarks, rightMarks, details: groupedDetails };
 }
 function makeSegments(source: string, tokens: Token[], marks: Mark[]): Segment[] {
   if (!tokens.length) return [{ text: '（未填写）', mark: '' }];
@@ -565,10 +596,10 @@ function assignExistingTime(entry: StudyTimeEntry) {
     </div>
 
     <div v-else-if="view === 'result' && current" class="recall-result">
-      <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>{{ resultMode === 'slots' ? '仅对比非模板部分；' : '对比完整答案；' }}忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span class="answer-views">查看答案 {{ answerViewCount }} 次</span><span v-if="!details.length" class="correct">{{ resultMode === 'slots' ? '检查部分完全一致' : '完全一致' }}</span></div></div>
+      <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>{{ resultMode === 'slots' ? '仅对比非模板部分；' : '对比完整答案；' }}忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span v-if="!details.length" class="correct">{{ resultMode === 'slots' ? '检查部分完全一致' : '完全一致' }}</span></div></div>
       <div v-for="(part, partIndex) in resultParts" :key="partIndex" class="recall-result-part"><h3 v-if="part.label">{{ part.label }}</h3><div class="recall-compare"><div class="recall-card recall-compare-panel"><h3>{{ resultMode === 'slots' ? '标准内容' : '标准答案' }}</h3><p>橙色：遗漏　红色：写错</p><div class="recall-answer"><span v-for="(segment, index) in part.referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div><div class="recall-card recall-compare-panel"><h3>我的默写</h3><p>红色：写错　紫色：多写</p><div class="recall-answer"><span v-for="(segment, index) in part.writtenSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div></div></div>
       <div class="recall-card recall-details"><h3>需要回看的地方</h3><div v-if="details.length"><span v-for="(detail, index) in details" :key="index" :class="detail.kind">{{ detail.kind === 'missing' ? '遗漏' : detail.kind === 'wrong' ? '错误' : '多写' }}：{{ detail.text }}</span></div><p v-else>没有发现遗漏或错误。</p></div>
-      <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>{{ reviewAssignment ? '保存时完成当前复习篇目，并自动记录复习用时与熟练度。' : '可选择将用时计入题型学习时长，并同步完成对应的计划篇目。' }}</p></div><span>{{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
+      <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>{{ reviewAssignment ? '保存时完成当前复习篇目，并自动记录复习用时与熟练度。' : '可选择将用时计入题型学习时长，并同步完成对应的计划篇目。' }}</p></div><span>查看答案 {{ answerViewCount }} 次 · {{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
         <label v-if="durationSeconds && !reviewAssignment" class="recall-switch recall-save-time"><input v-model="saveDuration" type="checkbox" role="switch" :disabled="sessionSaved"><span class="track"></span><span><strong>将本次用时计入题型学习时长</strong><small>开启后可选择归属的今日任务</small></span></label>
         <div v-if="durationSeconds && saveDuration && !reviewAssignment" class="recall-task-choice">
           <label v-if="matchingTodayTasks.length" for="recall-today-task">用时归属的今日任务</label>
@@ -603,7 +634,13 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-answer-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:17px}.recall-answer-toggle .recall-switch{flex:1}.recall-answer-view-count{flex-shrink:0;color:#71639f;font-size:12px;font-weight:500}.recall-answer-preview{max-height:240px;overflow-y:auto;margin-bottom:18px;padding:15px 17px;border:1px solid #dcd1eb;border-radius:8px;background:#f9f6fd}.recall-answer-preview strong{color:#665394;font-size:13px}.recall-answer-preview p{margin-top:9px;white-space:pre-wrap;overflow-wrap:anywhere;color:#453e50;font-size:14px;line-height:1.8}
 .recall-template-status{margin:0 0 17px!important;color:#54846c;font-size:12px;line-height:1.5}.recall-template-status.error{color:#b8566d}.recall-slot-editor textarea{display:block;width:100%;height:220px;padding:12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:14px;line-height:1.7;resize:vertical}.recall-slot-editor p{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.5}
 .recall-template-preview{margin:0 0 18px;padding:14px 16px;border:1px solid #e9e0ee;border-radius:8px;background:#fbf9fc}.recall-template-preview strong{color:#665394;font-size:12px}.recall-template-preview p{margin-top:7px;white-space:pre-wrap;overflow-wrap:anywhere;color:#514a59;font-size:13px;line-height:1.7}
-.recall-counts .answer-views{color:#665394;background:#f1ecfa}
+.recall-result-head{padding:20px 23px;margin-bottom:15px}.recall-result-head h3{font-size:19px}.recall-result-head p{font-size:12px}
+.recall-counts,.recall-details>div{display:flex;flex-wrap:wrap;gap:7px}.recall-counts span,.recall-details>div span{padding:8px 10px;border-radius:7px;font-size:12px;font-weight:500}
+.recall-counts .missing,.recall-details .missing,.recall-answer .missing{color:#986126;background:#fff2dd}.recall-counts .wrong,.recall-details .wrong,.recall-answer .wrong{color:#aa4962;background:#ffe9ee}.recall-counts .extra,.recall-details .extra,.recall-answer .extra{color:#705caa;background:#f0ebfa}.recall-counts .correct{color:#518362;background:#eaf5ed}
+.recall-compare{display:grid;grid-template-columns:1fr 1fr;gap:15px}.recall-compare-panel{padding:22px}.recall-compare-panel h3{font-size:16px}.recall-compare-panel p{margin:5px 0 17px;color:var(--muted);font-size:12px}.recall-answer{min-height:85px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:2}.recall-answer .wrong{text-decoration:underline wavy;text-underline-offset:3px}
+.recall-details{margin-top:15px;padding:20px 22px}.recall-details h3{margin-bottom:12px;font-size:15px}.recall-details p{color:var(--muted);font-size:13px}
+.recall-details>div span{max-width:100%;overflow-wrap:anywhere}
+.recall-save{margin-top:16px;padding:23px 25px}.recall-save-head{align-items:flex-start;margin-bottom:17px}.recall-save-head h3{font-size:16px}.recall-save-head p{font-size:12px}.recall-save-head>span{padding:8px 12px;border-radius:7px;color:#6f62a0;background:#f1ecfa;font-size:13px;font-weight:500;white-space:nowrap}.recall-save-time{width:100%;margin-bottom:17px}.recall-save-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.recall-field-label{display:block;margin-bottom:8px;color:#514a59;font-size:12px;font-weight:500}.recall-levels{display:flex;flex-wrap:wrap;gap:7px}.recall-levels label{cursor:pointer}.recall-levels input{position:absolute;width:1px;height:1px;opacity:0}.recall-levels span{display:inline-flex;align-items:center;min-height:40px;padding:0 14px;border:1px solid #ded7e2;border-radius:7px;color:#6d6671;font-size:13px;font-weight:500}.recall-levels input:checked + span{border-color:#bfb0dc;color:#6d5f9f;background:#f1ecfa}.recall-levels input:focus-visible + span{outline:2px solid #b99ded;outline-offset:2px}.recall-link select{min-height:40px;font-size:13px}.recall-save-foot{margin-top:17px}.recall-save-foot>span{color:var(--muted);font-size:12px;line-height:1.5}.recall-save-foot .recall-primary{white-space:nowrap}
 .recall-result-part+.recall-result-part{margin-top:18px}.recall-result-part>h3{margin:0 0 9px;color:#665394;font-size:14px}
 .recall-task-choice{display:grid;gap:8px;margin:0 0 18px}.recall-task-choice label{color:#514a59;font-size:12px;font-weight:500}.recall-task-choice select{width:100%;min-height:42px;padding:9px 11px;border:1px solid #ded7e2;border-radius:7px;color:var(--ink);background:#fff;font-size:13px}.recall-task-choice p{color:var(--muted);font-size:12px;line-height:1.5}
 .recall-unassigned{display:grid;gap:10px;margin-top:22px;padding-top:20px;border-top:1px solid var(--line)}.recall-unassigned h3{font-size:15px}.recall-unassigned>p,.recall-unassigned small{color:var(--muted);font-size:12px;line-height:1.5}.recall-unassigned-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,260px) auto;align-items:center;gap:10px;padding:12px;border:1px solid var(--line);border-radius:8px}.recall-unassigned-row>span{overflow-wrap:anywhere;font-size:13px}.recall-unassigned-row select{min-width:0;min-height:39px;padding:8px 10px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:12px}.recall-unassigned .recall-assignment-status{color:#54846c}
@@ -611,6 +648,6 @@ function assignExistingTime(entry: StudyTimeEntry) {
 @media(max-width:1050px){.recall-practice-grid{grid-template-columns:1fr}.recall-help{display:none}}
 @media(max-width:850px){.recall-page{padding:25px 22px}.recall-compare,.recall-save-grid{grid-template-columns:1fr}.recall-entry{align-items:flex-start;flex-direction:column}.recall-entry-actions{width:100%}.recall-entry-actions .recall-primary{flex:1}}
 @media(max-width:700px){.recall-page{padding:22px 15px}.recall-header{display:block}.recall-source{display:inline-block;margin-top:12px}.recall-steps button{justify-content:center;padding:9px 4px;font-size:11px}.recall-steps button span{width:20px;height:20px}.recall-choose,.recall-practice,.recall-compare-panel,.recall-save{padding:19px}.recall-section-head,.recall-result-head,.recall-toolbar,.recall-save-head,.recall-save-foot{align-items:stretch;flex-direction:column}.recall-head-actions{justify-content:flex-start}.recall-toolbar input{width:100%}.recall-preview{white-space:normal}.recall-unassigned-row{grid-template-columns:1fr}.recall-bottom-actions{align-items:stretch;flex-direction:column-reverse}.recall-bottom-actions button,.recall-save-foot button{width:100%}}
-@media(max-width:700px){.recall-answer-toggle{align-items:stretch;flex-direction:column;gap:7px}.recall-answer-view-count{align-self:flex-end}}
+@media(max-width:700px){.recall-answer-toggle{align-items:stretch;flex-direction:column;gap:7px}.recall-answer-view-count{align-self:flex-end}.recall-save-head>span{white-space:normal}}
 @media(max-width:440px){.recall-steps{gap:4px}.recall-steps button span{display:none}.recall-form-grid{grid-template-columns:1fr}.recall-form-grid .wide{grid-column:auto}.recall-options{display:grid}.recall-switch.timer{justify-content:space-between}}
 </style>
