@@ -11,6 +11,7 @@ type Mark = '' | 'missing' | 'wrong' | 'extra';
 type Detail = { kind: Exclude<Mark, ''>; text: string };
 type Token = { text: string; index: number };
 type Segment = { text: string; mark: Mark };
+type MissingInsertion = { text: string; before: string; after: string };
 type ResultPart = { label: string; referenceSegments: Segment[]; writtenSegments: Segment[] };
 type LocalAnswer = Pick<AnswerEntry, 'id' | 'examType' | 'title' | 'answer' | 'createdAt'>;
 type RecallEntry = { key: string; id: string; source: 'own' | 'library'; examType: ExamType; title: string; question?: string; answer: string; platformRefs: AnswerEntry['platformRefs'] };
@@ -287,6 +288,7 @@ function compare(reference: string, submitted: string, caseSensitive: boolean) {
   }
   const leftMarks: Mark[] = Array(left.length).fill('');
   const rightMarks: Mark[] = Array(right.length).fill('');
+  const missingRanges = new Map<number, { start: number; end: number }>();
   const resultDetails: IndexedDetail[] = [];
   let i = left.length;
   let j = right.length;
@@ -302,7 +304,12 @@ function compare(reference: string, submitted: string, caseSensitive: boolean) {
       resultDetails.push({ kind: 'wrong', text: `${right[j - 1].text} → ${left[i - 1].text}` }); i--; j--; continue;
     }
     if (i && rows[i][j] === rows[i - 1][j] + 1) {
-      leftMarks[i - 1] = 'missing'; resultDetails.push({ kind: 'missing', text: left[i - 1].text, referenceIndex: i - 1 }); i--; continue;
+      const referenceIndex = i - 1;
+      leftMarks[referenceIndex] = 'missing';
+      resultDetails.push({ kind: 'missing', text: left[referenceIndex].text, referenceIndex });
+      missingRanges.set(j, { start: referenceIndex, end: missingRanges.get(j)?.end ?? referenceIndex });
+      i--;
+      continue;
     }
     rightMarks[j - 1] = 'extra'; resultDetails.push({ kind: 'extra', text: right[j - 1].text }); j--;
   }
@@ -331,18 +338,46 @@ function compare(reference: string, submitted: string, caseSensitive: boolean) {
     missingEnd = nextIndex;
   }
   flushMissing();
-  return { left, right, leftMarks, rightMarks, details: groupedDetails };
+  const missingInsertions = new Map<number, MissingInsertion>();
+  for (const [position, { start, end }] of missingRanges) {
+    const first = left[start];
+    const last = left[end];
+    const lastEnd = last.index + last.text.length;
+    const previous = left[start - 1];
+    const following = left[end + 1];
+    missingInsertions.set(position, {
+      text: reference.slice(first.index, lastEnd),
+      before: previous ? reference.slice(previous.index + previous.text.length, first.index) : '',
+      after: following ? reference.slice(lastEnd, following.index) : '',
+    });
+  }
+  return { left, right, leftMarks, rightMarks, missingInsertions, details: groupedDetails };
 }
-function makeSegments(source: string, tokens: Token[], marks: Mark[]): Segment[] {
-  if (!tokens.length) return [{ text: '（未填写）', mark: '' }];
+function makeSegments(source: string, tokens: Token[], marks: Mark[], insertions?: Map<number, MissingInsertion>): Segment[] {
+  if (!tokens.length && !insertions?.size) return [{ text: '（未填写）', mark: '' }];
   const parts: Segment[] = [];
   let position = 0;
+  function appendGap(index: number, nextPosition: number) {
+    const gap = source.slice(position, nextPosition);
+    const insertion = insertions?.get(index);
+    if (!insertion) {
+      if (gap) parts.push({ text: gap, mark: '' });
+      return;
+    }
+    // Keep the submitted spacing after a missing punctuation mark, or before a missing word.
+    const gapBefore = index > 0 && Boolean(insertion.before);
+    const before = gapBefore ? gap || insertion.before : '';
+    const after = (gapBefore ? '' : gap) || (index < tokens.length ? insertion.after : '');
+    if (before) parts.push({ text: before, mark: '' });
+    parts.push({ text: insertion.text, mark: 'missing' });
+    if (after) parts.push({ text: after, mark: '' });
+  }
   tokens.forEach((token, index) => {
-    if (token.index > position) parts.push({ text: source.slice(position, token.index), mark: '' });
+    appendGap(index, token.index);
     parts.push({ text: token.text, mark: marks[index] });
     position = token.index + token.text.length;
   });
-  if (position < source.length) parts.push({ text: source.slice(position), mark: '' });
+  appendGap(tokens.length, source.length);
   return parts;
 }
 function submitPractice() {
@@ -360,7 +395,7 @@ function submitPractice() {
         const text = (slotLines.value[index] || '').trim();
         const result = compare(slot.reference, text, checkCase.value);
         return {
-          part: { label: `${index + 1}. ${slot.label}`, referenceSegments: makeSegments(slot.reference, result.left, result.leftMarks), writtenSegments: makeSegments(text, result.right, result.rightMarks) },
+          part: { label: `${index + 1}. ${slot.label}`, referenceSegments: makeSegments(slot.reference, result.left, result.leftMarks), writtenSegments: makeSegments(text, result.right, result.rightMarks, result.missingInsertions) },
           details: result.details.map((detail) => ({ ...detail, text: `${slot.label}：${detail.text}` })),
         };
       });
@@ -369,7 +404,7 @@ function submitPractice() {
       resultMode.value = 'slots';
     } else {
       const result = compare(reference, submitted, checkCase.value);
-      resultParts.value = [{ label: '', referenceSegments: makeSegments(reference, result.left, result.leftMarks), writtenSegments: makeSegments(submitted, result.right, result.rightMarks) }];
+      resultParts.value = [{ label: '', referenceSegments: makeSegments(reference, result.left, result.leftMarks), writtenSegments: makeSegments(submitted, result.right, result.rightMarks, result.missingInsertions) }];
       details.value = result.details;
       resultMode.value = 'full';
     }
@@ -597,7 +632,25 @@ function assignExistingTime(entry: StudyTimeEntry) {
 
     <div v-else-if="view === 'result' && current" class="recall-result">
       <div class="recall-card recall-result-head"><div><h3>{{ current.title }} · 对比结果</h3><p>{{ resultMode === 'slots' ? '仅对比非模板部分；' : '对比完整答案；' }}忽略空白差异；{{ checkCase ? '验证大小写' : '忽略大小写' }}，标点按原文检查。</p></div><div class="recall-counts"><span class="missing">遗漏 {{ countByKind.missing }}</span><span class="wrong">错误 {{ countByKind.wrong }}</span><span class="extra">多写 {{ countByKind.extra }}</span><span v-if="!details.length" class="correct">{{ resultMode === 'slots' ? '检查部分完全一致' : '完全一致' }}</span></div></div>
-      <div v-for="(part, partIndex) in resultParts" :key="partIndex" class="recall-result-part"><h3 v-if="part.label">{{ part.label }}</h3><div class="recall-compare"><div class="recall-card recall-compare-panel"><h3>{{ resultMode === 'slots' ? '标准内容' : '标准答案' }}</h3><p>橙色：遗漏　红色：写错</p><div class="recall-answer"><span v-for="(segment, index) in part.referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div><div class="recall-card recall-compare-panel"><h3>我的默写</h3><p>红色：写错　紫色：多写</p><div class="recall-answer"><span v-for="(segment, index) in part.writtenSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div></div></div></div>
+      <div v-for="(part, partIndex) in resultParts" :key="partIndex" class="recall-result-part">
+        <h3 v-if="part.label">{{ part.label }}</h3>
+        <div class="recall-compare">
+          <div class="recall-card recall-compare-panel recall-reference">
+            <div class="recall-compare-heading">
+              <h3>{{ resultMode === 'slots' ? '标准内容' : '标准答案' }}</h3>
+              <p>蓝色：正确写法　橙色：漏写内容</p>
+            </div>
+            <div class="recall-answer"><span v-for="(segment, index) in part.referenceSegments" :key="index" :class="segment.mark">{{ segment.text }}</span></div>
+          </div>
+          <div class="recall-card recall-compare-panel recall-submission">
+            <div class="recall-compare-heading">
+              <h3>我的默写</h3>
+              <p>橙色虚线：漏写补入　红色：写错　紫色：多写</p>
+            </div>
+            <div class="recall-answer"><span v-for="(segment, index) in part.writtenSegments" :key="index" :class="segment.mark" :title="segment.mark === 'missing' ? '漏写 · 由标准答案补入' : undefined">{{ segment.text }}</span></div>
+          </div>
+        </div>
+      </div>
       <div class="recall-card recall-details"><h3>需要回看的地方</h3><div v-if="details.length"><span v-for="(detail, index) in details" :key="index" :class="detail.kind">{{ detail.kind === 'missing' ? '遗漏' : detail.kind === 'wrong' ? '错误' : '多写' }}：{{ detail.text }}</span></div><p v-else>没有发现遗漏或错误。</p></div>
       <div class="recall-card recall-save"><div class="recall-save-head"><div><h3>保存本次练习</h3><p>{{ reviewAssignment ? '保存时完成当前复习篇目，并自动记录复习用时与熟练度。' : '可选择将用时计入题型学习时长，并同步完成对应的计划篇目。' }}</p></div><span>查看答案 {{ answerViewCount }} 次 · {{ durationSeconds ? `本次用时 ${formatDuration(durationSeconds)}` : '本次未计时' }}</span></div>
         <label v-if="durationSeconds && !reviewAssignment" class="recall-switch recall-save-time"><input v-model="saveDuration" type="checkbox" role="switch" :disabled="sessionSaved"><span class="track"></span><span><strong>将本次用时计入题型学习时长</strong><small>开启后可选择归属的今日任务</small></span></label>
@@ -637,7 +690,16 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-result-head{padding:20px 23px;margin-bottom:15px}.recall-result-head h3{font-size:19px}.recall-result-head p{font-size:12px}
 .recall-counts,.recall-details>div{display:flex;flex-wrap:wrap;gap:7px}.recall-counts span,.recall-details>div span{padding:8px 10px;border-radius:7px;font-size:12px;font-weight:500}
 .recall-counts .missing,.recall-details .missing,.recall-answer .missing{color:#986126;background:#fff2dd}.recall-counts .wrong,.recall-details .wrong,.recall-answer .wrong{color:#aa4962;background:#ffe9ee}.recall-counts .extra,.recall-details .extra,.recall-answer .extra{color:#705caa;background:#f0ebfa}.recall-counts .correct{color:#518362;background:#eaf5ed}
-.recall-compare{display:grid;grid-template-columns:1fr 1fr;gap:15px}.recall-compare-panel{padding:22px}.recall-compare-panel h3{font-size:16px}.recall-compare-panel p{margin:5px 0 17px;color:var(--muted);font-size:12px}.recall-answer{min-height:85px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:2}.recall-answer .wrong{text-decoration:underline wavy;text-underline-offset:3px}
+.recall-compare{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+.recall-compare-heading{position:sticky;top:0;z-index:1;padding:12px 22px;border-radius:11px 11px 0 0;background:#f4f3f6}
+.recall-reference .recall-compare-heading{background:#edf4ff}
+.recall-compare-heading h3{font-size:16px}
+.recall-compare-heading p{margin-top:5px;color:var(--muted);font-size:12px}
+.recall-answer{min-height:85px;padding:14px 22px 22px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:15px;line-height:2}
+.recall-reference .recall-answer .wrong{color:#285694;background:#e9f2ff}
+.recall-submission .recall-answer .wrong{text-decoration:underline wavy;text-underline-offset:3px}
+.recall-submission .recall-answer .missing{text-decoration:underline dashed;text-underline-offset:3px}
+.recall-submission .recall-answer .extra{text-decoration:line-through}
 .recall-details{margin-top:15px;padding:20px 22px}.recall-details h3{margin-bottom:12px;font-size:15px}.recall-details p{color:var(--muted);font-size:13px}
 .recall-details>div span{max-width:100%;overflow-wrap:anywhere}
 .recall-save{margin-top:16px;padding:23px 25px}.recall-save-head{align-items:flex-start;margin-bottom:17px}.recall-save-head h3{font-size:16px}.recall-save-head p{font-size:12px}.recall-save-head>span{padding:8px 12px;border-radius:7px;color:#6f62a0;background:#f1ecfa;font-size:13px;font-weight:500;white-space:nowrap}.recall-save-time{width:100%;margin-bottom:17px}.recall-save-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:16px}.recall-field-label{display:block;margin-bottom:8px;color:#514a59;font-size:12px;font-weight:500}.recall-levels{display:flex;flex-wrap:wrap;gap:7px}.recall-levels label{cursor:pointer}.recall-levels input{position:absolute;width:1px;height:1px;opacity:0}.recall-levels span{display:inline-flex;align-items:center;min-height:40px;padding:0 14px;border:1px solid #ded7e2;border-radius:7px;color:#6d6671;font-size:13px;font-weight:500}.recall-levels input:checked + span{border-color:#bfb0dc;color:#6d5f9f;background:#f1ecfa}.recall-levels input:focus-visible + span{outline:2px solid #b99ded;outline-offset:2px}.recall-link select{min-height:40px;font-size:13px}.recall-save-foot{margin-top:17px}.recall-save-foot>span{color:var(--muted);font-size:12px;line-height:1.5}.recall-save-foot .recall-primary{white-space:nowrap}
@@ -647,7 +709,7 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-page input:focus,.recall-page textarea:focus,.recall-page select:focus{outline:2px solid rgba(122,119,185,.42);outline-offset:1px}
 @media(max-width:1050px){.recall-practice-grid{grid-template-columns:1fr}.recall-help{display:none}}
 @media(max-width:850px){.recall-page{padding:25px 22px}.recall-compare,.recall-save-grid{grid-template-columns:1fr}.recall-entry{align-items:flex-start;flex-direction:column}.recall-entry-actions{width:100%}.recall-entry-actions .recall-primary{flex:1}}
-@media(max-width:700px){.recall-page{padding:22px 15px}.recall-header{display:block}.recall-source{display:inline-block;margin-top:12px}.recall-steps button{justify-content:center;padding:9px 4px;font-size:11px}.recall-steps button span{width:20px;height:20px}.recall-choose,.recall-practice,.recall-compare-panel,.recall-save{padding:19px}.recall-section-head,.recall-result-head,.recall-toolbar,.recall-save-head,.recall-save-foot{align-items:stretch;flex-direction:column}.recall-head-actions{justify-content:flex-start}.recall-toolbar input{width:100%}.recall-preview{white-space:normal}.recall-unassigned-row{grid-template-columns:1fr}.recall-bottom-actions{align-items:stretch;flex-direction:column-reverse}.recall-bottom-actions button,.recall-save-foot button{width:100%}}
+@media(max-width:700px){.recall-page{padding:22px 15px}.recall-header{display:block}.recall-source{display:inline-block;margin-top:12px}.recall-steps button{justify-content:center;padding:9px 4px;font-size:11px}.recall-steps button span{width:20px;height:20px}.recall-choose,.recall-practice,.recall-save{padding:19px}.recall-compare-heading,.recall-answer{padding-inline:19px}.recall-section-head,.recall-result-head,.recall-toolbar,.recall-save-head,.recall-save-foot{align-items:stretch;flex-direction:column}.recall-head-actions{justify-content:flex-start}.recall-toolbar input{width:100%}.recall-preview{white-space:normal}.recall-unassigned-row{grid-template-columns:1fr}.recall-bottom-actions{align-items:stretch;flex-direction:column-reverse}.recall-bottom-actions button,.recall-save-foot button{width:100%}}
 @media(max-width:700px){.recall-answer-toggle{align-items:stretch;flex-direction:column;gap:7px}.recall-answer-view-count{align-self:flex-end}.recall-save-head>span{white-space:normal}}
 @media(max-width:440px){.recall-steps{gap:4px}.recall-steps button span{display:none}.recall-form-grid{grid-template-columns:1fr}.recall-form-grid .wide{grid-column:auto}.recall-options{display:grid}.recall-switch.timer{justify-content:space-between}}
 </style>
