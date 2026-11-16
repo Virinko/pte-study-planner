@@ -3,10 +3,12 @@ import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Image as ImageIcon, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import RecallPage from './RecallPage.vue';
+import StudyCheckInDialog from './StudyCheckInDialog.vue';
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
+import type { StudyCheckInReport } from './studyCheckInImage';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, RecallReviewTarget, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
@@ -845,6 +847,7 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
+const studyCheckInDialog = ref<InstanceType<typeof StudyCheckInDialog> | null>(null);
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
 watch(tab, (value) => {
@@ -912,12 +915,12 @@ const firstStudyTimeLogDate = computed(() => studyTimeEntries.value
   .map((log) => log.date)
   .filter((date) => date <= todayIso())
   .sort()[0] || todayIso());
-const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === todayIso()));
+const todayTimeLogs = computed(() => studyTimeEntries.value.filter((log) => log.date === currentDate.value));
 const todayCheckInText = computed(() => {
   const totalSeconds = todayTimeLogs.value.reduce((sum, log) => sum + log.durationSeconds, 0);
   return totalSeconds > 0 ? formatTotalCheckInDuration(totalSeconds) : '';
 });
-const todayReviewLogs = computed(() => data.value.reviewLogs[todayIso()] || []);
+const todayReviewLogs = computed(() => data.value.reviewLogs[currentDate.value] || []);
 const todayReviewedPlanIds = computed(() => new Set(todayReviewLogs.value.map((log) => log.reviewPlanId)));
 const todayTaskSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'main').reduce((sum, log) => sum + log.durationSeconds, 0));
 const todayReviewSeconds = computed(() => todayTimeLogs.value.filter((log) => log.timeType === 'review').reduce((sum, log) => sum + log.durationSeconds, 0));
@@ -1457,6 +1460,52 @@ const timeByExamTypeRows = computed(() => {
   return Object.entries(grouped)
     .map(([type, seconds], index) => ({ type, seconds, color: taskTypeColor(type, index), softColor: taskTypeSoftColor(type, index) }))
     .sort((a, b) => b.seconds - a.seconds);
+});
+const todayCheckInReport = computed<StudyCheckInReport>(() => {
+  type Counts = Record<'篇' | '题', number>;
+  const rows = new Map<string, { completed: Counts; reviewed: Counts; seconds: number }>();
+  const tasks = new Map(data.value.tasks.map((task) => [task.id, task]));
+  function rowFor(type: string) {
+    let row = rows.get(type);
+    if (!row) {
+      row = { completed: { 篇: 0, 题: 0 }, reviewed: { 篇: 0, 题: 0 }, seconds: 0 };
+      rows.set(type, row);
+    }
+    return row;
+  }
+  for (const [id, amount] of Object.entries(todayLogByTask.value)) {
+    if (amount <= 0) continue;
+    const task = tasks.get(id);
+    const unit = task?.trackingMode === 'itemized' ? '篇' : '题';
+    rowFor(task ? taskInitials(task.name) : 'GEN').completed[unit] += amount;
+  }
+  for (const log of todayReviewLogs.value) {
+    if (log.amount <= 0) continue;
+    const plan = reviewPlanForId(log.reviewPlanId);
+    const task = tasks.get(plan?.taskId || log.taskId);
+    const type = taskInitials(task?.name || plan?.taskName || log.taskName);
+    const itemized = plan ? isItemizedReviewPlan(plan) : task?.trackingMode === 'itemized';
+    rowFor(type).reviewed[itemized ? '篇' : '题'] += log.amount;
+  }
+  for (const item of timeByExamTypeRows.value) {
+    if (item.seconds > 0) rowFor(item.type).seconds = item.seconds;
+  }
+
+  function progressLabel(label: string, counts: Counts) {
+    const parts = (['篇', '题'] as const).filter((unit) => counts[unit] > 0).map((unit) => `${counts[unit]} ${unit}`);
+    return parts.length ? `${label} ${parts.join('、')}` : '';
+  }
+  return {
+    date: currentDate.value,
+    totalSeconds: todayStudySeconds.value,
+    rows: Array.from(rows, ([type, row], index) => ({
+      type,
+      progress: [progressLabel('完成', row.completed), progressLabel('复习', row.reviewed)].filter(Boolean).join(' · '),
+      seconds: row.seconds,
+      color: taskTypeColor(type, index),
+      softColor: taskTypeSoftColor(type, index),
+    })).sort((a, b) => b.seconds - a.seconds || a.type.localeCompare(b.type)),
+  };
 });
 const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
@@ -5587,6 +5636,10 @@ function taskLastStudyDate(task: Task) {
             <p>{{ todayIso() }}，按当前任务或当前轮剩余量动态均摊</p>
           </div>
           <div class="dashboard-title-actions">
+            <button class="soft-button study-checkin-launch" type="button" @click="studyCheckInDialog?.open(todayCheckInReport)">
+              <ImageIcon :size="16" stroke-width="2" aria-hidden="true" />
+              生成打卡图
+            </button>
             <button
               class="pomodoro-launch"
               :class="{
@@ -6242,10 +6295,16 @@ function taskLastStudyDate(task: Task) {
               <button v-if="recentTodayTimeEntries.length > 5" class="text-button expand-button" type="button" @click="showAllTimeEntries = !showAllTimeEntries">
                 {{ showAllTimeEntries ? '收起' : '展开全部' }}
               </button>
-              <button class="copy-checkin-button" type="button" :disabled="!todayCheckInText" @click="copyTodayCheckIn">
-                <ClipboardList :size="15" stroke-width="2.4" aria-hidden="true" />
-                {{ copiedCheckInKey === 'all' ? '已复制' : '复制打卡' }}
-              </button>
+              <div class="time-checkin-actions">
+                <button class="copy-checkin-button" type="button" :disabled="!todayCheckInText" @click="copyTodayCheckIn">
+                  <ClipboardList :size="15" stroke-width="2.4" aria-hidden="true" />
+                  {{ copiedCheckInKey === 'all' ? '已复制' : '复制打卡' }}
+                </button>
+                <button class="copy-checkin-button" type="button" @click="studyCheckInDialog?.open(todayCheckInReport)">
+                  <ImageIcon :size="15" stroke-width="2" aria-hidden="true" />
+                  生成打卡图
+                </button>
+              </div>
               <form class="manual-time-form" @submit.prevent="addManualStudyTime">
                 <label class="select-control">
                   <select v-model="manualStudyExamType" aria-label="题型">
@@ -7451,5 +7510,6 @@ function taskLastStudyDate(task: Task) {
       </form>
     </div>
 
+    <StudyCheckInDialog ref="studyCheckInDialog" />
   </main>
 </template>

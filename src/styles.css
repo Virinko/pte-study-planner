@@ -8542,7 +8542,6 @@ nav button:focus-visible {
 }
 
 .progress-page .time-progress-card .copy-checkin-button {
-  grid-column: 4;
   min-height: 30px;
   display: inline-flex;
   align-items: center;
@@ -8590,8 +8589,18 @@ nav button:focus-visible {
   white-space: nowrap;
 }
 
-.progress-page .time-progress-card .time-log-block .chart-head .copy-checkin-button {
+.progress-page .time-progress-card .time-log-block .chart-head .time-checkin-actions {
   grid-column: 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.study-checkin-launch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .progress-page .time-progress-card .time-log-block .chart-head .manual-time-form {
@@ -9093,7 +9102,7 @@ nav button:focus-visible {
 
   .progress-page .time-progress-card .time-log-block .chart-head h3,
   .progress-page .time-progress-card .time-log-block .chart-head .expand-button,
-  .progress-page .time-progress-card .time-log-block .chart-head .copy-checkin-button,
+  .progress-page .time-progress-card .time-log-block .chart-head .time-checkin-actions,
   .progress-page .time-progress-card .time-log-block .chart-head .manual-time-form {
     grid-column: auto;
   }
