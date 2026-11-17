@@ -6300,10 +6300,6 @@ function taskLastStudyDate(task: Task) {
                   <ClipboardList :size="15" stroke-width="2.4" aria-hidden="true" />
                   {{ copiedCheckInKey === 'all' ? '已复制' : '复制打卡' }}
                 </button>
-                <button class="copy-checkin-button" type="button" @click="studyCheckInDialog?.open(todayCheckInReport)">
-                  <ImageIcon :size="15" stroke-width="2" aria-hidden="true" />
-                  生成打卡图
-                </button>
               </div>
               <form class="manual-time-form" @submit.prevent="addManualStudyTime">
                 <label class="select-control">
