@@ -1187,6 +1187,7 @@ const todayTaskGroups = computed(() => [
   ...group,
   target: group.rows.reduce((sum, task) => sum + task.dailyTarget, 0),
   completed: group.rows.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0),
+  completedTasks: group.rows.filter((task) => task.doneToday).length,
 })));
 const todayPomodoroTasks = computed(() => activeTodayTaskRows.value.filter((task) => task.target > 0));
 const activeTodayLogTotal = computed(() => activeTodayTaskRows.value.reduce((sum, task) => sum + Math.max(0, task.todayCompleted), 0));
@@ -2460,7 +2461,9 @@ function timerSeconds(type: TimeLogType, id: string) {
 }
 
 function isTimerRunning(type: TimeLogType, id: string) {
-  return timerSeconds(type, id) > 0 && !runningTimer.value?.paused;
+  return runningTimerIdentity(runningTimer.value) === timerIdentity(type, id)
+    && Boolean(runningTimer.value?.firstStartedAt)
+    && !runningTimer.value?.paused;
 }
 
 function isTimerPaused(type: TimeLogType, id: string) {
@@ -2468,8 +2471,8 @@ function isTimerPaused(type: TimeLogType, id: string) {
 }
 
 function timerEntryLabel(type: TimeLogType, id: string) {
+  if (runningTimerIdentity(runningTimer.value) !== timerIdentity(type, id) || !runningTimer.value?.firstStartedAt) return '计时';
   const seconds = timerSeconds(type, id);
-  if (seconds <= 0) return '计时';
   return `${runningTimer.value?.paused ? '已暂停' : '计时中'} ${formatDuration(seconds)}`;
 }
 
@@ -5690,14 +5693,22 @@ function taskLastStudyDate(task: Task) {
               <h3 :id="`today-task-group-${group.key}-title`">{{ group.title }}</h3>
               <p>{{ group.rows.length }} 项任务</p>
             </div>
-            <span v-if="group.rows.length">今日进度 {{ group.completed }} / {{ group.target }} 题/篇</span>
+            <div v-if="group.rows.length" class="today-task-group-summary">
+              <span>今日进度 {{ group.completed }} / {{ group.target }} 题/篇</span>
+              <div class="today-task-group-completion">
+                <span class="task-completion-segments" role="img" :aria-label="`已完成 ${group.completedTasks} / ${group.rows.length} 项`">
+                  <i v-for="task in group.rows" :key="task.id" :class="{ 'is-complete': task.doneToday }" />
+                </span>
+                <span>已完成 {{ group.completedTasks }} / {{ group.rows.length }} 项</span>
+              </div>
+            </div>
           </div>
           <div v-if="group.rows.length" class="dashboard-table today-table">
             <div class="dashboard-table-head">
               <span>任务</span><span>计时</span><span>今日目标</span><span>今日进度</span><span>当前进度</span><span>状态</span><span>操作</span>
             </div>
             <template v-for="task in group.rows" :key="task.id">
-              <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id) }">
+              <div class="dashboard-table-row" :class="{ 'itemized-task-row': task.trackingMode === 'itemized' && isItemizedExpanded(task.id), 'is-today-complete': task.doneToday }">
                 <strong class="task-name-cell">
                   <span class="task-name-line">{{ taskDisplayName(task) }}<b v-if="task.trackingMode === 'itemized'">背诵型</b></span>
                   <small><span class="today-platform-tag" :class="answerPlatformTagClass(task.platform)">{{ task.platform }}</span><b v-if="task.roundModeEnabled" class="round-chip" :class="roundStageClass(task)">{{ roundStageLabel(task) }}</b><b v-else-if="task.repeatCount > 1" class="round-chip">第 {{ task.currentRound }} / {{ task.repeatCount }} 遍</b></small>
@@ -5711,12 +5722,11 @@ function taskLastStudyDate(task: Task) {
                 </span>
                 <span class="today-progress-cell" :class="{ boxed: task.trackingMode === 'itemized' }">
                   <span class="progress-meta">
-                    <strong v-if="task.trackingMode === 'itemized'">今日已完成 {{ task.todayCompleted }} / {{ task.dailyTarget }} 篇</strong>
-                    <strong v-else>{{ task.todayCompleted }} / {{ task.dailyTarget }}</strong>
+                    <strong><span class="today-progress-done">{{ task.todayCompleted }}</span><span class="today-progress-goal"> / {{ task.dailyTarget }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</span></strong>
                     <b>{{ task.todayPercent }}%</b>
                   </span>
                   <span class="progress-track"><i :style="{ width: `${task.todayPercent}%`, background: task.accent }" /></span>
-                  <small class="progress-support-text">今日剩余 {{ Math.max(0, task.dailyTarget - task.todayCompleted) }} {{ task.trackingMode === 'itemized' ? '篇' : '题' }}</small>
+                  <small class="progress-support-text">{{ task.doneToday ? '今日目标达成' : `剩余 ${task.remainingToday} ${task.trackingMode === 'itemized' ? '篇' : '题'}` }}</small>
                 </span>
                 <span class="today-progress-cell overall-progress-cell">
                   <span class="progress-meta">
@@ -5726,7 +5736,7 @@ function taskLastStudyDate(task: Task) {
                   <span class="progress-track"><i :style="{ width: `${task.summaryPercent}%`, background: task.accent }" /></span>
                   <small v-if="currentTaskRoundDeadline(task)" class="progress-support-text" :class="task.roundModeEnabled ? ['round-deadline-text', roundStageClass(task)] : undefined">{{ currentTaskRoundDeadline(task) }}</small>
                 </span>
-                <em :class="task.todayStatusClass">{{ task.todayStatus }}</em>
+                <em :class="task.todayStatus === '超额完成' ? 'status-extra' : task.doneToday ? 'status-ok' : task.todayStatus === '已超时' ? 'status-overdue' : 'status-warn'">{{ task.todayStatus === '超额完成' ? '超额完成' : task.doneToday ? '✓ 已完成' : task.todayStatus }}</em>
                 <span class="row-actions">
                   <button v-if="task.trackingMode === 'itemized'" class="itemized-open" type="button" @click="toggleItemizedDetails(task.id)">
                     {{ isItemizedExpanded(task.id) ? '收起详情' : '查看详情' }}

@@ -3761,7 +3761,7 @@ nav button.active::after {
 .today-table .dashboard-table-head,
 .today-table .dashboard-table-row {
   min-width: 0;
-  grid-template-columns: minmax(230px, 1.15fr) 92px .48fr minmax(180px, 1fr) minmax(180px, 1fr) minmax(78px, .55fr) minmax(132px, .72fr);
+  grid-template-columns: minmax(210px, 1.15fr) 120px minmax(90px, .48fr) minmax(180px, 1fr) minmax(180px, 1fr) minmax(78px, .55fr) minmax(132px, .72fr);
 }
 
 .today-table .dashboard-table-head > :last-child {
@@ -9664,9 +9664,22 @@ nav button.active {
 }
 
 .timer-entry-button.is-running {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   color: #218655;
   background: #F0FBF4;
   border-color: #A9DFC1;
+}
+
+.timer-entry-button.is-running::before {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
 }
 
 .timer-entry-button.is-paused {
@@ -11772,4 +11785,150 @@ textarea:focus {
   .answer-detail-row {
     transition: none;
   }
+}
+
+/* Today's task tables */
+.today-task-group-heading {
+  align-items: flex-start;
+}
+
+.today-task-group-summary {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  color: #526078;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.today-task-group-completion {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: #167a48;
+  font-weight: 600;
+}
+
+.task-completion-segments {
+  display: flex;
+  gap: 4px;
+}
+
+.task-completion-segments i {
+  width: 10px;
+  height: 6px;
+  border-radius: 999px;
+  background: #e8edef;
+}
+
+.task-completion-segments i.is-complete {
+  background: #4aa773;
+}
+
+.today-table .dashboard-table-head,
+.today-table .dashboard-table-row {
+  border-bottom-color: #eceef1;
+}
+
+.today-table .dashboard-table-head > :nth-child(3),
+.today-table .daily-target-cell {
+  white-space: nowrap;
+}
+
+.today-table .dashboard-table-row {
+  position: relative;
+  background: #fff;
+}
+
+.today-table .dashboard-table-row.is-today-complete {
+  background: #f1faf4;
+  border-radius: 8px;
+}
+
+.today-table .dashboard-table-row.is-today-complete::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  border-radius: 8px 0 0 8px;
+  background: #58b77b;
+  content: '';
+}
+
+.today-table .today-progress-cell .progress-track {
+  background: #eeedf0;
+}
+
+.today-table .progress-meta b,
+.today-table .daily-target-cell {
+  color: #69758a;
+}
+
+.today-table .today-progress-done,
+.today-table .today-progress-goal {
+  color: #283449;
+}
+
+.today-table .today-progress-cell .progress-support-text {
+  color: #69758a;
+  text-align: left;
+}
+
+.today-table .today-progress-cell .progress-support-text.round-deadline-text {
+  color: var(--round-color);
+}
+
+.today-table .is-today-complete .today-progress-done,
+.today-table .is-today-complete .today-progress-goal,
+.today-table .is-today-complete .today-progress-cell:not(.overall-progress-cell) .progress-meta b,
+.today-table .is-today-complete .today-progress-cell:not(.overall-progress-cell) .progress-support-text {
+  color: #16804c;
+}
+
+.today-table .dashboard-table-row > em:not(.status-ok):not(.status-extra) {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  background: transparent;
+  font-weight: 500;
+}
+
+.today-table .dashboard-table-row > em.status-warn {
+  color: #946a50;
+}
+
+.today-table .dashboard-table-row > em.status-overdue {
+  color: #b9504a;
+}
+
+.today-table .dashboard-table-row > em:not(.status-ok):not(.status-extra)::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.today-table .dashboard-table-row > em.status-warn::before {
+  background: #d89562;
+}
+
+.today-table .dashboard-table-row > em.status-ok {
+  color: #167a48;
+  background: #dff2e6;
+  font-weight: 600;
+}
+
+.today-table .task-name-cell .today-platform-tag,
+.today-table .task-name-cell .round-chip {
+  border-color: transparent;
+}
+
+.today-table .row-actions .itemized-open {
+  color: #6744ae;
+  background: #f0eafb;
+  border-color: #e7ddf8;
 }
