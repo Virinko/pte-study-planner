@@ -8762,23 +8762,34 @@ nav button:focus-visible {
   cursor: pointer;
 }
 
-.practice-report-copy {
+.practice-report-copy,
+.practice-report-image {
   min-height: 46px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
   padding: 0 15px;
-  color: #fff;
-  background: #5b4fc7;
-  border: 1px solid #5b4fc7;
   border-radius: 999px;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
 }
 
-.practice-report-copy:disabled {
+.practice-report-copy {
+  color: #fff;
+  background: #5b4fc7;
+  border: 1px solid #5b4fc7;
+}
+
+.practice-report-image {
+  color: #5b4fc7;
+  background: #fbfaff;
+  border: 1px solid #d8d0ff;
+}
+
+.practice-report-copy:disabled,
+.practice-report-image:disabled {
   opacity: .5;
   cursor: not-allowed;
 }
@@ -9067,17 +9078,18 @@ nav button:focus-visible {
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 960px) {
   .practice-report-top {
     grid-template-columns: 1fr;
     align-items: flex-start;
   }
 
   .practice-report-controls {
-    align-items: flex-start;
     justify-content: flex-start;
   }
+}
 
+@media (max-width: 760px) {
   .practice-report-type-cards {
     grid-template-columns: 1fr;
   }

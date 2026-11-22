@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import RecallPage from './RecallPage.vue';
+import { buildPracticeReportImageDownload } from './practiceReportImage';
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, RecallReviewTarget, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
@@ -848,6 +849,7 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
+const isGeneratingPracticeReportImage = ref(false);
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
 watch(tab, (value) => {
@@ -5305,6 +5307,31 @@ async function copyPracticeReport() {
   await copyCheckInText(lines.join('\n'), 'practice-report');
 }
 
+async function generatePracticeReportImage() {
+  if (isGeneratingPracticeReportImage.value || !practiceReportDetails.value.length) return;
+  isGeneratingPracticeReportImage.value = true;
+  try {
+    const result = await buildPracticeReportImageDownload(
+      practiceReportDate.value,
+      practiceReportTotalSeconds.value,
+      practiceReportDetails.value,
+      formatDurationCompact,
+    );
+    const url = URL.createObjectURL(result.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = result.filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (error) {
+    alert(`生成竖屏图失败：${error instanceof Error ? error.message : '请稍后重试'}`);
+  } finally {
+    isGeneratingPracticeReportImage.value = false;
+  }
+}
+
 function deleteAllSubItems(task: Task) {
   if (task.subItems.length === 0) return;
   if (!confirm(`确定删除「${task.name || '当前任务'}」的全部子项目吗？`)) return;
@@ -6401,6 +6428,10 @@ function taskLastStudyDate(task: Task) {
               <button class="practice-report-copy" type="button" :disabled="!practiceReportDetails.length" @click="copyPracticeReport">
                 <Copy :size="16" aria-hidden="true" />
                 {{ copiedCheckInKey === 'practice-report' ? '已复制' : '复制当日清单' }}
+              </button>
+              <button class="practice-report-image" type="button" :disabled="!practiceReportDetails.length || isGeneratingPracticeReportImage" @click="generatePracticeReportImage">
+                <FileDown :size="16" aria-hidden="true" />
+                {{ isGeneratingPracticeReportImage ? '生成中…' : '生成竖屏图' }}
               </button>
             </div>
           </div>
