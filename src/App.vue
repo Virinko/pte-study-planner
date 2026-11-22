@@ -3,12 +3,10 @@ import { BarChart, GaugeChart, LineChart, PieChart } from 'echarts/charts';
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { graphic, init, use, type ECharts, type EChartsCoreOption } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Image as ImageIcon, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
+import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import RecallPage from './RecallPage.vue';
-import StudyCheckInDialog from './StudyCheckInDialog.vue';
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
-import type { StudyCheckInReport } from './studyCheckInImage';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, RecallReviewTarget, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
 
 use([BarChart, GaugeChart, LineChart, PieChart, GridComponent, LegendComponent, TitleComponent, TooltipComponent, CanvasRenderer]);
@@ -142,6 +140,7 @@ interface RunningPomodoro {
 }
 
 type ReviewPlanRow = ReviewPlan & { dueDate: string; overdue: boolean };
+type PracticeReportDetail = { kind: '主任务' | '复习'; text: string; dueDate?: string };
 const pomodoroDurationOptions = [
   { seconds: 5, value: 5, unit: '秒测试' },
   { seconds: 1500, value: 25, unit: '分钟' },
@@ -469,6 +468,8 @@ function normalizeReviewLog(log: Partial<ReviewLogEntry>, date: string): ReviewL
     taskId: log.taskId || '',
     taskName: log.taskName || '复习任务',
     amount: Math.max(0, Math.floor(Number(log.amount || 0))),
+    subItemId: log.subItemId || undefined,
+    subItemTitle: log.subItemTitle || undefined,
     createdAt: log.createdAt || `${date}T12:00:00`,
   };
 }
@@ -847,7 +848,6 @@ const manualStudySeconds = ref('');
 const manualStudyTimeType = ref<StudyTimeType>('main');
 const manualStudyNote = ref('');
 const copiedCheckInKey = ref('');
-const studyCheckInDialog = ref<InstanceType<typeof StudyCheckInDialog> | null>(null);
 const nowMs = ref(Date.now());
 const currentDate = computed(() => { nowMs.value; return todayIso(); });
 watch(tab, (value) => {
@@ -1462,52 +1462,6 @@ const timeByExamTypeRows = computed(() => {
     .map(([type, seconds], index) => ({ type, seconds, color: taskTypeColor(type, index), softColor: taskTypeSoftColor(type, index) }))
     .sort((a, b) => b.seconds - a.seconds);
 });
-const todayCheckInReport = computed<StudyCheckInReport>(() => {
-  type Counts = Record<'篇' | '题', number>;
-  const rows = new Map<string, { completed: Counts; reviewed: Counts; seconds: number }>();
-  const tasks = new Map(data.value.tasks.map((task) => [task.id, task]));
-  function rowFor(type: string) {
-    let row = rows.get(type);
-    if (!row) {
-      row = { completed: { 篇: 0, 题: 0 }, reviewed: { 篇: 0, 题: 0 }, seconds: 0 };
-      rows.set(type, row);
-    }
-    return row;
-  }
-  for (const [id, amount] of Object.entries(todayLogByTask.value)) {
-    if (amount <= 0) continue;
-    const task = tasks.get(id);
-    const unit = task?.trackingMode === 'itemized' ? '篇' : '题';
-    rowFor(task ? taskInitials(task.name) : 'GEN').completed[unit] += amount;
-  }
-  for (const log of todayReviewLogs.value) {
-    if (log.amount <= 0) continue;
-    const plan = reviewPlanForId(log.reviewPlanId);
-    const task = tasks.get(plan?.taskId || log.taskId);
-    const type = taskInitials(task?.name || plan?.taskName || log.taskName);
-    const itemized = plan ? isItemizedReviewPlan(plan) : task?.trackingMode === 'itemized';
-    rowFor(type).reviewed[itemized ? '篇' : '题'] += log.amount;
-  }
-  for (const item of timeByExamTypeRows.value) {
-    if (item.seconds > 0) rowFor(item.type).seconds = item.seconds;
-  }
-
-  function progressLabel(label: string, counts: Counts) {
-    const parts = (['篇', '题'] as const).filter((unit) => counts[unit] > 0).map((unit) => `${counts[unit]} ${unit}`);
-    return parts.length ? `${label} ${parts.join('、')}` : '';
-  }
-  return {
-    date: currentDate.value,
-    totalSeconds: todayStudySeconds.value,
-    rows: Array.from(rows, ([type, row], index) => ({
-      type,
-      progress: [progressLabel('完成', row.completed), progressLabel('复习', row.reviewed)].filter(Boolean).join(' · '),
-      seconds: row.seconds,
-      color: taskTypeColor(type, index),
-      softColor: taskTypeSoftColor(type, index),
-    })).sort((a, b) => b.seconds - a.seconds || a.type.localeCompare(b.type)),
-  };
-});
 const recentTodayTimeEntries = computed(() => [...todayTimeLogs.value].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
 const visibleTodayTimeEntries = computed(() => showAllTimeEntries.value ? recentTodayTimeEntries.value : recentTodayTimeEntries.value.slice(0, 5));
 const todayPracticeItems = computed(() => {
@@ -1622,23 +1576,75 @@ const practiceReportRows = computed(() => {
     }))
     .sort((a, b) => b.totalCount - a.totalCount || b.totalSeconds - a.totalSeconds || a.type.localeCompare(b.type));
 });
-const practiceReportTotals = computed(() => practiceReportRows.value.reduce((acc, row) => ({
-  mainCount: acc.mainCount + row.mainCount,
-  reviewCount: acc.reviewCount + row.reviewCount,
-  totalCount: acc.totalCount + row.totalCount,
-  mainSeconds: acc.mainSeconds + row.mainSeconds,
-  reviewSeconds: acc.reviewSeconds + row.reviewSeconds,
-  totalSeconds: acc.totalSeconds + row.totalSeconds,
-  typeCount: acc.typeCount + 1,
-}), {
-  mainCount: 0,
-  reviewCount: 0,
-  totalCount: 0,
-  mainSeconds: 0,
-  reviewSeconds: 0,
-  totalSeconds: 0,
-  typeCount: 0,
-}));
+const practiceReportTotalSeconds = computed(() => practiceReportRows.value.reduce((sum, row) => sum + row.totalSeconds, 0));
+const practiceReportDetails = computed(() => {
+  type Group = { type: string; seconds: number; mainCount: number; mainDetails: PracticeReportDetail[]; reviewDetails: PracticeReportDetail[] };
+  const groups = new Map<string, Group>();
+  const ensureGroup = (type: string) => {
+    if (!groups.has(type)) groups.set(type, { type, seconds: 0, mainCount: 0, mainDetails: [], reviewDetails: [] });
+    return groups.get(type)!;
+  };
+  practiceReportRows.value.forEach((row) => { ensureGroup(row.type).seconds = row.totalSeconds; });
+  const tasks = new Map(data.value.tasks.map((task) => [task.id, task]));
+  const mainLogsByTask = new Map<string, DailyLogEntry[]>();
+  (data.value.dailyLogs[practiceReportDate.value] || []).forEach((log) => {
+    mainLogsByTask.set(log.taskId, [...(mainLogsByTask.get(log.taskId) || []), log]);
+  });
+  mainLogsByTask.forEach((logs, taskId) => {
+    const task = tasks.get(taskId);
+    const group = ensureGroup(task ? taskInitials(task.name) : 'GEN');
+    const count = Math.max(0, logs.reduce((sum, log) => sum + (log.count ?? log.amount ?? 0), 0));
+    if (task?.trackingMode !== 'itemized') {
+      group.mainCount += count;
+      return;
+    }
+    const ids = [...new Set(logs.flatMap((log) => log.subItemIds || []))];
+    ids.forEach((id) => {
+      const title = task.subItems.find((item) => item.id === id)?.title;
+      group.mainDetails.push({ kind: '主任务', text: title ? `《${title}》` : '完成 1 篇（篇目已删除）' });
+    });
+    if (count > ids.length) group.mainDetails.push({ kind: '主任务', text: `完成 ${count - ids.length} 篇（旧记录未保存篇名）` });
+  });
+
+  const plans = new Map(Object.entries(data.value.reviewPlans).flatMap(([dueDate, entries]) =>
+    entries.map((plan) => [plan.id, { plan, dueDate }] as const)));
+  const countReviews = new Map<string, { type: string; amount: number; dueDate?: string }>();
+  (data.value.reviewLogs[practiceReportDate.value] || []).forEach((log) => {
+    if (log.amount <= 0) return;
+    const assignment = plans.get(log.reviewPlanId);
+    const task = tasks.get(assignment?.plan.taskId || log.taskId);
+    const type = taskInitials(task?.name || assignment?.plan.taskName || log.taskName);
+    const dueDate = assignment?.dueDate;
+    const itemized = assignment?.plan ? isItemizedReviewPlan(assignment.plan) : task?.trackingMode === 'itemized';
+    if (itemized) {
+      const onlyItemId = assignment?.plan.subItemIds?.length === 1 ? assignment.plan.subItemIds[0] : undefined;
+      const itemId = log.subItemId || onlyItemId;
+      const title = log.subItemTitle || task?.subItems.find((item) => item.id === itemId)?.title;
+      ensureGroup(type).reviewDetails.push({
+        kind: '复习', text: title && log.amount === 1 ? `《${title}》` : `完成 ${log.amount} 篇（旧记录未保存篇名）`, dueDate,
+      });
+      return;
+    }
+    const key = log.reviewPlanId || log.id;
+    const previous = countReviews.get(key);
+    countReviews.set(key, { type, amount: (previous?.amount || 0) + log.amount, dueDate });
+  });
+  countReviews.forEach(({ type, amount, dueDate }) => {
+    ensureGroup(type).reviewDetails.push({ kind: '复习', text: `完成 ${amount} 题`, dueDate });
+  });
+
+  return [...groups.values()].map((group, index) => ({
+    type: group.type,
+    color: taskTypeColor(group.type, index),
+    softColor: taskTypeSoftColor(group.type, index),
+    seconds: group.seconds,
+    details: [
+      ...(group.mainCount > 0 ? [{ kind: '主任务' as const, text: `完成 ${group.mainCount} 题` }] : []),
+      ...group.mainDetails,
+      ...group.reviewDetails.sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || '')),
+    ],
+  }));
+});
 
 function timeTrendAxisInterval(rowCount: number) {
   if (rowCount <= 8) return 0;
@@ -4384,7 +4390,7 @@ function toggleReviewPlanSubItem(date: string, plan: ReviewPlan, itemId: string,
   const completedSubItemIds = checked
     ? [...new Set([...current, itemId])]
     : current.filter((id) => id !== itemId);
-  updateReviewPlan(date, plan.id, { completedSubItemIds });
+  updateReviewPlan(date, plan.id, { completedSubItemIds }, itemId);
 }
 
 function updateReviewSubItemFamiliarity(taskId: string, itemId: string, familiarity: Familiarity) {
@@ -4397,7 +4403,7 @@ function updateReviewSubItemFamiliarity(taskId: string, itemId: string, familiar
   saveLocal({ ...data.value, tasks: nextTasks });
 }
 
-function applyReviewProgressDelta(reviewLogs: StudyData['reviewLogs'], plan: ReviewPlan, delta: number): StudyData['reviewLogs'] {
+function applyReviewProgressDelta(reviewLogs: StudyData['reviewLogs'], plan: ReviewPlan, delta: number, subItemId?: string): StudyData['reviewLogs'] {
   const next = Object.entries(reviewLogs || {}).reduce<StudyData['reviewLogs']>((acc, [date, logs]) => {
     acc[date] = logs.map((log) => ({ ...log }));
     return acc;
@@ -4411,6 +4417,7 @@ function applyReviewProgressDelta(reviewLogs: StudyData['reviewLogs'], plan: Rev
       taskId: plan.taskId,
       taskName: plan.taskName,
       amount: delta,
+      ...(subItemId ? { subItemId, subItemTitle: reviewPlanTask(plan)?.subItems.find((item) => item.id === subItemId)?.title || '' } : {}),
       createdAt: new Date().toISOString(),
     };
     next[date] = [...(next[date] || []), entry];
@@ -4418,23 +4425,27 @@ function applyReviewProgressDelta(reviewLogs: StudyData['reviewLogs'], plan: Rev
   }
 
   let remaining = Math.abs(delta);
-  Object.keys(next).sort((a, b) => b.localeCompare(a)).forEach((date) => {
-    if (remaining <= 0) return;
-    const logs = next[date];
-    for (let index = logs.length - 1; index >= 0 && remaining > 0; index -= 1) {
-      const log = logs[index];
-      if (log.reviewPlanId !== plan.id) continue;
-      const removed = Math.min(log.amount, remaining);
-      log.amount -= removed;
-      remaining -= removed;
-      if (log.amount <= 0) logs.splice(index, 1);
+  const dates = Object.keys(next).sort((a, b) => b.localeCompare(a));
+  for (const matchId of subItemId ? [subItemId, ''] : ['*']) {
+    for (const date of dates) {
+      if (remaining <= 0) break;
+      if (!next[date]) continue;
+      const logs = next[date];
+      for (let index = logs.length - 1; index >= 0 && remaining > 0; index -= 1) {
+        const log = logs[index];
+        if (log.reviewPlanId !== plan.id || (matchId !== '*' && (log.subItemId || '') !== matchId)) continue;
+        const removed = Math.min(log.amount, remaining);
+        log.amount -= removed;
+        remaining -= removed;
+        if (log.amount <= 0) logs.splice(index, 1);
+      }
+      if (logs.length === 0) delete next[date];
     }
-    if (logs.length === 0) delete next[date];
-  });
+  }
   return next;
 }
 
-function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>) {
+function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPlan>, completedSubItemId?: string) {
   const plans = data.value.reviewPlans[date] || [];
   const previousPlan = plans.find((plan) => plan.id === planId);
   let updatedPlan: ReviewPlan | undefined;
@@ -4453,7 +4464,7 @@ function updateReviewPlan(date: string, planId: string, patch: Partial<ReviewPla
   }).filter((plan) => plan.target > 0 || plan.completed > 0 || (plan.subItemIds?.length || 0) > 0);
   const delta = previousPlan && updatedPlan ? updatedPlan.completed - previousPlan.completed : 0;
   const reviewLogs = delta !== 0 && updatedPlan
-    ? applyReviewProgressDelta(data.value.reviewLogs, updatedPlan, delta)
+    ? applyReviewProgressDelta(data.value.reviewLogs, updatedPlan, delta, completedSubItemId)
     : data.value.reviewLogs;
   saveLocal({ ...data.value, reviewPlans: { ...data.value.reviewPlans, [date]: nextPlans }, reviewLogs });
 }
@@ -5281,6 +5292,19 @@ async function copyExamTypeCheckIn(type: string, seconds: number) {
   await copyCheckInText(`${type}${formatCheckInDuration(seconds)}`, `type:${type}`);
 }
 
+async function copyPracticeReport() {
+  if (!practiceReportDetails.value.length) return;
+  const lines = [`${practiceReportDate.value} 练习日报`, `总学习时长 ${formatDurationCompact(practiceReportTotalSeconds.value)}`];
+  practiceReportDetails.value.forEach((group) => {
+    lines.push(`${group.type} · 总用时 ${group.seconds > 0 ? formatDurationCompact(group.seconds) : '未记录'}`);
+    if (!group.details.length) lines.push('  仅记录学习时长');
+    group.details.forEach((detail) => {
+      lines.push(`  ${detail.kind}${detail.text}${detail.dueDate ? ` · 原定完成日期 ${detail.dueDate}` : ''}`);
+    });
+  });
+  await copyCheckInText(lines.join('\n'), 'practice-report');
+}
+
 function deleteAllSubItems(task: Task) {
   if (task.subItems.length === 0) return;
   if (!confirm(`确定删除「${task.name || '当前任务'}」的全部子项目吗？`)) return;
@@ -5639,10 +5663,6 @@ function taskLastStudyDate(task: Task) {
             <p>{{ todayIso() }}，按当前任务或当前轮剩余量动态均摊</p>
           </div>
           <div class="dashboard-title-actions">
-            <button class="soft-button study-checkin-launch" type="button" @click="studyCheckInDialog?.open(todayCheckInReport)">
-              <ImageIcon :size="16" stroke-width="2" aria-hidden="true" />
-              生成打卡图
-            </button>
             <button
               class="pomodoro-launch"
               :class="{
@@ -6357,7 +6377,7 @@ function taskLastStudyDate(task: Task) {
               </span>
               <div>
                 <h2>练习日报</h2>
-                <p>按日期查看题型练习量、学习时长和当天计时记录。</p>
+                <p>按题型查看当天完成的主任务、复习和总用时。</p>
               </div>
             </div>
             <div class="practice-report-controls">
@@ -6378,67 +6398,45 @@ function taskLastStudyDate(task: Task) {
                 <input v-model="practiceReportDate" type="date" aria-label="选择练习日报日期">
                 <ChevronDown :size="15" stroke-width="2.5" aria-hidden="true" />
               </label>
+              <button class="practice-report-copy" type="button" :disabled="!practiceReportDetails.length" @click="copyPracticeReport">
+                <Copy :size="16" aria-hidden="true" />
+                {{ copiedCheckInKey === 'practice-report' ? '已复制' : '复制当日清单' }}
+              </button>
             </div>
           </div>
 
-          <div class="practice-report-hero">
-            <article class="report-stat-card purple">
-              <span class="report-stat-icon"><CalendarDays :size="24" stroke-width="2.4" aria-hidden="true" /></span>
-              <div>
-                <span>练习日期</span>
-                <strong>{{ practiceReportDate }}</strong>
-              </div>
-            </article>
-            <article class="report-stat-card blue">
-              <span class="report-stat-icon"><PencilLine :size="24" stroke-width="2.4" aria-hidden="true" /></span>
-              <div>
-                <span>练习量</span>
-                <strong>{{ practiceReportTotals.totalCount }} <small>题</small></strong>
-              </div>
-            </article>
-            <article class="report-stat-card green">
-              <span class="report-stat-icon"><Clock :size="24" stroke-width="2.4" aria-hidden="true" /></span>
-              <div>
-                <span>学习时长</span>
-                <strong>{{ formatDurationCompact(practiceReportTotals.totalSeconds) }}</strong>
-              </div>
-            </article>
-            <article class="report-stat-card orange">
-              <span class="report-stat-icon"><TrendingUp :size="24" stroke-width="2.4" aria-hidden="true" /></span>
-              <div>
-                <span>题型数</span>
-                <strong>{{ practiceReportTotals.typeCount }} <small>类</small></strong>
-              </div>
-            </article>
-          </div>
-
-          <div class="practice-report-record-panel">
-            <div class="practice-report-record-head">
-              <div>
-                <TrendingUp :size="20" stroke-width="2.4" aria-hidden="true" />
-                <h3>题型练习记录</h3>
-              </div>
+          <div v-if="practiceReportDetails.length" class="practice-report-detail-list">
+            <div class="practice-report-meta">
+              <span class="practice-report-meta-date">
+                <CalendarDays :size="17" aria-hidden="true" />
+                {{ practiceReportDate }}
+              </span>
+              <span class="practice-report-meta-duration">
+                <Clock :size="17" aria-hidden="true" />
+                <span>总学习时长</span>
+                <strong>{{ formatDurationCompact(practiceReportTotalSeconds) }}</strong>
+              </span>
             </div>
-
-            <div v-if="practiceReportRows.length" class="practice-report-type-list">
-              <article
-                v-for="row in practiceReportRows"
-                :key="row.type"
-                :style="{ '--type-color': row.color, '--type-soft': row.softColor }"
-              >
-                <span class="type-badge">{{ row.type }}</span>
-                <div>
-                  <strong>{{ row.totalCount }} 题</strong>
-                  <small>主 {{ row.mainCount }} · 复习 {{ row.reviewCount > 0 ? row.reviewCount : '--' }}</small>
+            <div class="practice-report-type-cards">
+              <section v-for="group in practiceReportDetails" :key="group.type" class="practice-report-detail-group" :style="{ '--type-color': group.color, '--type-soft': group.softColor }">
+                <div class="practice-report-group-head">
+                  <strong class="practice-report-type-badge">{{ group.type }}</strong>
+                  <span class="practice-report-group-time"><Clock :size="16" aria-hidden="true" />{{ group.seconds > 0 ? formatDurationCompact(group.seconds) : '未记录用时' }}</span>
                 </div>
-                <span class="report-row-time">
-                  <Clock :size="16" stroke-width="2.4" aria-hidden="true" />
-                  <b>{{ formatDurationCompact(row.totalSeconds) }}</b>
-                </span>
-              </article>
+                <div v-if="group.details.length" class="practice-report-entries">
+                  <div v-for="(detail, index) in group.details" :key="`${group.type}-${index}`" class="practice-report-entry">
+                    <span :class="{ 'is-review': detail.kind === '复习' }">{{ detail.kind }}</span>
+                    <div class="practice-report-entry-copy">
+                      <strong>{{ detail.text }}</strong>
+                      <small v-if="detail.dueDate">原定完成日期 {{ detail.dueDate }}</small>
+                    </div>
+                  </div>
+                </div>
+                <p v-else class="practice-report-time-only">仅记录学习时长</p>
+              </section>
             </div>
-            <p v-else class="soft-empty">这一天还没有练习量或学习时长记录。</p>
           </div>
+          <p v-else class="soft-empty">这一天还没有练习量或学习时长记录。</p>
 
         </section>
       </div>
@@ -7516,6 +7514,5 @@ function taskLastStudyDate(task: Task) {
       </form>
     </div>
 
-    <StudyCheckInDialog ref="studyCheckInDialog" />
   </main>
 </template>

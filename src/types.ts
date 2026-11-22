@@ -120,6 +120,8 @@ export interface ReviewLogEntry {
   taskId: string;
   taskName: string;
   amount: number;
+  subItemId?: string;
+  subItemTitle?: string;
   createdAt: string;
 }
 export interface ReviewLogs { [date: string]: ReviewLogEntry[]; }

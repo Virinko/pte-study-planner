@@ -484,7 +484,8 @@ function saveSession() {
         } : task),
         reviewPlans: { ...next.reviewPlans, [props.reviewTarget!.date]: next.reviewPlans[props.reviewTarget!.date].map((plan) => plan.id === review.plan.id ? updatedPlan : plan) },
         reviewLogs: { ...next.reviewLogs, [date]: [...(next.reviewLogs[date] || []), {
-          id: crypto.randomUUID(), reviewPlanId: review.plan.id, taskId: review.task.id, taskName: review.task.name, amount: 1, createdAt: savedAt,
+          id: crypto.randomUUID(), reviewPlanId: review.plan.id, taskId: review.task.id, taskName: review.task.name, amount: 1,
+          subItemId: review.item.id, subItemTitle: review.item.title, createdAt: savedAt,
         }] },
       };
     } else if (linked) {
