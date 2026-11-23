@@ -44,12 +44,21 @@ const templateDirty = reactive<Record<TemplateType, boolean>>({
   WE: !props.data.recallTemplates?.WE && !!legacyCommon('WE'),
   SST: !props.data.recallTemplates?.SST && !!legacyCommon('SST'),
 });
+const templateEditing = reactive<Record<TemplateType, boolean>>({
+  WE: !props.data.recallTemplates?.WE,
+  SST: !props.data.recallTemplates?.SST,
+});
 const templateTouched = reactive<Record<TemplateType, boolean>>({ WE: false, SST: false });
 const templateSaveStatus = reactive<Record<TemplateType, string>>({
   WE: templateDirty.WE ? '检测到旧版仅保存在本机的模板，请点击保存模板以同步。' : '',
   SST: templateDirty.SST ? '检测到旧版仅保存在本机的模板，请点击保存模板以同步。' : '',
 });
 const templateSaveError = reactive<Record<TemplateType, boolean>>({ WE: false, SST: false });
+const editingEntryTemplateKey = ref('');
+const entryTemplateEditing = ref(false);
+const entryTemplateDraft = ref('');
+const entryTemplateStatus = ref('');
+const entryTemplateError = ref(false);
 const type = ref<ExamType>('WE');
 const view = ref<View>('choose');
 const search = ref('');
@@ -80,10 +89,7 @@ const resultParts = ref<ResultPart[]>([]);
 const details = ref<Detail[]>([]);
 let interval: number | undefined;
 
-const recallTypes = computed(() => [...new Set([
-  'WE', 'SST',
-  ...props.data.tasks.filter((task) => task.trackingMode === 'itemized').map((task) => task.name.trim().split(/\s+/)[0].toUpperCase()),
-])]);
+const recallTypes = computed(() => ['WE', 'SST']);
 const selectedTemplateType = computed<TemplateType | null>(() => type.value === 'WE' || type.value === 'SST' ? type.value : null);
 const entries = computed<RecallEntry[]>(() => {
   const convert = (rows: Array<LocalAnswer | AnswerEntry>, source: RecallEntry['source']) => rows
@@ -97,8 +103,10 @@ const entries = computed<RecallEntry[]>(() => {
   return [...convert(ownAnswers.value, 'own'), ...convert(props.data.answerEntries, 'library')];
 });
 const wordCount = computed(() => written.value.trim().match(/\S+/g)?.length || 0);
+const hasEntryTemplate = (entry: RecallEntry) => Boolean(props.data.recallEntryTemplates?.[entry.key]);
+const activeTemplateSource = computed(() => current.value && hasEntryTemplate(current.value) ? '专属模板' : '通用模板');
 const activeTemplate = computed(() => current.value?.examType === 'WE' || current.value?.examType === 'SST'
-  ? props.data.recallTemplates?.[current.value.examType] || '' : '');
+  ? props.data.recallEntryTemplates?.[current.value.key] || props.data.recallTemplates?.[current.value.examType] || '' : '');
 const templatePreview = computed(() => {
   let index = 0;
   return activeTemplate.value.replace(/\*\*(【[^【】]*】)\*\*/g, '$1')
@@ -176,6 +184,7 @@ function goTo(next: View) {
 function startPractice(entry: RecallEntry) {
   if (reviewAssignment.value && (entry.examType !== type.value || normalizeTitle(entry.title) !== normalizeTitle(reviewAssignment.value.item.title))) return;
   current.value = entry;
+  editingEntryTemplateKey.value = '';
   if (props.reviewTarget) checkTimer.value = true;
   written.value = '';
   answerVisible.value = false;
@@ -196,6 +205,7 @@ function saveTemplate(examType: TemplateType) {
     props.saveProgress({ ...props.data, recallTemplates: { ...props.data.recallTemplates, [examType]: templateDrafts[examType] } });
     templateDirty[examType] = false;
     templateTouched[examType] = false;
+    templateEditing[examType] = !templateDrafts[examType].trim();
     templateSaveError[examType] = false;
     templateSaveStatus[examType] = '已保存到学习进度；云端同步状态请查看页面顶部。';
     delete legacyTemplates[`type:${examType}`];
@@ -206,6 +216,71 @@ function saveTemplate(examType: TemplateType) {
     templateSaveStatus[examType] = '保存失败，请重试。';
     return false;
   }
+}
+function cancelTemplateEdit(examType: TemplateType) {
+  templateDrafts[examType] = props.data.recallTemplates?.[examType] || '';
+  templateDirty[examType] = false;
+  templateTouched[examType] = false;
+  templateEditing[examType] = false;
+  templateSaveStatus[examType] = '';
+  templateSaveError[examType] = false;
+}
+function beginTemplateEdit(examType: TemplateType) {
+  templateEditing[examType] = true;
+  templateSaveStatus[examType] = '';
+}
+function toggleEntryTemplateEditor(entry: RecallEntry) {
+  if (editingEntryTemplateKey.value === entry.key) {
+    editingEntryTemplateKey.value = '';
+    return;
+  }
+  editingEntryTemplateKey.value = entry.key;
+  entryTemplateDraft.value = props.data.recallEntryTemplates?.[entry.key] || '';
+  entryTemplateEditing.value = !hasEntryTemplate(entry);
+  entryTemplateStatus.value = '';
+  entryTemplateError.value = false;
+}
+function saveEntryTemplate(entry: RecallEntry) {
+  const template = entryTemplateDraft.value.trim();
+  const match = extractTemplateSlots(template, entry.answer);
+  if (match.error) {
+    entryTemplateStatus.value = match.error;
+    entryTemplateError.value = true;
+    return;
+  }
+  try {
+    props.saveProgress({ ...props.data, recallEntryTemplates: { ...props.data.recallEntryTemplates, [entry.key]: template } });
+    entryTemplateEditing.value = false;
+    entryTemplateStatus.value = `已保存，识别到 ${match.slots.length} 处空位；这篇文章将优先使用专属模板。`;
+    entryTemplateError.value = false;
+  } catch {
+    entryTemplateStatus.value = '保存失败，请重试。';
+    entryTemplateError.value = true;
+  }
+}
+function clearEntryTemplate(entry: RecallEntry) {
+  try {
+    const next = { ...props.data.recallEntryTemplates };
+    delete next[entry.key];
+    props.saveProgress({ ...props.data, recallEntryTemplates: next });
+    entryTemplateDraft.value = '';
+    entryTemplateEditing.value = true;
+    entryTemplateStatus.value = '已清除专属模板，这篇文章恢复使用通用模板。';
+    entryTemplateError.value = false;
+  } catch {
+    entryTemplateStatus.value = '清除失败，请重试。';
+    entryTemplateError.value = true;
+  }
+}
+function cancelEntryTemplateEdit(entry: RecallEntry) {
+  entryTemplateDraft.value = props.data.recallEntryTemplates?.[entry.key] || '';
+  entryTemplateEditing.value = false;
+  entryTemplateStatus.value = '';
+  entryTemplateError.value = false;
+}
+function returnToTemplateEditor() {
+  goTo('choose');
+  if (current.value && hasEntryTemplate(current.value)) toggleEntryTemplateEditor(current.value);
 }
 function markTemplateEdited(examType: TemplateType) {
   templateDirty[examType] = true;
@@ -248,6 +323,7 @@ watch(() => props.data.recallTemplates, (templates) => {
       templateDrafts[examType] = synced;
       if (templateDirty[examType]) templateSaveStatus[examType] = '';
       templateDirty[examType] = false;
+      templateEditing[examType] = !synced;
     }
   }
 }, { immediate: true });
@@ -579,16 +655,22 @@ function assignExistingTime(entry: StudyTimeEntry) {
       </div>
       <div v-if="selectedTemplateType" class="recall-template-setup">
         <h4>{{ type }} 通用默写模板</h4>
-        <p>保留完整的固定文字，把需要默写的内容写成 <code>【】</code>。例如 <code>Nowadays, the topic of 【】 has become a widely discussed issue.</code>。模板对所有 {{ type }} 文章通用；练习时关闭“仅对比非模板部分”即可校验全文。</p>
+        <p>保留完整的固定文字，把需要默写的内容写成 <code>【】</code>。例如 <code>Nowadays, the topic of 【】 has become a widely discussed issue.</code>。未设置专属模板的 {{ type }} 文章使用此模板；练习时关闭“仅对比非模板部分”即可校验全文。</p>
         <label :for="`recall-template-${type}`">{{ type }} 通用模板</label>
-        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[selectedTemplateType]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="markTemplateEdited(selectedTemplateType)"></textarea>
-        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[selectedTemplateType], pending: templateDirty[selectedTemplateType] && !templateSaveError[selectedTemplateType] }" role="status">{{ templateSaveStatus[selectedTemplateType] || '编辑完成后点击“保存模板”；保存后随现有云端同步。' }}</span><button class="recall-secondary" type="button" :disabled="!templateDirty[selectedTemplateType]" @click="saveTemplate(selectedTemplateType)">保存模板</button></div>
+        <textarea :id="`recall-template-${type}`" v-model="templateDrafts[selectedTemplateType]" :readonly="!templateEditing[selectedTemplateType]" :placeholder="`粘贴 ${type} 通用模板；不使用模板可留空`" spellcheck="false" @input="markTemplateEdited(selectedTemplateType)"></textarea>
+        <div class="recall-template-save-foot"><span :class="{ error: templateSaveError[selectedTemplateType], pending: templateDirty[selectedTemplateType] && !templateSaveError[selectedTemplateType] }" role="status">{{ templateSaveStatus[selectedTemplateType] || (templateEditing[selectedTemplateType] ? '编辑完成后点击“保存模板”；保存后随现有云端同步。' : '模板已保存，点击“编辑模板”后可修改。') }}</span><div class="recall-entry-template-actions"><button v-if="!templateEditing[selectedTemplateType]" class="recall-secondary" type="button" @click="beginTemplateEdit(selectedTemplateType)">编辑模板</button><template v-else><button v-if="data.recallTemplates?.[selectedTemplateType]" class="recall-text" type="button" @click="cancelTemplateEdit(selectedTemplateType)">取消编辑</button><button class="recall-secondary" type="button" :disabled="!templateDirty[selectedTemplateType]" @click="saveTemplate(selectedTemplateType)">保存模板</button></template></div></div>
       </div>
       <div class="recall-toolbar"><input v-model="search" type="search" placeholder="搜索标题、题目或答案内容" aria-label="搜索答案"><span>共 {{ visibleEntries.length }} 篇</span></div>
       <div v-if="visibleEntries.length" class="recall-list">
         <article v-for="entry in visibleEntries" :key="entry.key" class="recall-entry">
-          <div class="recall-entry-main"><div class="recall-entry-title"><span class="recall-badge" :class="{ sst: entry.examType === 'SST' }">{{ entry.examType }}</span><strong>{{ entry.title }}</strong><span v-if="familiarity[entry.key]?.level" class="recall-familiarity-tag">{{ familiarity[entry.key].level }}</span></div><p>{{ entry.source === 'own' ? '旧版本地答案 · 只读' : `答案库${entry.platformRefs.find(item => item.questionNumber) ? ` · ${entry.platformRefs.find(item => item.questionNumber)?.platform} #${entry.platformRefs.find(item => item.questionNumber)?.questionNumber}` : ''}` }}</p><p v-if="entry.question" class="recall-preview">题目：{{ entry.question }}</p><p class="recall-preview">{{ entry.answer.replace(/\s+/g, ' ').slice(0, 125) }}</p></div>
-          <div class="recall-entry-actions"><button class="recall-primary" type="button" @click="startPractice(entry)">开始默写</button></div>
+          <div class="recall-entry-main"><div class="recall-entry-title"><span class="recall-badge" :class="{ sst: entry.examType === 'SST' }">{{ entry.examType }}</span><strong>{{ entry.title }}</strong><span v-if="hasEntryTemplate(entry)" class="recall-template-tag">专属模板</span><span v-if="familiarity[entry.key]?.level" class="recall-familiarity-tag">{{ familiarity[entry.key].level }}</span></div><p>{{ entry.source === 'own' ? '旧版本地答案 · 只读' : `答案库${entry.platformRefs.find(item => item.questionNumber) ? ` · ${entry.platformRefs.find(item => item.questionNumber)?.platform} #${entry.platformRefs.find(item => item.questionNumber)?.questionNumber}` : ''}` }}</p><p v-if="entry.question" class="recall-preview">题目：{{ entry.question }}</p><p class="recall-preview">{{ entry.answer.replace(/\s+/g, ' ').slice(0, 125) }}</p></div>
+          <div class="recall-entry-actions"><button v-if="entry.examType === 'WE' || entry.examType === 'SST'" class="recall-secondary" type="button" :aria-expanded="editingEntryTemplateKey === entry.key" @click="toggleEntryTemplateEditor(entry)">{{ hasEntryTemplate(entry) ? '查看专属模板' : '设置专属模板' }}</button><button class="recall-primary" type="button" @click="startPractice(entry)">开始默写</button></div>
+          <div v-if="editingEntryTemplateKey === entry.key" class="recall-entry-template-editor">
+            <label :for="`recall-entry-template-${entry.key}`">{{ entry.title }} · 专属默写模板</label>
+            <p>仅对这篇文章生效。保留与标准答案一致的固定文字，用 <code>【】</code> 标出默写内容；清除后恢复使用 {{ entry.examType }} 通用模板。</p>
+            <textarea :id="`recall-entry-template-${entry.key}`" v-model="entryTemplateDraft" :readonly="!entryTemplateEditing" placeholder="粘贴这篇文章的完整模板，并用【】标出空位" spellcheck="false" @input="entryTemplateStatus = ''; entryTemplateError = false"></textarea>
+            <div class="recall-template-save-foot"><span :class="{ error: entryTemplateError }" role="status">{{ entryTemplateStatus || (entryTemplateEditing ? '保存前会检查模板与这篇标准答案是否匹配。' : '模板已保存，点击“编辑模板”后可修改。') }}</span><div class="recall-entry-template-actions"><button v-if="hasEntryTemplate(entry)" class="recall-text danger" type="button" @click="clearEntryTemplate(entry)">清除专属模板</button><button v-if="!entryTemplateEditing" class="recall-secondary" type="button" @click="entryTemplateEditing = true; entryTemplateStatus = ''">编辑模板</button><template v-else><button v-if="hasEntryTemplate(entry)" class="recall-text" type="button" @click="cancelEntryTemplateEdit(entry)">取消编辑</button><button class="recall-secondary" type="button" :disabled="!entryTemplateDraft.trim() || entryTemplateDraft.trim() === (data.recallEntryTemplates?.[entry.key] || '')" @click="saveEntryTemplate(entry)">保存专属模板</button></template></div></div>
+          </div>
         </article>
       </div>
       <div v-else class="recall-empty">{{ reviewAssignment ? '未找到符合搜索条件的同名答案。请清空搜索，或先在答案库录入同名答案。' : '还没有符合条件的答案。请先在答案库录入答案。' }}</div>
@@ -612,12 +694,12 @@ function assignExistingTime(entry: StudyTimeEntry) {
 
     <div v-else-if="view === 'write' && current" class="recall-practice-grid">
       <div class="recall-card recall-practice"><div class="recall-practice-title"><span class="recall-badge" :class="{ sst: current.examType === 'SST' }">{{ current.examType }}</span><h3>{{ current.title }}</h3></div><p v-if="current.question" class="recall-prompt">题目：{{ current.question }}</p><p class="recall-muted">{{ answerVisible ? '正在查看标准答案' : '标准答案默认隐藏，可临时查看' }}</p>
-        <div class="recall-options"><label v-if="current.examType === 'WE' || current.examType === 'SST'" class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? '开启后只默写【】中的内容' : '可在第一步录入通用模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" :disabled="Boolean(reviewAssignment)" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
+        <div class="recall-options"><label v-if="current.examType === 'WE' || current.examType === 'SST'" class="recall-switch"><input v-model="compareNonTemplate" type="checkbox" role="switch" :disabled="!activeTemplate.trim()" @change="resultReady = false"><span class="track"></span><span><strong>仅对比非模板部分</strong><small>{{ activeTemplate.trim() ? `当前使用${activeTemplateSource}，开启后只默写【】中的内容` : '可在第一步录入通用模板' }}</small></span></label><label class="recall-switch"><input v-model="checkCase" type="checkbox" role="switch" @change="resultReady = false"><span class="track"></span><span><strong>验证大小写</strong><small>关闭后忽略大小写，仍检查单词与标点</small></span></label><label class="recall-switch timer"><input v-model="checkTimer" type="checkbox" role="switch" :disabled="Boolean(reviewAssignment)" @change="toggleTimer"><span class="track"></span><strong>默写计时</strong><b>{{ timerText }}</b></label></div>
         <div class="recall-answer-toggle"><label class="recall-switch"><input :checked="answerVisible" type="checkbox" role="switch" aria-controls="recall-answer-preview" @change="toggleAnswer"><span class="track"></span><span><strong>查看答案</strong><small>每次打开计 1 次；关闭后继续默写</small></span></label><span class="recall-answer-view-count">已查看 {{ answerViewCount }} 次</span></div>
         <div v-show="answerVisible" id="recall-answer-preview" class="recall-answer-preview" role="region" aria-label="标准答案"><strong>标准答案</strong><p>{{ current.answer }}</p></div>
         <template v-if="compareNonTemplate">
           <p class="recall-template-status" :class="{ error: templateMatch.error }" role="status">{{ templateMatch.error || `按模板顺序填写 ${templateMatch.slots.length} 处空位，每行对应一处；跳过中间空位时请保留空行。` }}</p>
-          <button v-if="templateMatch.error" class="recall-secondary" type="button" @click="goTo('choose')">返回第一步修改通用模板</button>
+          <button v-if="templateMatch.error" class="recall-secondary" type="button" @click="returnToTemplateEditor">返回第一步修改{{ activeTemplateSource }}</button>
           <div v-else class="recall-template-preview"><strong>模板提示</strong><p>{{ templatePreview }}</p></div>
           <div v-if="!templateMatch.error" class="recall-slot-editor">
             <div class="recall-editor-head"><label for="recall-slot-written">按【1】【2】顺序，每行填写一处</label><span>已填 {{ filledSlotCount }} / {{ templateMatch.slots.length }} 处</span></div>
@@ -683,6 +765,8 @@ function assignExistingTime(entry: StudyTimeEntry) {
 .recall-steps{display:flex;gap:9px;margin-bottom:18px}.recall-steps button{display:flex;flex:1;align-items:center;gap:10px;min-height:54px;padding:11px 16px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#8a8490;text-align:left;box-shadow:0 7px 20px rgba(72,62,92,.04)}.recall-steps button.active{border-color:#f1c5d0;background:#fff4f6;color:#c85670}.recall-steps button.done{color:#6d7295}.recall-steps button span{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#f4f0f3;font-size:12px}.recall-steps button.active span{background:#ea7186;color:#fff}.recall-steps button.done span{background:#eeebf6}
 .recall-card{min-width:0;border:1px solid rgba(122,119,185,.16);border-radius:12px;background:#fff;box-shadow:0 14px 34px rgba(72,62,92,.07)}.recall-choose{padding:27px 30px}.recall-section-head,.recall-head-actions,.recall-toolbar,.recall-entry,.recall-entry-actions,.recall-bottom-actions,.recall-result-head,.recall-save-head,.recall-save-foot{display:flex;align-items:center;justify-content:space-between;gap:16px}.recall-section-head{align-items:flex-start;margin-bottom:20px}.recall-section-head h3{font-size:19px}.recall-section-head p{font-size:12px}.recall-head-actions{gap:10px;flex-wrap:wrap}.recall-page button{border-radius:7px;padding:10px 15px;font-size:13px}.recall-primary{border:1px solid transparent;color:#fff;background:linear-gradient(135deg,#7a77b9,#6f58b9);box-shadow:0 8px 18px rgba(122,119,185,.18)}.recall-primary:hover:not(:disabled){background:linear-gradient(135deg,#6e6aab,#6350a8)}.recall-secondary{border:1px solid #d7c9e8;color:#71649c;background:#fff}.recall-ghost{border:1px solid #e7dee8;color:#605a6b;background:#fff}.recall-text{border:0;color:#7a70a6;background:transparent}.recall-text.danger{color:#c65b71}.recall-segmented{display:flex;gap:2px;padding:3px;border-radius:8px;background:#f4eff5}.recall-segmented button{border:0;padding:8px 16px;color:#817b87;background:transparent;font-size:12px}.recall-segmented button.active{color:#c4536d;background:#fff;box-shadow:0 2px 8px rgba(72,62,92,.1)}
 .recall-form{margin-bottom:17px;padding:21px 22px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-form h3{margin-bottom:16px;font-size:16px}.recall-form-grid{display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px}.recall-form-grid label,.recall-link{display:grid;gap:7px;color:#514a59;font-size:12px;font-weight:500}.recall-form-grid .wide{grid-column:1/-1}.recall-form-grid input,.recall-form-grid select,.recall-form-grid textarea,.recall-toolbar input,.recall-link select,.recall-editor{width:100%;border:1px solid #ded7e2;border-radius:7px;padding:10px 12px;color:var(--ink);background:#fff}.recall-form-grid textarea{min-height:135px;resize:vertical;line-height:1.65}.recall-form p{margin-top:12px;color:var(--muted);font-size:12px}.recall-form-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:15px}.recall-feedback{min-height:16px;margin-bottom:13px!important;color:#54846c;font-size:12px}.recall-feedback.error,.recall-save-foot .error{color:#b8566d}.recall-toolbar{margin-bottom:15px}.recall-toolbar input{width:min(340px,100%);font-size:13px}.recall-toolbar span,.recall-entry p,.recall-muted{color:#817b86;font-size:12px}.recall-list{display:grid;gap:10px}.recall-entry{padding:16px 18px;border:1px solid #ece5e9;border-radius:9px}.recall-entry:hover{border-color:#d9c8df;background:#fffdfd}.recall-entry-main{min-width:0}.recall-entry-title,.recall-practice-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.recall-entry-title strong{font-size:14px}.recall-badge,.recall-familiarity-tag{padding:3px 7px;border-radius:5px;color:#7763a8;background:#f1ecf9;font-size:11px;font-weight:500}.recall-badge.sst{color:#be5e7a;background:#fff0f4}.recall-familiarity-tag{color:#7a648e;background:#f7f1f8}.recall-entry p{margin-top:7px}.recall-preview{overflow:hidden;max-width:690px;text-overflow:ellipsis;white-space:nowrap}.recall-entry-actions{flex-shrink:0;gap:8px}.recall-entry-actions .recall-primary{white-space:nowrap}.recall-empty{padding:32px 20px;border:1px dashed #e8dce5;border-radius:8px;background:#fcfafb;color:var(--muted);font-size:13px;text-align:center}
+.recall-entry{flex-wrap:wrap}.recall-entry-main{flex:1 1 280px}.recall-template-tag{padding:3px 7px;border-radius:5px;background:#eef4ff;color:#5e70a1;font-size:11px;font-weight:500}.recall-entry-template-editor{flex:1 0 100%;min-width:0;display:grid;gap:9px;padding-top:15px;border-top:1px solid #ece5e9}.recall-entry-template-editor label{color:#514a59;font-size:12px;font-weight:500}.recall-entry-template-editor p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}.recall-entry-template-editor code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394}.recall-entry-template-editor textarea{width:100%;min-height:120px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-entry-template-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.recall-template-setup textarea[readonly],.recall-entry-template-editor textarea[readonly]{background:#f7f5f8;color:#514a59;cursor:default}
 .recall-template-setup{display:grid;gap:9px;margin-bottom:18px;padding:16px 18px;border:1px solid #e9e0ee;border-radius:9px;background:#fbf9fc}.recall-template-setup h4{margin:0;color:#514a59;font-size:14px;font-weight:500}.recall-template-setup p{color:var(--muted);font-size:12px;line-height:1.6}.recall-template-setup code{padding:2px 4px;border-radius:4px;background:#f1ecfa;color:#665394;white-space:normal}.recall-template-setup label{color:#514a59;font-size:12px;font-weight:500}.recall-template-setup textarea{width:100%;min-height:100px;padding:11px 12px;border:1px solid #ded7e2;border-radius:7px;background:#fff;color:var(--ink);font-size:13px;line-height:1.6;resize:vertical}.recall-template-save-foot{display:flex;align-items:center;justify-content:space-between;gap:12px}.recall-template-save-foot span{color:#54846c;font-size:12px}.recall-template-save-foot span.pending{color:#9a6c2d}.recall-template-save-foot span.error{color:#b8566d}
 .recall-practice-grid{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:17px}.recall-practice{padding:28px 30px}.recall-practice-title h3{font-size:20px}.recall-muted{margin:8px 0 17px!important}.recall-options{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:19px}.recall-switch{display:flex;align-items:center;gap:10px;min-height:54px;padding:10px 12px;border:1px solid #e7dfea;border-radius:8px;background:#faf8fc;cursor:pointer}.recall-options .recall-switch:first-child{flex:1 1 290px}.recall-switch input{position:absolute;width:1px;height:1px;opacity:0}.recall-switch .track{position:relative;flex:0 0 39px;width:39px;height:23px;border-radius:99px;background:#bbc7d8}.recall-switch .track:after{position:absolute;top:3px;left:3px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,35,65,.25);content:'';transition:transform .15s}.recall-switch input:checked + .track{background:#7a77b9}.recall-switch input:checked + .track:after{transform:translateX(16px)}.recall-switch input:focus-visible + .track{outline:2px solid #b99ded;outline-offset:2px}.recall-switch>span:last-child{display:grid;gap:2px}.recall-switch strong{color:#4a4356;font-size:13px}.recall-switch small{color:var(--muted);font-size:11px;font-weight:400}.recall-switch.timer b{min-width:58px;color:#71639f;font-size:17px;font-variant-numeric:tabular-nums;text-align:right}.recall-editor-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:9px;color:#453e50;font-size:13px;font-weight:500}.recall-editor-head span{color:var(--muted)}.recall-editor{display:block;min-height:300px;padding:17px;font-size:15px;line-height:1.8;resize:vertical}.recall-bottom-actions{margin-top:18px}.recall-help{align-self:start;padding:20px;background:#fdfbff}.recall-help h3{font-size:15px}.recall-help p{margin-top:10px;color:var(--muted);font-size:13px;line-height:1.7}.recall-help div{margin-top:17px;padding:12px;border-radius:8px;color:#75649e;background:#f4effa;font-size:12px}
 .recall-answer-toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:17px}.recall-answer-toggle .recall-switch{flex:1}.recall-answer-view-count{flex-shrink:0;color:#71639f;font-size:12px;font-weight:500}.recall-answer-preview{max-height:240px;overflow-y:auto;margin-bottom:18px;padding:15px 17px;border:1px solid #dcd1eb;border-radius:8px;background:#f9f6fd}.recall-answer-preview strong{color:#665394;font-size:13px}.recall-answer-preview p{margin-top:9px;white-space:pre-wrap;overflow-wrap:anywhere;color:#453e50;font-size:14px;line-height:1.8}

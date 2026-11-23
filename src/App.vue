@@ -201,6 +201,11 @@ function normalizeData(source?: Partial<StudyData>): StudyData {
       WE: typeof source?.recallTemplates?.WE === 'string' ? source.recallTemplates.WE : '',
       SST: typeof source?.recallTemplates?.SST === 'string' ? source.recallTemplates.SST : '',
     },
+    recallEntryTemplates: Object.entries(source?.recallEntryTemplates && typeof source.recallEntryTemplates === 'object' && !Array.isArray(source.recallEntryTemplates) ? source.recallEntryTemplates : {})
+      .reduce<StudyData['recallEntryTemplates']>((templates, [key, value]) => {
+        if (typeof value === 'string' && value.trim()) templates[key] = value;
+        return templates;
+      }, {}),
     reviewPlans,
     reviewLogs,
     skippedReviewRegistrations: normalizeSkippedReviewRegistrations(source?.skippedReviewRegistrations ?? base.skippedReviewRegistrations, tasks),
@@ -4359,7 +4364,8 @@ function reviewPlanSubItems(plan: ReviewPlan) {
 
 function isRecallReviewPlan(plan: ReviewPlan) {
   const task = reviewPlanTask(plan);
-  return task?.trackingMode === 'itemized' && isItemizedReviewPlan(plan);
+  const examType = task?.name.trim().split(/\s+/)[0].toUpperCase();
+  return task?.trackingMode === 'itemized' && (examType === 'WE' || examType === 'SST') && isItemizedReviewPlan(plan);
 }
 
 function canRecallReviewPlan(plan: ReviewPlan) {

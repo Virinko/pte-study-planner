@@ -25,6 +25,7 @@ export function defaultData(): StudyData {
     dailyNotes: {},
     answerEntries: [],
     recallTemplates: { WE: '', SST: '' },
+    recallEntryTemplates: {},
     reviewPlans: {},
     reviewLogs: {},
     skippedReviewRegistrations: {},
