@@ -20,7 +20,7 @@ const LEGACY_KEY = 'pte-study-planner-data';
 const TIMER_KEY = 'pte-study-planner-running-timer';
 const POMODORO_KEY = 'pte-study-planner-running-pomodoro';
 const APP_PASSWORD_KEY = 'pte_app_password';
-const CLOUD_SAVE_DEBOUNCE_MS = 3000;
+const UNSAVED_DRAFT_KEY = 'pte-unsaved-progress-draft';
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -836,7 +836,11 @@ const lastCloudSyncedAt = ref('');
 const lastCloudSyncLabel = ref('');
 const lastCloudSyncMessage = ref('');
 const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
-let cloudSaveTimer: number | undefined;
+const recoveryDraftAvailable = ref(!IS_LOCAL_DEV && Boolean(localStorage.getItem(UNSAVED_DRAFT_KEY)));
+const recoveryDraftDownloaded = ref(false);
+let cloudRevision = 0;
+let cloudBaseline: StudyData | null = null;
+let cloudLoadedDate = '';
 let editRevision = 0;
 let activeCloudSave: Promise<boolean> | undefined;
 const showTimerModal = ref(false);
@@ -1038,6 +1042,7 @@ const saveStatusText = computed(() => {
   if (passwordError.value) return passwordError.value;
   if (isCloudLoading.value) return '正在检查云端最新进度...';
   if (isCloudSaving.value) return '保存中...';
+  if (recoveryDraftAvailable.value) return '有未保存的本机记录';
   if (cloudSaveError.value || cloudLoadError.value) return cloudLoadError.value ? '读取失败，请重试' : '保存失败，请重试';
   if (lastCloudSyncMessage.value) return lastCloudSyncLabel.value || '云端已同步';
   if (isDirty.value) return '有未同步改动';
@@ -1046,12 +1051,13 @@ const saveStatusText = computed(() => {
 const saveStatusClass = computed(() => ({
   saving: !IS_LOCAL_DEV && (isCloudLoading.value || isCloudSaving.value),
   pending: !IS_LOCAL_DEV && isDirty.value && !isCloudLoading.value && !isCloudSaving.value,
-  error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value),
-  saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudLoading.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value),
+  error: !IS_LOCAL_DEV && (Boolean(passwordError.value) || cloudSaveError.value || cloudLoadError.value || recoveryDraftAvailable.value),
+  saved: IS_LOCAL_DEV || (!isDirty.value && !isCloudLoading.value && !isCloudSaving.value && !passwordError.value && !cloudSaveError.value && !cloudLoadError.value && !recoveryDraftAvailable.value),
 }));
 const syncStatusDetail = computed(() => {
-  if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写 Cloudflare KV';
+  if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写云端';
   if (isCloudLoading.value) return '正在获取云端最新数据';
+  if (recoveryDraftAvailable.value) return '请先下载待恢复记录，再继续编辑';
   if (cloudSaveError.value) return '修改仍在当前页面，请重试保存';
   if (cloudLoadError.value) return '连接恢复后请重新读取云端数据';
   if (lastCloudSyncMessage.value) return lastCloudSyncMessage.value;
@@ -2157,11 +2163,16 @@ function disposeProgressCharts() {
 
 onMounted(() => {
   timerInterval = window.setInterval(() => {
+    if (!IS_LOCAL_DEV && hasCheckedCloudBaseline.value && cloudLoadedDate && todayIso() !== cloudLoadedDate) {
+      hasCheckedCloudBaseline.value = false;
+      void loadCloudProgress();
+    }
     nowMs.value = Date.now();
     finishPomodoroIfNeeded();
   }, 1000);
   window.addEventListener('resize', resizeProgressCharts);
   window.addEventListener('online', handleWindowOnline);
+  window.addEventListener('offline', handleWindowOffline);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('pagehide', handlePageHide);
   window.addEventListener('pageshow', handlePageShow);
@@ -2176,11 +2187,11 @@ onBeforeUnmount(() => {
   stopPomodoroTitleFlash();
   window.removeEventListener('resize', resizeProgressCharts);
   window.removeEventListener('online', handleWindowOnline);
+  window.removeEventListener('offline', handleWindowOffline);
   document.removeEventListener('visibilitychange', handleVisibilityChange);
   window.removeEventListener('pagehide', handlePageHide);
   window.removeEventListener('pageshow', handlePageShow);
   window.removeEventListener('beforeunload', handleBeforeUnload);
-  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
   disposeProgressCharts();
 });
 
@@ -2232,8 +2243,41 @@ function persistLastCloudSyncState(label: string, message: string) {
   lastCloudSyncMessage.value = message;
 }
 
+function preserveUnsavedDraft() {
+  if (IS_LOCAL_DEV || !isDirty.value) return;
+  try {
+    localStorage.setItem(UNSAVED_DRAFT_KEY, JSON.stringify(data.value));
+    recoveryDraftAvailable.value = true;
+  } catch {
+    cloudSaveError.value = true;
+  }
+}
+
+function downloadUnsavedDraft() {
+  const raw = localStorage.getItem(UNSAVED_DRAFT_KEY);
+  if (!raw) return;
+  const url = URL.createObjectURL(new Blob([raw], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `pte-unsaved-progress-${todayIso()}.json`;
+  link.click();
+  recoveryDraftDownloaded.value = true;
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function dismissUnsavedDraft() {
+  if (!recoveryDraftDownloaded.value) return;
+  localStorage.removeItem(UNSAVED_DRAFT_KEY);
+  recoveryDraftAvailable.value = false;
+  recoveryDraftDownloaded.value = false;
+}
+
 function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
-  if (!IS_LOCAL_DEV && (!hasCheckedCloudBaseline.value || isCloudLoading.value)) return;
+  if (!IS_LOCAL_DEV && !navigator.onLine) {
+    handleWindowOffline();
+    return false;
+  }
+  if (!IS_LOCAL_DEV && (!hasCheckedCloudBaseline.value || isCloudLoading.value || recoveryDraftAvailable.value)) return false;
   const { markDirty = true, scheduleSync = true } = options;
   const normalized = normalizeData(next);
   const stamped = {
@@ -2248,8 +2292,9 @@ function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync
     persistLastCloudSyncState('', '');
     persistDirty(true);
     cloudSaveError.value = false;
-    if (scheduleSync) scheduleCloudSave();
+    if (scheduleSync) void syncCloudProgress();
   }
+  return true;
 }
 
 function applyRemoteProgress(remote: StudyData) {
@@ -2294,7 +2339,7 @@ function submitPassword() {
   void loadCloudProgress();
 }
 
-async function fetchCloudProgress(): Promise<{ progress: StudyData } | null> {
+async function fetchCloudProgress(): Promise<{ progress: StudyData; revision: number } | null> {
   if (IS_LOCAL_DEV) return null;
   const res = await fetch('/api/progress', {
     headers: { 'x-app-password': appPassword.value },
@@ -2305,23 +2350,25 @@ async function fetchCloudProgress(): Promise<{ progress: StudyData } | null> {
     return null;
   }
   if (!res.ok) throw new Error(`Cloudflare 读取失败：HTTP ${res.status}`);
-  const source = await res.json() as Partial<StudyData>;
-  return { progress: normalizeData(source) };
+  const source = await res.json() as Partial<StudyData> & { syncRevision?: number };
+  if (!Number.isSafeInteger(source.syncRevision) || !source.syncRevision || source.syncRevision < 1) throw new Error('云端进度版本缺失');
+  return { progress: normalizeData(source), revision: source.syncRevision };
 }
 
 async function loadCloudProgress() {
   if (IS_LOCAL_DEV || !appPassword.value) return;
   if (isCloudLoading.value) return;
   isCloudLoading.value = true;
-  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = undefined;
+  hasCheckedCloudBaseline.value = false;
   cloudLoadError.value = false;
   try {
-    // Finish an already-sent save before reading; never upload pending stale edits here.
     await activeCloudSave;
-    hasCheckedCloudBaseline.value = false;
     const result = await fetchCloudProgress();
     if (!result) return;
+    if (isDirty.value) preserveUnsavedDraft();
+    cloudRevision = result.revision;
+    cloudBaseline = result.progress;
+    cloudLoadedDate = todayIso();
     applyRemoteProgress(result.progress);
     await nextTick();
     hasCheckedCloudBaseline.value = true;
@@ -2332,50 +2379,69 @@ async function loadCloudProgress() {
   }
 }
 
-function scheduleCloudSave(delay = CLOUD_SAVE_DEBOUNCE_MS) {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || !hasCheckedCloudBaseline.value) return;
-  if (cloudSaveTimer) window.clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = window.setTimeout(() => {
-    cloudSaveTimer = undefined;
-    void syncCloudProgress();
-  }, delay);
-}
-
+let cloudConflict = false;
 function syncCloudProgress(): Promise<boolean> {
   if (activeCloudSave) return activeCloudSave;
   activeCloudSave = (async () => {
     let saved = await uploadCloudProgress();
-    // Edits made during the request belong to this save too.
     while (saved && isDirty.value) saved = await uploadCloudProgress();
     return saved;
-  })().finally(() => { activeCloudSave = undefined; });
+  })().finally(() => {
+    activeCloudSave = undefined;
+    if (cloudConflict) {
+      cloudConflict = false;
+      void loadCloudProgress();
+    }
+  });
   return activeCloudSave;
 }
 
 async function uploadCloudProgress() {
-  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value) return false;
+  if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value || isCloudSaving.value || !hasCheckedCloudBaseline.value || !cloudBaseline) return false;
   const submittedRevision = editRevision;
   isCloudSaving.value = true;
   cloudSaveError.value = false;
   try {
-    const { updatedAt: _updatedAt, ...payload } = normalizeData(data.value);
+    const current = normalizeData(data.value);
+    const changes = Object.fromEntries((Object.keys(current) as (keyof StudyData)[])
+      .filter((name) => name !== 'updatedAt' && JSON.stringify(current[name]) !== JSON.stringify(cloudBaseline![name]))
+      .map((name) => [name, current[name] ?? null]));
+    if (!Object.keys(changes).length) {
+      persistDirty(editRevision !== submittedRevision);
+      return true;
+    }
     const res = await fetch('/api/progress', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-app-password': appPassword.value,
       },
-      body: JSON.stringify(payload),
-      keepalive: JSON.stringify(payload).length < 60000,
+      body: JSON.stringify({ mutationId: crypto.randomUUID(), baseRevision: cloudRevision, changes }),
     });
     if (res.status === 401) {
       handleUnauthorized();
       return false;
     }
+    if (res.status === 409) {
+      preserveUnsavedDraft();
+      hasCheckedCloudBaseline.value = false;
+      cloudConflict = true;
+      cloudSaveError.value = true;
+      return false;
+    }
     if (!res.ok) throw new Error(`Cloudflare 保存失败：HTTP ${res.status}`);
-    const result = await res.json() as { updatedAt?: string };
+    const result = await res.json() as { updatedAt: string; revision: number; progress: StudyData };
+    if (!Number.isSafeInteger(result.revision) || !result.progress) throw new Error('云端保存回执不完整');
+    cloudRevision = result.revision;
+    cloudBaseline = normalizeData(result.progress);
     lastCloudSyncedAt.value = result.updatedAt || '';
-    data.value.updatedAt = lastCloudSyncedAt.value;
+    if (editRevision === submittedRevision) {
+      applyRemoteProgress(result.progress);
+      localStorage.removeItem(UNSAVED_DRAFT_KEY);
+      recoveryDraftAvailable.value = false;
+    } else {
+      data.value.updatedAt = lastCloudSyncedAt.value;
+    }
     persistDirty(editRevision !== submittedRevision);
     cloudSaveError.value = false;
     if (!isDirty.value) {
@@ -2385,6 +2451,8 @@ async function uploadCloudProgress() {
     }
     return true;
   } catch {
+    preserveUnsavedDraft();
+    hasCheckedCloudBaseline.value = false;
     persistDirty(true);
     cloudSaveError.value = true;
     return false;
@@ -2395,14 +2463,14 @@ async function uploadCloudProgress() {
 
 function tryImmediateCloudSave() {
   if (IS_LOCAL_DEV || !isDirty.value || !appPassword.value) return;
-  if (cloudSaveTimer) {
-    window.clearTimeout(cloudSaveTimer);
-    cloudSaveTimer = undefined;
-  }
   void syncCloudProgress();
 }
 
 function handleVisibilityChange() {
+  if (!IS_LOCAL_DEV && document.visibilityState === 'visible' && cloudLoadedDate && todayIso() !== cloudLoadedDate) {
+    hasCheckedCloudBaseline.value = false;
+    void loadCloudProgress();
+  }
   nowMs.value = Date.now();
   finishPomodoroIfNeeded();
   if (document.visibilityState === 'visible') {
@@ -2413,7 +2481,16 @@ function handleVisibilityChange() {
 }
 
 function handleWindowOnline() {
-  if (document.visibilityState === 'visible') void refreshCloudProgress();
+  if (document.visibilityState === 'visible') {
+    hasCheckedCloudBaseline.value = false;
+    void refreshCloudProgress();
+  }
+}
+
+function handleWindowOffline() {
+  hasCheckedCloudBaseline.value = false;
+  preserveUnsavedDraft();
+  cloudLoadError.value = true;
 }
 
 async function refreshCloudProgress() {
@@ -2704,12 +2781,14 @@ function saveRunningTimer() {
   const startAt = timer.firstStartedAt
     ? new Date(timer.firstStartedAt).toISOString()
     : inferStartAt(endAt, durationSeconds);
-  runningTimer.value = null;
-  showTimerModal.value = false;
-  clearTimerEditDraft();
-  timerEditDirty.value = false;
-  persistRunningTimer();
-  if (durationSeconds <= 0) return;
+  if (durationSeconds <= 0) {
+    runningTimer.value = null;
+    showTimerModal.value = false;
+    clearTimerEditDraft();
+    timerEditDirty.value = false;
+    persistRunningTimer();
+    return;
+  }
   const date = timer.date || todayIso();
   const linkedTaskId = timer.taskId || (timer.type === 'review' ? reviewPlanForId(timer.reviewPlanId || '')?.taskId || '' : '');
   const linkedTask = data.value.tasks.find((task) => task.id === linkedTaskId);
@@ -2729,11 +2808,16 @@ function saveRunningTimer() {
     createdAt: endAt,
   };
   const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
-  saveLocal({
+  if (!saveLocal({
     ...data.value,
     studyTimeEntries,
     timeLogs: entriesToTimeLogs(studyTimeEntries),
-  });
+  })) return;
+  runningTimer.value = null;
+  showTimerModal.value = false;
+  clearTimerEditDraft();
+  timerEditDirty.value = false;
+  persistRunningTimer();
 }
 
 function persistRunningPomodoro() {
@@ -3101,11 +3185,13 @@ function savePomodoro() {
   const startAt = pomodoro.firstStartedAt
     ? new Date(pomodoro.firstStartedAt).toISOString()
     : inferStartAt(endAt, durationSeconds);
-  runningPomodoro.value = keepBreakRunning ? { ...pomodoro, focusSaved: true } : null;
-  showPomodoroModal.value = false;
-  clearPomodoroProgressDraft();
-  persistRunningPomodoro();
-  if (!saveFocusTime && progressDelta <= 0) return;
+  if (!saveFocusTime && progressDelta <= 0) {
+    runningPomodoro.value = keepBreakRunning ? { ...pomodoro, focusSaved: true } : null;
+    showPomodoroModal.value = false;
+    clearPomodoroProgressDraft();
+    persistRunningPomodoro();
+    return;
+  }
 
   const progressDate = todayIso();
   const nextTasks = progressDelta > 0 && task
@@ -3131,13 +3217,17 @@ function savePomodoro() {
       createdAt: endAt,
     }]
     : studyTimeEntriesFromData(data.value);
-  saveLocal({
+  if (!saveLocal({
     ...data.value,
     tasks: nextTasks,
     dailyLogs: nextDailyLogs,
     studyTimeEntries,
     timeLogs: entriesToTimeLogs(studyTimeEntries),
-  });
+  })) return;
+  runningPomodoro.value = keepBreakRunning ? { ...pomodoro, focusSaved: true } : null;
+  showPomodoroModal.value = false;
+  clearPomodoroProgressDraft();
+  persistRunningPomodoro();
 }
 
 function addManualStudyTime() {
@@ -3179,15 +3269,15 @@ function addManualStudyTime() {
     createdAt: endAt,
   };
   const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
+  if (!saveLocal({
+    ...data.value,
+    studyTimeEntries,
+    timeLogs: entriesToTimeLogs(studyTimeEntries),
+  })) return;
   manualStudyHours.value = '';
   manualStudyMinutes.value = '';
   manualStudySeconds.value = '';
   manualStudyNote.value = '';
-  saveLocal({
-    ...data.value,
-    studyTimeEntries,
-    timeLogs: entriesToTimeLogs(studyTimeEntries),
-  });
 }
 
 function deleteTimeLog(date: string, id: string) {
@@ -5601,7 +5691,7 @@ function taskLastStudyDate(task: Task) {
         <div>
           <strong>{{ saveStatusText }}</strong>
           <p>{{ syncStatusDetail }}</p>
-          <button v-if="cloudSaveError && hasCheckedCloudBaseline" type="button" @click="syncCloudProgress">重试保存</button>
+          <button v-if="cloudSaveError && hasCheckedCloudBaseline && !recoveryDraftAvailable" type="button" @click="syncCloudProgress">重试保存</button>
         </div>
       </div>
       <div class="sidebar-note">
@@ -5610,12 +5700,14 @@ function taskLastStudyDate(task: Task) {
       </div>
     </header>
 
-    <div v-if="!IS_LOCAL_DEV && appPassword && (!hasCheckedCloudBaseline || isCloudLoading)" class="cloud-refresh-guard" role="status" aria-live="polite">
+    <div v-if="!IS_LOCAL_DEV && appPassword && (!hasCheckedCloudBaseline || isCloudLoading || recoveryDraftAvailable)" class="cloud-refresh-guard" role="status" aria-live="polite">
       <div>
         <span v-if="isCloudLoading" class="cloud-refresh-spinner" aria-hidden="true"></span>
-        <strong>{{ cloudLoadError ? '读取失败' : '正在加载最新进度' }}</strong>
-        <p>从云端读取最新数据后即可编辑。</p>
-        <button v-if="cloudLoadError" type="button" @click="loadCloudProgress">重新加载</button>
+        <strong>{{ isCloudLoading ? '正在加载最新进度' : recoveryDraftAvailable ? '有未保存的本机记录' : cloudLoadError ? '读取失败' : '正在加载最新进度' }}</strong>
+        <p>{{ recoveryDraftAvailable ? '请先下载待恢复记录。云端进度不会被这份本机数据覆盖。' : '从云端读取最新数据后即可编辑。' }}</p>
+        <button v-if="recoveryDraftAvailable" type="button" @click="downloadUnsavedDraft">下载待恢复记录</button>
+        <button v-if="recoveryDraftAvailable" type="button" :disabled="!recoveryDraftDownloaded" @click="dismissUnsavedDraft">已下载，继续使用云端进度</button>
+        <button v-if="cloudLoadError && !isCloudLoading" type="button" @click="loadCloudProgress">重新加载</button>
       </div>
     </div>
 

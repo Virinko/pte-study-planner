@@ -1,12 +1,12 @@
 # PTE 备考进度调度器
 
-一个只负责记录 PTE 备考进度、计算每日任务的前端应用。它不是刷题平台，不上传题库；本地优先保存，Cloudflare KV 只用于跨设备备份。
+一个记录 PTE 备考进度、计算每日任务的应用。生产环境的云端进度是唯一权威；本机只保留运行中的计时和保存失败时供人工恢复的草稿。
 
 ## 功能
 
 - Vue 3 + TypeScript + Vite 单页应用
-- localStorage 保存本地计划和进度，key 为 `pte_progress_backup`
-- Cloudflare Pages Functions + Cloudflare KV 自动同步完整进度
+- 本地开发使用 localStorage 保存测试进度，生产环境从 Cloudflare D1 拉取进度
+- Cloudflare Pages Functions 按云端修订号保存每次修改，过期页面无法覆盖较新的云端进度
 - 访问密码由 Cloudflare Pages Secret `APP_PASSWORD` 提供，前端不写死密码
 - 使用单一备考总计划，可安排多个模考日
 - 数量型任务可手动开启错题轮刷，背诵型任务继续按篇目与熟悉度记录
@@ -31,8 +31,9 @@ Cloudflare Pages 连接 GitHub `main` 分支后自动部署。项目使用根路
 
 Cloudflare Pages 项目需要配置：
 
-- KV namespace：`PTE_PROGRESS`
-- KV binding name：`PROGRESS_KV`
+- D1 database：`pte_progress_db`，binding name：`PROGRESS_DB`
+- KV namespace：`PTE_PROGRESS`，binding name：`PROGRESS_KV`，仅供迁移校验和旧数据备份
 - Secret：`APP_PASSWORD`
+- Text variable：`MIGRATION_SHA256`，切换前从最终 KV 导出文件计算 SHA-256；只有 KV 原始内容与此值完全一致时才导入 D1
 
-Pages Functions 接口位于 `functions/api/progress.js`，前端只通过 `/api/progress` 读写进度。
+Pages Functions 接口位于 `functions/api/progress.js`，前端只通过 `/api/progress` 读写进度。旧版页面提交的整份进度会被拒绝。首次迁移后保留 KV 不再写入；保存失败的本机草稿只供下载和人工恢复，不会自动覆盖云端。
