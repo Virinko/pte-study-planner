@@ -6034,12 +6034,18 @@ function taskLastStudyDate(task: Task) {
                     <div class="review-card-titleline">
                       <strong>{{ reviewPlanTaskName(plan) }}</strong>
                       <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, reviewPlanTaskName(plan), plan.taskId)">{{ timerEntryLabel('review', plan.id) }}</button>
-                      <button v-if="isRecallReviewPlan(plan)" class="review-recall-button" type="button" :disabled="!canRecallReviewPlan(plan)" :title="canRecallReviewPlan(plan) ? '默写未完成的复习篇目' : '复习已完成，或计划篇目已不存在'" @click="openRecallForReview(plan)">去默写</button>
-                      <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">今日已学 {{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
+                      <span v-if="isRecallReviewPlan(plan)" class="review-recall-actions">
+                        <button class="review-recall-button" type="button" :disabled="!canRecallReviewPlan(plan)" :title="canRecallReviewPlan(plan) ? '默写未完成的复习篇目' : '复习已完成，或计划篇目已不存在'" @click="openRecallForReview(plan)">去默写</button>
+                        <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">{{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
+                      </span>
+                      <small v-else-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">{{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
                     </div>
                   </div>
                   <div class="review-card-meta">
-                    <small>{{ plan.sourceDate === todayIso() ? '今日手动添加' : `${plan.sourceDate} 登记` }}</small>
+                    <div class="review-card-dates">
+                      <small>{{ plan.sourceDate }} 登记</small>
+                      <small>{{ plan.dueDate }} 应完成</small>
+                    </div>
                     <span class="review-status" :class="plan.completed >= plan.target ? 'status-ok' : plan.overdue ? 'status-overdue' : 'status-warn'">{{ plan.completed >= plan.target ? '已完成' : plan.overdue ? '已逾期' : '待完成' }}</span>
                   </div>
                 </div>
