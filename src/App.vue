@@ -5572,7 +5572,7 @@ function taskLastStudyDate(task: Task) {
   <main>
     <header class="topbar">
       <div class="brand">
-        <span class="brand-mark">P</span>
+        <span class="brand-mark"><img src="/favicon.svg" alt="" /></span>
         <div>
           <h1>计划进度</h1>
           <p>备考计划管理器</p>

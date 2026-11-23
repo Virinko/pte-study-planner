@@ -9153,8 +9153,14 @@ body {
 }
 
 .brand-mark {
-  background: linear-gradient(135deg, var(--pte-indigo), var(--pte-lavender));
+  background: none;
   box-shadow: 0 12px 24px rgba(122, 119, 185, .25);
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .brand p,
