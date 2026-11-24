@@ -6188,7 +6188,7 @@ function taskLastStudyDate(task: Task) {
                   <div class="review-card-info">
                     <div class="review-card-titleline">
                       <strong>{{ reviewPlanTaskName(plan) }}</strong>
-                      <button class="timer-entry-button compact" type="button" @click="openTimer('review', plan.id, reviewPlanTaskName(plan), plan.taskId)">{{ timerEntryLabel('review', plan.id) }}</button>
+                      <button class="timer-entry-button compact" :class="{ 'is-running': isTimerRunning('review', plan.id), 'is-paused': isTimerPaused('review', plan.id) }" type="button" @click="openTimer('review', plan.id, reviewPlanTaskName(plan), plan.taskId)">{{ timerEntryLabel('review', plan.id) }}</button>
                       <span v-if="isRecallReviewPlan(plan)" class="review-recall-actions">
                         <button class="review-recall-button" type="button" :disabled="!canRecallReviewPlan(plan)" :title="canRecallReviewPlan(plan) ? '默写未完成的复习篇目' : '复习已完成，或计划篇目已不存在'" @click="openRecallForReview(plan)">去默写</button>
                         <small v-if="savedTimeSeconds('review', plan.id) > 0" class="review-saved-time">{{ formatDurationText(savedTimeSeconds('review', plan.id)) }}</small>
