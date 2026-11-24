@@ -21,6 +21,8 @@ const TIMER_KEY = 'pte-study-planner-running-timer';
 const POMODORO_KEY = 'pte-study-planner-running-pomodoro';
 const APP_PASSWORD_KEY = 'pte_app_password';
 const UNSAVED_DRAFT_KEY = 'pte-unsaved-progress-draft';
+const UNSAVED_DRAFT_REVISION_KEY = 'pte-unsaved-progress-base-revision';
+const UNSAVED_DRAFT_MUTATION_KEY = 'pte-unsaved-progress-mutation-id';
 const IS_LOCAL_DEV = import.meta.env.DEV;
 const practicePlatforms: PracticePlatform[] = ['多墨', '猩际', '萤火虫', '影子三千'];
 const answerReferencePlatforms: PracticePlatform[] = ['多墨', '萤火虫', '猩际'];
@@ -837,7 +839,16 @@ const lastCloudSyncLabel = ref('');
 const lastCloudSyncMessage = ref('');
 const hasCheckedCloudBaseline = ref(IS_LOCAL_DEV);
 const recoveryDraftAvailable = ref(!IS_LOCAL_DEV && Boolean(localStorage.getItem(UNSAVED_DRAFT_KEY)));
-const recoveryDraftDownloaded = ref(false);
+const recoveryDraftCanRetry = computed(() => {
+  const baseRevision = Number(localStorage.getItem(UNSAVED_DRAFT_REVISION_KEY));
+  return recoveryDraftAvailable.value && hasCheckedCloudBaseline.value
+    && Number.isSafeInteger(baseRevision) && baseRevision > 0 && baseRevision === cloudRevision;
+});
+const recoveryDraftMessage = computed(() => {
+  if (!hasCheckedCloudBaseline.value) return '这次修改尚未确认保存。请先读取云端最新进度。';
+  if (recoveryDraftCanRetry.value) return '这次修改尚未确认保存，云端版本未变化，可以重试。';
+  return '这次修改尚未确认保存，云端已有变化。请先留存备份并人工核对。';
+});
 let cloudRevision = 0;
 let cloudBaseline: StudyData | null = null;
 let cloudLoadedDate = '';
@@ -1057,7 +1068,7 @@ const saveStatusClass = computed(() => ({
 const syncStatusDetail = computed(() => {
   if (IS_LOCAL_DEV) return '仅保存到本机浏览器，不读写云端';
   if (isCloudLoading.value) return '正在获取云端最新数据';
-  if (recoveryDraftAvailable.value) return '请先下载待恢复记录，再继续编辑';
+  if (recoveryDraftAvailable.value) return recoveryDraftMessage.value;
   if (cloudSaveError.value) return '修改仍在当前页面，请重试保存';
   if (cloudLoadError.value) return '连接恢复后请重新读取云端数据';
   if (lastCloudSyncMessage.value) return lastCloudSyncMessage.value;
@@ -2243,14 +2254,53 @@ function persistLastCloudSyncState(label: string, message: string) {
   lastCloudSyncMessage.value = message;
 }
 
-function preserveUnsavedDraft() {
-  if (IS_LOCAL_DEV || !isDirty.value) return;
+function storeUnsavedDraft(progress: StudyData, mutationId: string = crypto.randomUUID()) {
+  if (IS_LOCAL_DEV) return;
   try {
-    localStorage.setItem(UNSAVED_DRAFT_KEY, JSON.stringify(data.value));
-    recoveryDraftAvailable.value = true;
+    localStorage.setItem(UNSAVED_DRAFT_KEY, JSON.stringify(progress));
+    localStorage.setItem(UNSAVED_DRAFT_REVISION_KEY, String(cloudRevision));
+    localStorage.setItem(UNSAVED_DRAFT_MUTATION_KEY, mutationId);
   } catch {
     cloudSaveError.value = true;
   }
+}
+
+function preserveUnsavedDraft() {
+  if (IS_LOCAL_DEV || !isDirty.value) return;
+  if (!localStorage.getItem(UNSAVED_DRAFT_KEY)) storeUnsavedDraft(data.value);
+  recoveryDraftAvailable.value = Boolean(localStorage.getItem(UNSAVED_DRAFT_KEY));
+}
+
+function clearUnsavedDraft() {
+  localStorage.removeItem(UNSAVED_DRAFT_KEY);
+  localStorage.removeItem(UNSAVED_DRAFT_REVISION_KEY);
+  localStorage.removeItem(UNSAVED_DRAFT_MUTATION_KEY);
+  recoveryDraftAvailable.value = false;
+}
+
+function sameProgressContent(a: StudyData, b: StudyData) {
+  const first = normalizeData(a);
+  const second = normalizeData(b);
+  return (Object.keys(first) as (keyof StudyData)[])
+    .filter((key) => key !== 'updatedAt')
+    .every((key) => JSON.stringify(first[key]) === JSON.stringify(second[key]));
+}
+
+function checkUnsavedDraftAgainstCloud(remote: StudyData) {
+  const raw = localStorage.getItem(UNSAVED_DRAFT_KEY);
+  if (!raw) {
+    recoveryDraftAvailable.value = false;
+    return;
+  }
+  try {
+    if (sameProgressContent(JSON.parse(raw) as StudyData, remote)) {
+      clearUnsavedDraft();
+      return;
+    }
+  } catch {
+    // Keep an unreadable draft available for download instead of deleting it.
+  }
+  recoveryDraftAvailable.value = true;
 }
 
 function downloadUnsavedDraft() {
@@ -2261,29 +2311,41 @@ function downloadUnsavedDraft() {
   link.href = url;
   link.download = `pte-unsaved-progress-${todayIso()}.json`;
   link.click();
-  recoveryDraftDownloaded.value = true;
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function dismissUnsavedDraft() {
-  if (!recoveryDraftDownloaded.value) return;
-  localStorage.removeItem(UNSAVED_DRAFT_KEY);
-  recoveryDraftAvailable.value = false;
-  recoveryDraftDownloaded.value = false;
+  if (!window.confirm('确定放弃这份未保存的本机记录，继续使用云端进度吗？如需留存，请先下载备份。')) return;
+  clearUnsavedDraft();
 }
 
-function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean } = {}) {
+function retryUnsavedDraft() {
+  if (!recoveryDraftCanRetry.value || !navigator.onLine) return;
+  const raw = localStorage.getItem(UNSAVED_DRAFT_KEY);
+  if (!raw) return;
+  try {
+    const progress = normalizeData(JSON.parse(raw) as StudyData);
+    const mutationId = localStorage.getItem(UNSAVED_DRAFT_MUTATION_KEY) || crypto.randomUUID();
+    recoveryDraftAvailable.value = false;
+    if (!saveLocal(progress, { mutationId })) recoveryDraftAvailable.value = true;
+  } catch {
+    recoveryDraftAvailable.value = true;
+  }
+}
+
+function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; mutationId?: string } = {}) {
   if (!IS_LOCAL_DEV && !navigator.onLine) {
     handleWindowOffline();
     return false;
   }
   if (!IS_LOCAL_DEV && (!hasCheckedCloudBaseline.value || isCloudLoading.value || recoveryDraftAvailable.value)) return false;
-  const { markDirty = true, scheduleSync = true } = options;
+  const { markDirty = true, scheduleSync = true, mutationId } = options;
   const normalized = normalizeData(next);
   const stamped = {
     ...normalized,
     updatedAt: normalized.updatedAt || data.value.updatedAt || '',
   };
+  if (markDirty) storeUnsavedDraft(stamped, mutationId);
   data.value = stamped;
   persistProgressBackup(stamped);
   cloudLoadError.value = false;
@@ -2370,6 +2432,7 @@ async function loadCloudProgress() {
     cloudBaseline = result.progress;
     cloudLoadedDate = todayIso();
     applyRemoteProgress(result.progress);
+    checkUnsavedDraftAgainstCloud(result.progress);
     await nextTick();
     hasCheckedCloudBaseline.value = true;
   } catch {
@@ -2379,7 +2442,7 @@ async function loadCloudProgress() {
   }
 }
 
-let cloudConflict = false;
+let cloudRefreshNeeded = false;
 function syncCloudProgress(): Promise<boolean> {
   if (activeCloudSave) return activeCloudSave;
   activeCloudSave = (async () => {
@@ -2388,8 +2451,8 @@ function syncCloudProgress(): Promise<boolean> {
     return saved;
   })().finally(() => {
     activeCloudSave = undefined;
-    if (cloudConflict) {
-      cloudConflict = false;
+    if (cloudRefreshNeeded) {
+      cloudRefreshNeeded = false;
       void loadCloudProgress();
     }
   });
@@ -2408,15 +2471,17 @@ async function uploadCloudProgress() {
       .map((name) => [name, current[name] ?? null]));
     if (!Object.keys(changes).length) {
       persistDirty(editRevision !== submittedRevision);
+      if (!isDirty.value) clearUnsavedDraft();
       return true;
     }
+    const mutationId = localStorage.getItem(UNSAVED_DRAFT_MUTATION_KEY) || crypto.randomUUID();
     const res = await fetch('/api/progress', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-app-password': appPassword.value,
       },
-      body: JSON.stringify({ mutationId: crypto.randomUUID(), baseRevision: cloudRevision, changes }),
+      body: JSON.stringify({ mutationId, baseRevision: cloudRevision, changes }),
     });
     if (res.status === 401) {
       handleUnauthorized();
@@ -2425,7 +2490,7 @@ async function uploadCloudProgress() {
     if (res.status === 409) {
       preserveUnsavedDraft();
       hasCheckedCloudBaseline.value = false;
-      cloudConflict = true;
+      cloudRefreshNeeded = true;
       cloudSaveError.value = true;
       return false;
     }
@@ -2437,10 +2502,10 @@ async function uploadCloudProgress() {
     lastCloudSyncedAt.value = result.updatedAt || '';
     if (editRevision === submittedRevision) {
       applyRemoteProgress(result.progress);
-      localStorage.removeItem(UNSAVED_DRAFT_KEY);
-      recoveryDraftAvailable.value = false;
+      clearUnsavedDraft();
     } else {
       data.value.updatedAt = lastCloudSyncedAt.value;
+      localStorage.setItem(UNSAVED_DRAFT_REVISION_KEY, String(cloudRevision));
     }
     persistDirty(editRevision !== submittedRevision);
     cloudSaveError.value = false;
@@ -2455,6 +2520,7 @@ async function uploadCloudProgress() {
     hasCheckedCloudBaseline.value = false;
     persistDirty(true);
     cloudSaveError.value = true;
+    cloudRefreshNeeded = true;
     return false;
   } finally {
     isCloudSaving.value = false;
@@ -5694,10 +5760,11 @@ function taskLastStudyDate(task: Task) {
       <div>
         <span v-if="isCloudLoading" class="cloud-refresh-spinner" aria-hidden="true"></span>
         <strong>{{ isCloudLoading ? '正在加载最新进度' : recoveryDraftAvailable ? '有未保存的本机记录' : cloudLoadError ? '读取失败' : '正在加载最新进度' }}</strong>
-        <p>{{ recoveryDraftAvailable ? '请先下载待恢复记录。云端进度不会被这份本机数据覆盖。' : '从云端读取最新数据后即可编辑。' }}</p>
-        <button v-if="recoveryDraftAvailable" type="button" @click="downloadUnsavedDraft">下载待恢复记录</button>
-        <button v-if="recoveryDraftAvailable" type="button" :disabled="!recoveryDraftDownloaded" @click="dismissUnsavedDraft">已下载，继续使用云端进度</button>
-        <button v-if="cloudLoadError && !isCloudLoading" type="button" @click="loadCloudProgress">重新加载</button>
+        <p>{{ recoveryDraftAvailable ? recoveryDraftMessage : '从云端读取最新数据后即可编辑。' }}</p>
+        <button v-if="recoveryDraftCanRetry" type="button" @click="retryUnsavedDraft">重试保存本机记录</button>
+        <button v-if="recoveryDraftAvailable" type="button" @click="downloadUnsavedDraft">下载备份</button>
+        <button v-if="recoveryDraftAvailable" type="button" @click="dismissUnsavedDraft">放弃本机记录，使用云端进度</button>
+        <button v-if="!hasCheckedCloudBaseline && !isCloudLoading && (cloudLoadError || recoveryDraftAvailable)" type="button" @click="loadCloudProgress">重新读取云端</button>
       </div>
     </div>
 
