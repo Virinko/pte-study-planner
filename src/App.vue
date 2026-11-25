@@ -6219,6 +6219,7 @@ function taskLastStudyDate(task: Task) {
                       <span>{{ item.title }}</span>
                       <select
                         class="review-familiarity-select"
+                        :data-familiarity="item.familiarity"
                         :value="item.familiarity"
                         @change="updateReviewSubItemFamiliarity(plan.taskId, item.id, ($event.target as HTMLSelectElement).value as Familiarity)"
                       >

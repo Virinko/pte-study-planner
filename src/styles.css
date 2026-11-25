@@ -5325,9 +5325,29 @@ nav button.active::after {
   border: 0;
   border-radius: 7px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   text-align: center;
   text-align-last: center;
+}
+
+.review-familiarity-select[data-familiarity='生'] {
+  color: #be3d68;
+  background: #fff0f4;
+}
+
+.review-familiarity-select[data-familiarity='半熟'] {
+  color: #a85d10;
+  background: #fff3e3;
+}
+
+.review-familiarity-select[data-familiarity='熟'] {
+  color: #2b6ec7;
+  background: #eaf3ff;
+}
+
+.review-familiarity-select[data-familiarity='可默写'] {
+  color: #10994b;
+  background: #e8faef;
 }
 
 .tomorrow-review-items {
