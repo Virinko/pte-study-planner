@@ -5984,7 +5984,7 @@ function taskLastStudyDate(task: Task) {
                     <article v-for="item in todayDoneItems(task)" :key="item.id">
                       <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                       <strong>{{ item.title }}</strong>
-                      <b>{{ item.familiarity }}</b>
+                      <b :data-familiarity="item.familiarity">{{ item.familiarity }}</b>
                       <label class="done-review-picker">
                         <input
                           type="checkbox"
@@ -6007,7 +6007,7 @@ function taskLastStudyDate(task: Task) {
                         <article v-for="item in group.items" :key="item.id">
                           <button type="button" title="取消完成" @click="undoSubItemCompletion(task, item)">✓</button>
                           <strong>{{ item.title }}</strong>
-                          <b>{{ item.familiarity }}</b>
+                          <b :data-familiarity="item.familiarity">{{ item.familiarity }}</b>
                           <label class="done-review-picker">
                             <input
                               type="checkbox"

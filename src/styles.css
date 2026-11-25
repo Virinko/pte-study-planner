@@ -4400,6 +4400,7 @@ nav button.active::after {
   background: #e8faef;
   border-radius: 5px;
   font-size: 12px;
+  font-weight: 500;
 }
 
 .done-review-picker {
@@ -5330,22 +5331,26 @@ nav button.active::after {
   text-align-last: center;
 }
 
-.review-familiarity-select[data-familiarity='生'] {
+.review-familiarity-select[data-familiarity='生'],
+.today-done-items b[data-familiarity='生'] {
   color: #be3d68;
   background: #fff0f4;
 }
 
-.review-familiarity-select[data-familiarity='半熟'] {
+.review-familiarity-select[data-familiarity='半熟'],
+.today-done-items b[data-familiarity='半熟'] {
   color: #a85d10;
   background: #fff3e3;
 }
 
-.review-familiarity-select[data-familiarity='熟'] {
+.review-familiarity-select[data-familiarity='熟'],
+.today-done-items b[data-familiarity='熟'] {
   color: #2b6ec7;
   background: #eaf3ff;
 }
 
-.review-familiarity-select[data-familiarity='可默写'] {
+.review-familiarity-select[data-familiarity='可默写'],
+.today-done-items b[data-familiarity='可默写'] {
   color: #10994b;
   background: #e8faef;
 }
