@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers';
 import { Bold, BookOpen, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Clock, Copy, FileDown, Flag, GripVertical, Hourglass, Italic, List, Minus, Pause, PencilLine, Play, Plus, RotateCcw, Save, Sparkles, Trash2, TrendingUp, X } from '@lucide/vue';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import RecallPage from './RecallPage.vue';
+import FloatingTimer from './FloatingTimer.vue';
 import { buildPracticeReportImageDownload } from './practiceReportImage';
 import { buildSchedule, currentPhase, isCurrentTaskProgressLog, repairRestartedRoundCycles, restartTaskProgress, daysBetweenInclusive, defaultData, pct, taskCoverageCompleted, taskCoverageTarget, taskCurrentRound, taskProgressCompleted, taskRemaining, taskRoundCompleted, taskRoundDeadlines, taskRoundPlanEndDate, taskRoundStageEndDate, taskSuggestion, taskTotalTarget, todayIso } from './planner';
 import type { AnswerEntry, DailyLogEntry, DailyNoteEntry, Familiarity, FrequencyType, MockExam, Phase, PhaseSchedule, PlatformQuestionRef, PracticePlatform, RecallReviewTarget, ReviewLogEntry, ReviewPlan, StudyData, StudyTimeEntry, StudyTimeSource, StudyTimeType, SubItem, SubItemStatus, Task, TaskPlanStatus, TaskRoundHistoryEntry, TaskRoundStage, TimeLogEntry, TimeLogType, TrackingMode } from './types';
@@ -126,6 +127,7 @@ interface RunningTimer {
   startedAt: number;
   accumulatedSeconds: number;
   paused: boolean;
+  pendingEntry?: StudyTimeEntry;
 }
 
 interface RunningPomodoro {
@@ -703,6 +705,7 @@ function loadRunningTimer(): RunningTimer | null {
       startedAt,
       accumulatedSeconds,
       paused,
+      pendingEntry: timer.pendingEntry,
     };
   } catch {
     return null;
@@ -855,6 +858,11 @@ let cloudLoadedDate = '';
 let editRevision = 0;
 let activeCloudSave: Promise<boolean> | undefined;
 const showTimerModal = ref(false);
+const floatingTimer = ref<InstanceType<typeof FloatingTimer> | null>(null);
+const timerSaving = ref(false);
+const timerSaveMessage = ref('');
+const lastTimerName = ref('');
+const lastTimerSeconds = ref(0);
 const showPomodoroModal = ref(false);
 const timerEditHours = ref('');
 const timerEditMinutes = ref('');
@@ -2334,6 +2342,7 @@ function retryUnsavedDraft() {
 }
 
 function saveLocal(next: StudyData, options: { markDirty?: boolean; scheduleSync?: boolean; mutationId?: string } = {}) {
+  if (timerSaving.value) return false;
   if (!IS_LOCAL_DEV && !navigator.onLine) {
     handleWindowOffline();
     return false;
@@ -2661,6 +2670,7 @@ function timerActionLabel() {
 }
 
 function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '') {
+  if (timerSaving.value) return;
   const identity = timerIdentity(type, id);
   if (runningTimerIdentity(runningTimer.value) === identity) {
     nowMs.value = Date.now();
@@ -2668,13 +2678,14 @@ function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '
     timerEditDirty.value = false;
     return;
   }
-  if (runningTimer.value && currentTimerSeconds() > 0) {
+  if (runningTimer.value && (currentTimerSeconds() > 0 || runningTimer.value.pendingEntry)) {
     showTimerModal.value = true;
     alert('请先保存或取消当前计时，再开始另一项任务。');
     return;
   }
   const timestamp = Date.now();
   nowMs.value = timestamp;
+  timerSaveMessage.value = '';
   runningTimer.value = {
     type,
     taskId: type === 'task' ? id : linkedTaskId,
@@ -2692,11 +2703,11 @@ function openTimer(type: TimeLogType, id: string, name: string, linkedTaskId = '
 }
 
 function toggleActiveTimer() {
-  if (!runningTimer.value) return;
-  const seconds = currentTimerSeconds();
+  if (!runningTimer.value || timerSaving.value || runningTimer.value.pendingEntry) return;
   const timestamp = Date.now();
-  const nextPaused = !runningTimer.value.paused;
   nowMs.value = timestamp;
+  const seconds = currentTimerSeconds();
+  const nextPaused = !runningTimer.value.paused;
   runningTimer.value = {
     ...runningTimer.value,
     firstStartedAt: runningTimer.value.firstStartedAt || (nextPaused ? runningTimer.value.startedAt : timestamp),
@@ -2708,7 +2719,8 @@ function toggleActiveTimer() {
 }
 
 function resetTimer() {
-  if (!runningTimer.value) return;
+  if (!runningTimer.value || timerSaving.value || runningTimer.value.pendingEntry) return;
+  timerSaveMessage.value = '';
   const timestamp = Date.now();
   nowMs.value = timestamp;
   runningTimer.value = {
@@ -2725,7 +2737,7 @@ function resetTimer() {
 
 function closeTimerModal() {
   showTimerModal.value = false;
-  if (runningTimer.value && !runningTimer.value.firstStartedAt) {
+  if (runningTimer.value && !runningTimer.value.firstStartedAt && !runningTimer.value.pendingEntry) {
     runningTimer.value = null;
   }
   clearTimerEditDraft();
@@ -2734,13 +2746,14 @@ function closeTimerModal() {
 }
 
 function discardRunningTimer() {
-  if (!runningTimer.value) return;
+  if (!runningTimer.value || timerSaving.value || runningTimer.value.pendingEntry) return;
   if (currentTimerSeconds() > 0 && !window.confirm('确定取消本次计时吗？不会保存任何学习时长。')) return;
-  runningTimer.value = null;
-  showTimerModal.value = false;
-  clearTimerEditDraft();
-  timerEditDirty.value = false;
-  persistRunningTimer();
+  cancelRunningTimer();
+}
+
+function cancelRunningTimer() {
+  if (!runningTimer.value || timerSaving.value || runningTimer.value.pendingEntry) return;
+  finishSavedTimer('本次计时已取消，未保存记录。');
 }
 
 function clearTimerEditDraft() {
@@ -2833,14 +2846,25 @@ function timerEditDurationSeconds() {
   return Math.floor(hours * 3600 + minutes * 60 + seconds);
 }
 
-function saveRunningTimer() {
+function finishSavedTimer(message: string, entry?: StudyTimeEntry) {
+  lastTimerName.value = entry?.taskName || runningTimer.value?.name || '';
+  lastTimerSeconds.value = entry?.durationSeconds || 0;
+  timerSaveMessage.value = message;
+  runningTimer.value = null;
+  showTimerModal.value = false;
+  clearTimerEditDraft();
+  timerEditDirty.value = false;
+  persistRunningTimer();
+}
+
+async function saveRunningTimer() {
   const timer = runningTimer.value;
-  if (!timer) return;
+  if (!timer || timerSaving.value) return;
   const saveTimestamp = Date.now();
   nowMs.value = saveTimestamp;
-  const durationSeconds = timerEditDurationSeconds();
+  const durationSeconds = timer.pendingEntry?.durationSeconds ?? timerEditDurationSeconds();
   if (durationSeconds === null) {
-    alert('请输入有效时长，分钟和秒需小于 60');
+    timerSaveMessage.value = '请输入有效时长，分钟和秒需小于 60。';
     return;
   }
   const endAt = new Date(saveTimestamp).toISOString();
@@ -2848,17 +2872,13 @@ function saveRunningTimer() {
     ? new Date(timer.firstStartedAt).toISOString()
     : inferStartAt(endAt, durationSeconds);
   if (durationSeconds <= 0) {
-    runningTimer.value = null;
-    showTimerModal.value = false;
-    clearTimerEditDraft();
-    timerEditDirty.value = false;
-    persistRunningTimer();
+    finishSavedTimer('本次用时为 0，未新增记录。');
     return;
   }
   const date = timer.date || todayIso();
   const linkedTaskId = timer.taskId || (timer.type === 'review' ? reviewPlanForId(timer.reviewPlanId || '')?.taskId || '' : '');
   const linkedTask = data.value.tasks.find((task) => task.id === linkedTaskId);
-  const entry: StudyTimeEntry = {
+  const entry: StudyTimeEntry = timer.pendingEntry || {
     id: crypto.randomUUID(),
     date,
     taskId: linkedTaskId,
@@ -2873,17 +2893,55 @@ function saveRunningTimer() {
     endAt,
     createdAt: endAt,
   };
-  const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
-  if (!saveLocal({
-    ...data.value,
-    studyTimeEntries,
-    timeLogs: entriesToTimeLogs(studyTimeEntries),
-  })) return;
-  runningTimer.value = null;
-  showTimerModal.value = false;
-  clearTimerEditDraft();
-  timerEditDirty.value = false;
+  // Freeze the ended session and its ID before making a request. A lost reply can
+  // then be retried after a refresh without recording the same practice twice.
+  runningTimer.value = { ...timer, accumulatedSeconds: entry.durationSeconds, startedAt: saveTimestamp, paused: true, pendingEntry: entry };
   persistRunningTimer();
+  if (IS_LOCAL_DEV) {
+    const studyTimeEntries = [...studyTimeEntriesFromData(data.value), entry];
+    if (saveLocal({ ...data.value, studyTimeEntries, timeLogs: entriesToTimeLogs(studyTimeEntries) })) {
+      finishSavedTimer('已保存在本机预览中。', entry);
+    }
+    return;
+  }
+  timerSaving.value = true;
+  timerSaveMessage.value = '正在保存本次计时…';
+  try {
+    if (!navigator.onLine) throw new Error('网络已断开，本次计时已暂停保留，请联网后重试。');
+    await activeCloudSave;
+    if (isDirty.value && hasCheckedCloudBaseline.value && !await syncCloudProgress()) {
+      throw new Error('请先返回规划器处理未保存的进度，本次计时已保留。');
+    }
+    if (!hasCheckedCloudBaseline.value || cloudLoadedDate !== todayIso()) await loadCloudProgress();
+    if (!hasCheckedCloudBaseline.value || isCloudLoading.value || recoveryDraftAvailable.value || isDirty.value) {
+      throw new Error('请先返回规划器读取云端并处理未保存的进度，本次计时已保留。');
+    }
+    const response = await fetch('/api/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-app-password': appPassword.value },
+      body: JSON.stringify({ mutationId: entry.id, baseRevision: cloudRevision, timerEntry: entry }),
+    });
+    if (response.status === 409) {
+      await loadCloudProgress();
+      throw new Error('云端进度已变化，已重新读取。请点击重试保存，本次用时已保留。');
+    }
+    if (response.status === 401) handleUnauthorized();
+    if (!response.ok) throw new Error('计时尚未确认保存，请检查网络或返回规划器后重试。');
+    const result = await response.json() as { revision: number; progress: StudyData; updatedAt: string };
+    if (!Number.isSafeInteger(result.revision) || !result.progress?.studyTimeEntries?.some((item) => item.id === entry.id)) {
+      throw new Error('未收到完整的保存回执，本次计时已保留，请重试。');
+    }
+    cloudRevision = result.revision;
+    cloudBaseline = normalizeData(result.progress);
+    applyRemoteProgress(result.progress);
+    lastCloudSyncedAt.value = result.updatedAt;
+    persistLastCloudSyncState('已保存到云端', '本次计时已确认保存。');
+    finishSavedTimer('已保存到云端，可以关闭小窗。', entry);
+  } catch (error) {
+    timerSaveMessage.value = error instanceof Error ? error.message : '保存失败，本次计时已保留，请重试。';
+  } finally {
+    timerSaving.value = false;
+  }
 }
 
 function persistRunningPomodoro() {
@@ -5722,6 +5780,23 @@ function taskLastStudyDate(task: Task) {
 
 <template>
   <main>
+    <FloatingTimer
+      ref="floatingTimer"
+      :name="runningTimer?.name || lastTimerName"
+      :seconds="formatTimerDisplay(runningTimer?.pendingEntry?.durationSeconds ?? (runningTimer ? currentTimerSeconds() : lastTimerSeconds))"
+      :paused="runningTimer?.paused ?? true"
+      :active="Boolean(runningTimer)"
+      :pending="Boolean(runningTimer?.pendingEntry)"
+      :saving="timerSaving"
+      :message="timerSaveMessage"
+      @tick="nowMs = Date.now()"
+      @toggle="toggleActiveTimer"
+      @save="saveRunningTimer"
+      @cancel="cancelRunningTimer"
+    />
+    <div v-if="timerSaving" class="cloud-refresh-guard" role="status" aria-live="polite">
+      <div><span class="cloud-refresh-spinner" aria-hidden="true"></span><strong>正在保存本次计时</strong><p>收到云端确认后即可继续操作。</p></div>
+    </div>
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark"><img src="/favicon.svg" alt="" /></span>
@@ -7315,7 +7390,13 @@ function taskLastStudyDate(task: Task) {
           <span class="timer-type"><Clock :size="19" stroke-width="2.6" aria-hidden="true" />{{ runningTimer.type === 'review' ? '复习计时' : '任务计时' }}</span>
           <h3>{{ runningTimer.name }}</h3>
           <strong class="timer-display">{{ formatTimerDisplay(currentTimerSeconds()) }}</strong>
-          <p>{{ !runningTimer.firstStartedAt ? '尚未开始，点击开始后会记录起点。' : runningTimer.paused ? '已暂停，可以继续计时或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
+          <p>{{ runningTimer.pendingEntry ? '计时已结束，用时已保留，等待确认保存。' : !runningTimer.firstStartedAt ? '尚未开始，点击开始后会记录起点。' : runningTimer.paused ? '已暂停，可以继续计时或修改保存时长。' : '计时中，保存后会写入今天的学习时长。' }}</p>
+          <button v-if="floatingTimer?.supported" class="timer-floating-button" type="button" :disabled="!runningTimer.firstStartedAt || floatingTimer.opening" @click="floatingTimer?.open()">
+            <Copy :size="14" aria-hidden="true" />{{ floatingTimer.isOpen ? '查看悬浮窗' : '悬浮计时' }}
+          </button>
+          <p v-else class="timer-floating-note">当前浏览器不支持悬浮计时，请使用电脑端新版 Chrome。</p>
+          <p v-if="floatingTimer?.openError" role="status">{{ floatingTimer.openError }}</p>
+          <p v-if="timerSaveMessage" role="status">{{ timerSaveMessage }}</p>
         </div>
         <div class="timer-body">
           <div class="timer-time-range">
@@ -7334,6 +7415,7 @@ function taskLastStudyDate(task: Task) {
                   min="0"
                   :value="timerEditPartValue('hours')"
                   aria-label="小时"
+                  :disabled="Boolean(runningTimer.pendingEntry) || timerSaving"
                   @input="updateTimerEditPart('hours', ($event.target as HTMLInputElement).value)"
                 >
                 <small>时</small>
@@ -7348,6 +7430,7 @@ function taskLastStudyDate(task: Task) {
                   max="59"
                   :value="timerEditPartValue('minutes')"
                   aria-label="分钟"
+                  :disabled="Boolean(runningTimer.pendingEntry) || timerSaving"
                   @input="updateTimerEditPart('minutes', ($event.target as HTMLInputElement).value)"
                 >
                 <small>分</small>
@@ -7362,6 +7445,7 @@ function taskLastStudyDate(task: Task) {
                   max="59"
                   :value="timerEditPartValue('seconds')"
                   aria-label="秒"
+                  :disabled="Boolean(runningTimer.pendingEntry) || timerSaving"
                   @input="updateTimerEditPart('seconds', ($event.target as HTMLInputElement).value)"
                 >
                 <small>秒</small>
@@ -7369,7 +7453,7 @@ function taskLastStudyDate(task: Task) {
             </div>
           </div>
           <div class="timer-control-row">
-            <button class="timer-start-button" type="button" @click="toggleActiveTimer">
+            <button class="timer-start-button" type="button" :disabled="Boolean(runningTimer.pendingEntry) || timerSaving" @click="toggleActiveTimer">
               <span class="timer-start-icon">
                 <Pause v-if="!runningTimer.paused" :size="25" fill="currentColor" stroke-width="0" aria-hidden="true" />
                 <Play v-else :size="25" fill="currentColor" stroke-width="0" aria-hidden="true" />
@@ -7377,7 +7461,7 @@ function taskLastStudyDate(task: Task) {
               <span>{{ timerActionLabel() }}</span>
               <small v-if="!runningTimer.firstStartedAt">（点击开始后记录起点）</small>
             </button>
-            <button class="timer-restart-button" type="button" @click="resetTimer">
+            <button class="timer-restart-button" type="button" :disabled="Boolean(runningTimer.pendingEntry) || timerSaving" @click="resetTimer">
               <RotateCcw :size="25" stroke-width="2.5" aria-hidden="true" />
               <span>重新计时</span>
               <small>清零并重新开始</small>
@@ -7385,17 +7469,17 @@ function taskLastStudyDate(task: Task) {
           </div>
         </div>
         <div class="timer-footer-actions">
-          <button class="timer-discard-button" type="button" @click="discardRunningTimer">
+          <button class="timer-discard-button" type="button" :disabled="Boolean(runningTimer.pendingEntry) || timerSaving" @click="discardRunningTimer">
             <span class="timer-footer-title">
               <Trash2 :size="26" stroke-width="2.4" aria-hidden="true" />
               <span>取消计时</span>
             </span>
             <small>放弃此次计时，不保存记录</small>
           </button>
-          <button class="timer-save-button primary" type="button" @click="saveRunningTimer">
+          <button class="timer-save-button primary" type="button" :disabled="timerSaving" @click="saveRunningTimer">
             <span class="timer-footer-title">
               <Save :size="27" stroke-width="2.4" aria-hidden="true" />
-              <span>保存时长</span>
+              <span>{{ timerSaving ? '正在保存…' : runningTimer.pendingEntry ? '重试保存' : '保存时长' }}</span>
             </span>
             <small>保存当前时长记录</small>
           </button>

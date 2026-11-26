@@ -19,6 +19,42 @@ function isAuthorized(request, env) {
   return Boolean(env.APP_PASSWORD) && password === env.APP_PASSWORD;
 }
 
+function isTimerEntry(entry, mutationId) {
+  return entry && entry.id === mutationId && entry.source === 'timer'
+    && (entry.timeType === 'main' || entry.timeType === 'review')
+    && typeof entry.taskName === 'string' && typeof entry.examType === 'string'
+    && typeof entry.note === 'string'
+    && (entry.taskId === undefined || typeof entry.taskId === 'string')
+    && (entry.reviewPlanId === undefined || typeof entry.reviewPlanId === 'string')
+    && /^\d{4}-\d{2}-\d{2}$/.test(entry.date)
+    && Number.isSafeInteger(entry.durationSeconds) && entry.durationSeconds > 0
+    && Number.isFinite(Date.parse(entry.startAt)) && Number.isFinite(Date.parse(entry.endAt))
+    && Date.parse(entry.endAt) >= Date.parse(entry.startAt)
+    && Number.isFinite(Date.parse(entry.createdAt));
+}
+
+function appendTimerEntry(progress, entry) {
+  // Build the append from the confirmed server state, never a page's old arrays.
+  const timeLogs = progress.timeLogs || {};
+  const entries = progress.studyTimeEntries || Object.entries(timeLogs).flatMap(([date, logs]) => logs.map((log) => ({
+    id: log.id, date, taskId: log.taskId || '', reviewPlanId: log.reviewPlanId || '',
+    taskName: log.name, examType: '', durationSeconds: log.durationSeconds,
+    timeType: log.type === 'review' ? 'review' : 'main', source: 'timer', note: '',
+    startAt: log.startAt, endAt: log.endAt, createdAt: log.createdAt,
+  })));
+  return {
+    studyTimeEntries: [...entries.filter((item) => item.id !== entry.id), entry],
+    timeLogs: {
+      ...timeLogs,
+      [entry.date]: [...(timeLogs[entry.date] || []).filter((item) => item.id !== entry.id), {
+        id: entry.id, date: entry.date, type: entry.timeType === 'review' ? 'review' : 'task',
+        taskId: entry.taskId || '', reviewPlanId: entry.reviewPlanId || '', name: entry.taskName,
+        durationSeconds: entry.durationSeconds, startAt: entry.startAt, endAt: entry.endAt, createdAt: entry.createdAt,
+      }],
+    },
+  };
+}
+
 async function ensureSchema(db) {
   await db.batch([
     db.prepare('CREATE TABLE IF NOT EXISTS progress_meta (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, updated_at TEXT NOT NULL, mutation_id TEXT NOT NULL)'),
@@ -83,11 +119,12 @@ export async function onRequestPost({ request, env }) {
   } catch {
     return json({ ok: false, error: 'Invalid JSON' }, 400);
   }
-  const { mutationId, baseRevision, changes } = mutation || {};
+  const { mutationId, baseRevision, changes, timerEntry } = mutation || {};
+  const validChanges = changes && typeof changes === 'object' && !Array.isArray(changes)
+    && Object.keys(changes).length && Object.keys(changes).every((name) => PART_NAMES.has(name));
   if (typeof mutationId !== 'string' || !/^[0-9a-f-]{36}$/i.test(mutationId)
     || !Number.isSafeInteger(baseRevision) || baseRevision < 1
-    || !changes || typeof changes !== 'object' || Array.isArray(changes)
-    || !Object.keys(changes).length || Object.keys(changes).some((name) => !PART_NAMES.has(name))) {
+    || (timerEntry !== undefined ? changes !== undefined || !isTimerEntry(timerEntry, mutationId) : !validChanges)) {
     return json({ ok: false, error: '此页面版本不支持安全保存，请刷新页面' }, 426);
   }
   try {
@@ -98,10 +135,11 @@ export async function onRequestPost({ request, env }) {
     if (prior) return json({ ok: true, revision: current.revision, progress: current.progress, updatedAt: current.progress.updatedAt });
     if (baseRevision !== current.revision) return json({ ok: false, error: '云端进度已更新，请重新拉取', revision: current.revision }, 409);
 
+    const confirmedChanges = timerEntry ? appendTimerEntry(current.progress, timerEntry) : changes;
     const updatedAt = new Date().toISOString();
     const statements = [
       env.PROGRESS_DB.prepare('UPDATE progress_meta SET revision = revision + 1, updated_at = ?, mutation_id = ? WHERE id = 1 AND revision = ?').bind(updatedAt, mutationId, baseRevision),
-      ...Object.entries(changes).map(([name, value]) => env.PROGRESS_DB.prepare('INSERT INTO progress_parts (name, value) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM progress_meta WHERE mutation_id = ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value').bind(name, JSON.stringify(value), mutationId)),
+      ...Object.entries(confirmedChanges).map(([name, value]) => env.PROGRESS_DB.prepare('INSERT INTO progress_parts (name, value) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM progress_meta WHERE mutation_id = ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value').bind(name, JSON.stringify(value), mutationId)),
       env.PROGRESS_DB.prepare('INSERT INTO progress_mutations (id, revision) SELECT ?, revision FROM progress_meta WHERE mutation_id = ?').bind(mutationId, mutationId),
     ];
     const result = await env.PROGRESS_DB.batch(statements);
