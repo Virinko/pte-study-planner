@@ -73,7 +73,7 @@ async function open() {
   try {
     // requestWindow sizes the content; reserve space for Chrome's title bar.
     // Opening consumes user activation, so resizeTo here would throw before mount.
-    pipWindow = await pip.requestWindow({ width: 240, height: 106, preferInitialWindowPlacement: true });
+    pipWindow = await pip.requestWindow({ width: 240, height: 106, preferInitialWindowPlacement: false });
     pipWindow.document.title = 'PTE 悬浮计时';
     const style = pipWindow.document.createElement('style');
     style.textContent = floatingStyles;
